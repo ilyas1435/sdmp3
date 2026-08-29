@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 import os
 import shutil
 import subprocess
@@ -348,6 +349,7 @@ def copy_thread_task(paths, dest, excludes=None):
         else:
             final_msg = 'اكتمل النسخ بنجاح.'
         
+        invalidate_cache_for_path(dest)
         finish_transfer('done', final_msg, extra={'progress': 100, 'copied': copied, 'errors': failed_names[:30]})
 
     except TransferCancelled:
@@ -440,7 +442,7 @@ HTML_TEMPLATE = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>JOC Transfer Pro Max</title>
+    <title>SD Card Coffee</title>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=IBM+Plex+Sans+Arabic:wght@400;500;600&display=swap" rel="stylesheet">
     <meta name="theme-color" content="#0a0f1e">
     <style>
@@ -451,9 +453,9 @@ HTML_TEMPLATE = """
             --border: #26314a;
             --text: #f5f7fb;
             --text-muted: #8b96ac;
-            --accent: #6366f1;
-            --accent-hover: #4f46e5;
-            --accent-soft: rgba(99, 102, 241, 0.14);
+            --accent: #c17f3e;
+            --accent-hover: #a8672e;
+            --accent-soft: rgba(193, 127, 62, 0.16);
             --success: #22c55e;
             --danger: #f43f5e;
             --danger-soft: rgba(244, 63, 94, 0.12);
@@ -546,10 +548,10 @@ HTML_TEMPLATE = """
 <div class="container">
     <div class="app-header">
         <div class="badge">
-            <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg>
+            <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8h1a4 4 0 0 1 0 8h-1"></path><path d="M2 8h16v9a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4V8z"></path><line x1="6" y1="1" x2="6" y2="4"></line><line x1="10" y1="1" x2="10" y2="4"></line><line x1="14" y1="1" x2="14" y2="4"></line></svg>
         </div>
         <div>
-            <h1>JOC Transfer Pro Max</h1>
+            <h1>SD Card Coffee</h1>
             <p>نقل، تنظيم، وتمويه الملفات باحترافية</p>
         </div>
     </div>
@@ -570,6 +572,13 @@ HTML_TEMPLATE = """
                 <svg class="icon" viewBox="0 0 24 24"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>
                 تصفح
             </button>
+        </div>
+        <div style="display:flex; gap:10px; align-items:center; margin-top:10px; flex-wrap:wrap;">
+            <button class="btn btn-outline btn-sm" id="cacheFolderBtn" style="white-space: nowrap; color: var(--accent); border-color: var(--accent);" onclick="cacheCurrentFolder()">
+                <svg class="icon" viewBox="0 0 24 24"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg>
+                تخزين الفهرس (بحث فوري)
+            </button>
+            <span id="cacheStatusText" style="font-size:12px; color:var(--text-muted);">جاري التحقق من الفهرس...</span>
         </div>
     </div>
 
@@ -621,6 +630,7 @@ HTML_TEMPLATE = """
         <div class="card-title">
             <svg class="icon" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
             بحث عن مجلد أو ملف
+            <span id="searchSpeedBadge" style="display:none; font-size:10.5px; font-weight:600; color:var(--accent); background:var(--accent-soft); padding:2px 8px; border-radius:20px; margin-inline-start:4px;">⚡ فوري</span>
         </div>
         <div style="display:flex; gap:8px; margin-bottom: 12px;">
             <input type="text" id="searchInput" placeholder="اكتب اسم الملف للبحث..." style="margin-bottom:0;">
@@ -745,20 +755,20 @@ HTML_TEMPLATE = """
             </div>
             <div style="flex: 1;">
                 <label>الحد الأقصى للحروف:</label>
-                <input type="number" id="jocLimit" value="53" min="10">
+                <input type="number" id="jocLimit" value="93" min="10">
             </div>
         </div>
         
         <label>الوضع (Mode):</label>
         <select id="jocMode">
-            <option value="2">مجلدات وملفات (الوضع الشامل)</option>
             <option value="1">مجلدات فقط (فهرس رئيسي)</option>
+            <option value="2">مجلدات وملفات (الوضع الشامل)</option>
             <option value="3">المجلد الحالي فقط (ملفات بدون تفرع)</option>
         </select>
         
         <label>تنسيق الإخراج (Template):</label>
         <select id="jocTemplate">
-            <option value="4">الاسم : الرقم . (مثال: سورة البقرة : 1 .)</option>
+            <option value="4">الاسم : الرقم.</option>
             <option value="1">الرقم : الاسم . (مثال: 1 : سورة البقرة .)</option>
             <option value="2">الاسم من الرقم (مثال: سورة البقرة من 1)</option>
             <option value="3">الاسم من رقم الرقم . (مثال: سورة البقرة من رقم 1 .)</option>
@@ -892,6 +902,7 @@ HTML_TEMPLATE = """
         loadSubFolders(currentSourceRoot, document.getElementById('treeContainer'));
         generateRandomSpoofDate();
         checkTransferStatus(); 
+        checkCacheStatus(currentSourceRoot);
     };
 
     function updateSourceRoot(path) {
@@ -900,6 +911,61 @@ HTML_TEMPLATE = """
         localStorage.setItem('joc_source_root', path);
         document.getElementById('custom_source_path').value = path;
         loadSubFolders(path, document.getElementById('treeContainer'));
+        checkCacheStatus(path);
+    }
+
+    function renderCacheStatus(data) {
+        let el = document.getElementById('cacheStatusText');
+        let badge = document.getElementById('searchSpeedBadge');
+        if (data.cached) {
+            let d = new Date(data.built_at * 1000);
+            let timeStr = d.toLocaleTimeString('ar-EG', {hour: '2-digit', minute:'2-digit'});
+            el.innerHTML = `<span style="color:var(--success);">✓ مفهرس (${data.count} عنصر) — ${timeStr}</span>`;
+            badge.style.display = 'inline-block';
+        } else {
+            el.innerHTML = `<span style="color:var(--text-muted);">غير مفهرس — البحث سيكون أبطأ في المجلدات الكبيرة</span>`;
+            badge.style.display = 'none';
+        }
+    }
+
+    function pollCacheStatus(path) {
+        fetch('/api/cache/status?path=' + encodeURIComponent(path)).then(r=>r.json()).then(data=>{
+            if (path !== currentSourceRoot) return; 
+            if (data.building) {
+                document.getElementById('cacheStatusText').innerText = 'جاري الفهرسة...';
+                setTimeout(() => pollCacheStatus(path), 800);
+            } else {
+                document.getElementById('cacheFolderBtn').disabled = false;
+                renderCacheStatus(data);
+            }
+        }).catch(() => { document.getElementById('cacheFolderBtn').disabled = false; });
+    }
+
+    function checkCacheStatus(path) {
+        if (!path) return;
+        fetch('/api/cache/status?path=' + encodeURIComponent(path)).then(r=>r.json()).then(data=>{
+            if (path !== currentSourceRoot) return;
+            if (data.building) pollCacheStatus(path);
+            else renderCacheStatus(data);
+        }).catch(() => {});
+    }
+
+    function cacheCurrentFolder() {
+        let path = currentSourceRoot;
+        if (!path) return;
+        document.getElementById('cacheFolderBtn').disabled = true;
+        document.getElementById('cacheStatusText').innerText = 'جاري الفهرسة...';
+        fetch('/api/cache/build', {
+            method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({path: path})
+        }).then(r => r.json()).then(res => {
+            if (res.error) {
+                alert(res.error);
+                document.getElementById('cacheFolderBtn').disabled = false;
+                checkCacheStatus(path);
+                return;
+            }
+            pollCacheStatus(path);
+        }).catch(() => { document.getElementById('cacheFolderBtn').disabled = false; });
     }
 
     function generateRandomSpoofDate() {
@@ -1146,6 +1212,7 @@ HTML_TEMPLATE = """
         fetch('/api/search?q=' + encodeURIComponent(q) + '&folders_only=' + foldersOnly + '&root=' + encodeURIComponent(currentSourceRoot))
             .then(r=>r.json()).then(data=>{
             if (myToken !== searchRequestToken) return; 
+            document.getElementById('searchSpeedBadge').style.display = data.from_cache ? 'inline-block' : 'none';
             resBox.innerHTML = '';
             if(data.results.length === 0) { resBox.innerHTML = '<div style="padding:10px;color:var(--text-muted);">لم يتم العثور على نتائج.</div>'; return; }
             data.results.forEach(item => {
@@ -1472,6 +1539,7 @@ def make_dir():
     target_dir = os.path.join(data['path'], data['name'])
     try:
         os.makedirs(target_dir, exist_ok=True)
+        invalidate_cache_for_path(data['path'])
         return jsonify({'success': True, 'new_path': target_dir})
     except Exception as e: return jsonify({'success': False, 'error': str(e)})
 
@@ -1488,6 +1556,8 @@ def rename_item():
     if os.path.exists(new_path): return jsonify({'success': False, 'error': 'موجود مسبقاً'})
     try:
         os.rename(old_path, new_path)
+        invalidate_cache_for_path(old_path)
+        invalidate_cache_for_path(new_path)
         return jsonify({'success': True, 'old_path': old_path, 'new_path': new_path})
     except Exception as e: return jsonify({'success': False, 'error': str(e)})
 
@@ -1500,15 +1570,128 @@ def _search_should_skip(entry_name, parent_name):
     if parent_name == 'Android' and entry_name in ('data', 'obb'): return True
     return False
 
+def _rank_search_results(results, q):
+    """Sort so exact/startswith matches surface first, then natural-sort the rest."""
+    q_lower = q.lower()
+    def rank_key(r):
+        name_lower = r['name'].lower()
+        if name_lower == q_lower: tier = 0
+        elif name_lower.startswith(q_lower): tier = 1
+        else: tier = 2
+        return (tier, natural_sort_key(r['name']))
+    results.sort(key=rank_key)
+    return results
+
+# ------------- Folder Cache (instant search index) -------------
+# Manually built per source folder via the "Cache Folder" button. Persists in memory
+# for the lifetime of the server process (no automatic expiry), but is invalidated
+# whenever the app itself changes something inside a cached path (rename/delete/mkdir/copy)
+# so results never point at items that no longer exist.
+FOLDER_CACHE = {}          # root_path -> {'items': [...], 'count': int, 'built_at': float}
+folder_cache_lock = threading.RLock()
+folder_cache_building = set()  # root paths currently being indexed
+
+def build_cache_index(root, cancel_check=None):
+    items = []
+    stack = deque([root])
+    dirs_scanned = 0
+    while stack:
+        if cancel_check is not None and dirs_scanned % 300 == 0 and cancel_check():
+            break
+        current_dir = stack.popleft()
+        dirs_scanned += 1
+        parent_name = os.path.basename(current_dir)
+        try:
+            with os.scandir(current_dir) as it:
+                for entry in it:
+                    try:
+                        is_dir = entry.is_dir(follow_symlinks=False)
+                    except OSError:
+                        continue
+                    if _search_should_skip(entry.name, parent_name):
+                        continue
+                    items.append({'name': entry.name, 'name_lower': entry.name.lower(), 'path': entry.path, 'is_dir': is_dir})
+                    if is_dir:
+                        stack.append(entry.path)
+        except (PermissionError, OSError):
+            continue
+    return items
+
+def _cache_build_thread(root):
+    try:
+        items = build_cache_index(root)
+        with folder_cache_lock:
+            FOLDER_CACHE[root] = {'items': items, 'count': len(items), 'built_at': time.time()}
+    except Exception:
+        pass
+    finally:
+        with folder_cache_lock:
+            folder_cache_building.discard(root)
+
+def invalidate_cache_for_path(path):
+    """Drop any cached index that could now contain stale entries because of a
+    change at `path` (the path itself was modified, sits inside a cached root,
+    or was itself a cached root that just got renamed/deleted)."""
+    if not path: return
+    with folder_cache_lock:
+        stale = [r for r in FOLDER_CACHE if path == r or path.startswith(r + '/') or r.startswith(path + '/')]
+        for r in stale:
+            del FOLDER_CACHE[r]
+
+@app.route('/api/cache/build', methods=['POST'])
+def cache_build():
+    data = request.json or {}
+    root = data.get('path', '')
+    if not root or not os.path.isdir(root):
+        return jsonify({'error': 'مسار غير صالح'})
+    with folder_cache_lock:
+        if root in folder_cache_building:
+            return jsonify({'error': 'جاري الفهرسة بالفعل لهذا المجلد'})
+        folder_cache_building.add(root)
+    threading.Thread(target=_cache_build_thread, args=(root,), daemon=True).start()
+    return jsonify({'success': True})
+
+@app.route('/api/cache/status')
+def cache_status():
+    root = request.args.get('path', '')
+    with folder_cache_lock:
+        building = root in folder_cache_building
+        info = FOLDER_CACHE.get(root)
+        if info:
+            return jsonify({'cached': True, 'building': building, 'count': info['count'], 'built_at': info['built_at']})
+    return jsonify({'cached': False, 'building': building})
+
+@app.route('/api/cache/clear', methods=['POST'])
+def cache_clear():
+    data = request.json or {}
+    root = data.get('path', '')
+    with folder_cache_lock:
+        FOLDER_CACHE.pop(root, None)
+    return jsonify({'success': True})
+
 @app.route('/api/search')
 def deep_search():
     q = request.args.get('q', '').lower().strip()
     folders_only = request.args.get('folders_only', 'true') == 'true'
     root = request.args.get('root', '/sdcard') or '/sdcard'
-    results = []
-    if not q: return jsonify({'results': results})
+    if not q: return jsonify({'results': []})
     if not os.path.isdir(root): root = '/sdcard'
 
+    with folder_cache_lock:
+        cached = FOLDER_CACHE.get(root)
+
+    if cached:
+        # Instant path: filter the pre-built in-memory index, no disk access at all.
+        results = []
+        for it in cached['items']:
+            if folders_only and not it['is_dir']:
+                continue
+            if q in it['name_lower']:
+                results.append({'name': it['name'], 'path': it['path'], 'is_dir': it['is_dir']})
+        _rank_search_results(results, q)
+        return jsonify({'results': results[:SEARCH_MAX_RESULTS], 'from_cache': True, 'cache_count': cached['count']})
+
+    results = []
     stack = deque([root])  
     dirs_scanned = 0
     try:
@@ -1537,7 +1720,8 @@ def deep_search():
     except Exception:
         pass
 
-    return jsonify({'results': results})
+    _rank_search_results(results, q)
+    return jsonify({'results': results, 'from_cache': False})
 
 def get_dir_size(path, excludes):
     total = 0
@@ -1612,11 +1796,14 @@ def delete_item():
     try:
         if os.path.isdir(path) and not os.path.islink(path):
             deleted, failed = force_delete_tree(path)
+            invalidate_cache_for_path(path)
             if os.path.lexists(path):
                 return jsonify({'success': False, 'error': f'تعذر حذف بعض العناصر المحمية ({failed}), تم حذف {deleted} فقط'})
             return jsonify({'success': True})
         else:
-            if try_remove_entry(path): return jsonify({'success': True})
+            if try_remove_entry(path):
+                invalidate_cache_for_path(path)
+                return jsonify({'success': True})
             return jsonify({'success': False, 'error': 'تعذر الحذف (قد يكون الملف محمياً)'})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)})
@@ -1627,7 +1814,7 @@ def generate_joc_index():
     target_dir = data.get('path', '')
     mode = int(data.get('mode', 2))
     start_x = int(data.get('start_x', 1))
-    char_limit = int(data.get('char_limit', 53))
+    char_limit = int(data.get('char_limit', 93))
     template = int(data.get('template', 4))
     strip_symbols = data.get('strip_symbols', True)
     
@@ -1658,7 +1845,10 @@ def generate_joc_index():
 
         try:
             with os.scandir(current_path) as it:
-                children = sorted(it, key=lambda e: natural_sort_key(e.name))
+                # ترتيب حقيقي كما هو مخزّن على الفلاشة (FAT) بدل الترتيب الأبجدي:
+                # os.scandir بدون sorted() يعيد العناصر بنفس ترتيب readdir()
+                # النظامي، وهو نفس ترتيب "ls -1U" المستخدم في سكربت الفهرسة.
+                children = [e for e in it if not e.name.startswith('.')]
         except: return
 
         mp3_files = [f for f in children if f.is_file() and f.name.lower().endswith('.mp3')]
@@ -1689,7 +1879,9 @@ def generate_joc_index():
     elif mode == 3: 
         try:
             with os.scandir(target_dir) as it:
-                for f in sorted(it, key=lambda e: natural_sort_key(e.name)):
+                # نفس منطق FAT الحقيقي: بدون فرز أبجدي
+                for f in it:
+                    if f.name.startswith('.'): continue
                     if f.is_file() and f.name.lower().endswith('.mp3'):
                         f_name = clean_and_cut(os.path.splitext(f.name)[0], char_limit, strip_symbols)
                         output_lines.append(format_entry(f_name, current_x))
