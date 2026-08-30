@@ -112,4 +112,10 @@ Stop cleanly with `Ctrl+C` (cleans the TTS temp cache automatically).
 
 ## 📜 License
 
-Use freely for personal projects. 😊
+النسخة العربية:
+هذا البرنامج صدقة جارية مجانية بالكامل؛ يُحظر بيعه، أو تأجيره، أو التكسب منه بأي شكل من الأشكال. يُشترط لاستخدامه أو تعديله أو توزيعه ألا يُستعمل في أي عمل يخالف الشريعة الإسلامية أو في نقل ونشر المواد المحرمة.
+English Version:
+This software is a free, ongoing charity (Sadaqah Jariyah); selling, renting, or commercializing it is strictly prohibited. Use, modification, and distribution are permitted solely for purposes that comply with Islamic Sharia and do not involve prohibited content. 
+
+والحمد لله رب العالمين. 
+ilyas/إلياس
