@@ -6,9 +6,19 @@ import threading
 import time
 import datetime
 import re
+import atexit
+import tempfile
+import asyncio
 from collections import deque
 from werkzeug.exceptions import HTTPException
-from flask import Flask, render_template_string, request, jsonify
+from flask import Flask, render_template_string, request, jsonify, send_file
+
+try:
+    import edge_tts
+    EDGE_TTS_AVAILABLE = True
+except ImportError:
+    edge_tts = None
+    EDGE_TTS_AVAILABLE = False
 
 app = Flask(__name__)
 
@@ -71,6 +81,28 @@ def finish_transfer(final_status, msg, extra=None):
     if extra:
         kwargs.update(extra)
     set_state(**kwargs)
+
+# ------------- TTS Cache Setup -------------
+TTS_CACHE_DIR = os.path.join(tempfile.gettempdir(), f"tts_cache_{os.getpid()}")
+TTS_CACHE_LOCK = threading.Lock()
+
+def setup_tts_cache():
+    try:
+        os.makedirs(TTS_CACHE_DIR, exist_ok=True)
+    except Exception:
+        pass
+    return TTS_CACHE_DIR
+
+def cleanup_tts_cache():
+    """Delete all TTS temp files/chunks/final MP3s when the server closes (Ctrl+C)."""
+    with TTS_CACHE_LOCK:
+        if os.path.isdir(TTS_CACHE_DIR):
+            try:
+                shutil.rmtree(TTS_CACHE_DIR, ignore_errors=True)
+            except Exception:
+                pass
+
+atexit.register(cleanup_tts_cache)
 
 def acquire_wakelock():
     try:
@@ -435,6 +467,94 @@ def clean_and_cut(text, limit, strip_symbols):
         else: break
     return result
 
+# ------------- TTS (Edge) Helpers -------------
+TTS_VOICES = {
+    "ar-AE-HamdanNeural": "عربي (الإمارات) – حمدان (رجل)",
+    "ar-SA-HamedNeural": "عربي (السعودية) – حامد (رجل)",
+    "ar-EG-ShakirNeural": "عربي (مصر) – شاكر (رجل)",
+    "ar-IQ-BasselNeural": "عربي (العراق) – باسل (رجل)",
+    "ar-MA-JamalNeural": "عربي (المغرب) – جمال (رجل)",
+    "en-US-AndrewMultilingualNeural": "متعدد اللغات – أندرو (رجل)",
+}
+TTS_DEFAULT_VOICE = "ar-AE-HamdanNeural"
+
+def chunk_index_text(index_text, max_chars=1800):
+    """Split big JOC index text into safe chunks for TTS (line-aware)."""
+    lines = index_text.split('\n')
+    chunks = []
+    current = ""
+    for line in lines:
+        if not line:
+            if current:
+                chunks.append(current.rstrip())
+                current = ""
+            continue
+        if len(current) + 1 + len(line) <= max_chars:
+            current = (current + "\n" + line) if current else line
+        else:
+            if current:
+                chunks.append(current.rstrip())
+            # Hard-split a single over-long line if needed
+            if len(line) > max_chars:
+                for i in range(0, len(line), max_chars):
+                    chunks.append(line[i:i + max_chars])
+                current = ""
+            else:
+                current = line
+    if current:
+        chunks.append(current.rstrip())
+    return chunks or [""]
+
+def synthesize_chunk_mp3(text, voice, rate, out_path):
+    """Synthesize one chunk with Edge TTS and save MP3 to out_path."""
+    async def _run():
+        communicate = edge_tts.Communicate(text or " ", voice=voice, rate=rate)
+        await communicate.save(out_path)
+    asyncio.run(_run())
+
+def generate_static_noise(out_path, seconds=120, bitrate="64k"):
+    """Generate 'seconds' of subtle, low, non-intrusive noise (MP3, mono).
+
+    Uses brown noise (deep, rumbling) at very low amplitude with a low-pass
+    filter so the result sounds like a barely-audible soft hum - much gentler
+    than harsh white static."""
+    cmd = [
+        "ffmpeg", "-y",
+        "-f", "lavfi", "-i",
+        "anoisesrc=color=brown:duration=%d:amplitude=0.04:seed=42" % seconds,
+        "-af", "lowpass=f=300,volume=0.5",
+        "-c:a", "libmp3lame", "-b:a", bitrate, "-ar", "44100", "-ac", "1",
+        out_path
+    ]
+    subprocess.run(cmd, check=True, capture_output=True)
+
+def combine_mp3_chunks(chunk_files, final_path, bitrate="64k", obfuscate=False, static_seconds=120, custom_audio_path=None):
+    """Concatenate chunk MP3s into one MP3 at the requested bitrate (mono 44.1kHz).
+
+    If obfuscate is True, a masking segment is prepended so the real audio index
+    only begins after it. The masking segment is:
+      - 'file' mode  -> the user's custom_audio_path (whole file, as-is), or
+      - noise mode   -> 'static_seconds' of subtle generated noise."""
+    concat_list = os.path.join(TTS_CACHE_DIR, "concat_list.txt")
+    entries = []
+    if obfuscate:
+        if custom_audio_path and os.path.isfile(custom_audio_path):
+            entries.append(custom_audio_path)
+        else:
+            static_path = os.path.join(TTS_CACHE_DIR, "static_noise.mp3")
+            generate_static_noise(static_path, seconds=static_seconds, bitrate=bitrate)
+            entries.append(static_path)
+    entries.extend(chunk_files)
+    with open(concat_list, "w", encoding="utf-8") as f:
+        for cf in entries:
+            f.write(f"file '{cf}'\n")
+    cmd = [
+        "ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", concat_list,
+        "-c:a", "libmp3lame", "-b:a", bitrate, "-ar", "44100", "-ac", "1",
+        final_path
+    ]
+    subprocess.run(cmd, check=True, capture_output=True)
+
 # ------------------ HTML & JS Template ---------------------
 HTML_TEMPLATE = """
 <!DOCTYPE html>
@@ -515,8 +635,14 @@ HTML_TEMPLATE = """
         .cart { position: fixed; bottom: 0; left: 0; width: 100%; background: rgba(19, 27, 46, 0.98); backdrop-filter: blur(6px); border-top: 1px solid var(--border); padding: 14px 18px calc(14px + env(safe-area-inset-bottom)); display: flex; justify-content: space-between; align-items: center; z-index: 50; box-shadow: 0 -8px 24px -8px rgba(0,0,0,0.5); }
         .cart-buttons { display: flex; gap: 12px; }
 
-        .modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(6, 9, 18, 0.85); z-index: 1000; justify-content: center; align-items: center; padding: 16px; }
-        .modal-content { background: var(--card); padding: 22px; border-radius: 18px; width: 100%; max-width: 600px; border: 1px solid var(--border); max-height: 90vh; display: flex; flex-direction: column; box-shadow: 0 24px 48px -12px rgba(0,0,0,0.6);}
+        .modal { display: none; position: fixed; inset: 0; width: 100%; height: 100%; background: rgba(6, 9, 18, 0.85); z-index: 1000; justify-content: center; align-items: safe center; padding: 16px; overflow: auto; -webkit-overflow-scrolling: touch; }
+        .modal-content { background: var(--card); padding: 20px; border-radius: 18px; width: 100%; max-width: 600px; border: 1px solid var(--border); max-height: max(70vh, 480px); display: flex; flex-direction: column; box-shadow: 0 24px 48px -12px rgba(0,0,0,0.6); margin: auto; }
+        .modal-content .modal-body { overflow-y: auto; flex: 1 1 auto; min-height: 0; -webkit-overflow-scrolling: touch; }
+        .modal-content .modal-footer { display: flex; gap: 12px; margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--border); flex-shrink: 0; }
+        @media (max-width: 480px) {
+            .modal { padding: 8px; align-items: stretch; }
+            .modal-content { padding: 16px; max-height: 92vh; border-radius: 14px; }
+        }
 
         .progress-bar { width: 100%; height: 8px; background: var(--bg); border-radius: 4px; overflow: hidden; margin: 15px 0; border: 1px solid var(--border);}
         .progress-fill { height: 100%; background: var(--success); width: 0%; transition: width 0.3s ease; }
@@ -539,6 +665,10 @@ HTML_TEMPLATE = """
 
         .grid-2 { display:grid; grid-template-columns: 1fr 1fr; gap: 10px; }
         @media (max-width: 420px) { .grid-2 { grid-template-columns: 1fr; } }
+
+        .seg.option.active { background: linear-gradient(135deg, var(--accent), var(--accent-hover)); color: #fff; font-weight: 600; box-shadow: 0 4px 12px -4px rgba(193,127,62,0.6); }
+        .seg.option.active svg { stroke: #fff; }
+        .seg.option:hover:not(.active) { color: var(--accent); border-radius:7px; }
 
         svg.icon { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
     </style>
@@ -743,10 +873,11 @@ HTML_TEMPLATE = """
 <!-- JOC Settings Modal -->
 <div class="modal" id="jocModal">
     <div class="modal-content">
-        <h3 style="margin-top:0; border-bottom: 1px solid var(--border); padding-bottom: 15px; display:flex; align-items:center; gap:8px;">
+        <h3 style="margin-top:0; border-bottom: 1px solid var(--border); padding-bottom: 15px; display:flex; align-items:center; gap:8px; flex-shrink:0;">
             <svg class="icon" style="color:var(--accent);" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path></svg>
             إعدادات فهرس JOC
         </h3>
+        <div class="modal-body">
         
         <div style="display: flex; gap: 10px;">
             <div style="flex: 1;">
@@ -774,15 +905,76 @@ HTML_TEMPLATE = """
             <option value="3">الاسم من رقم الرقم . (مثال: سورة البقرة من رقم 1 .)</option>
         </select>
         
-        <label>اسم ملف الناتج:</label>
-        <input type="text" id="jocFileName" class="ltr-input" value="JOC_Index.txt">
+        <label>اسم الملف الناتج (نفس الاسم للنص والصوت):</label>
+        <input type="text" id="jocFileName" class="ltr-input" placeholder="يتم توليد اسم عشوائي تلقائياً...">
+        <small style="color:var(--text-muted); display:block; margin-top:-6px; margin-bottom:10px;">سيتم توليد: <span class="ltr-input" style="display:inline;">XXX.txt</span> (النص) و <span class="ltr-input" style="display:inline;">XXX.mp3</span> (الصوت) بنفس الاسم.<br>يُحبَّذ تركه فارغاً لإنشاء اسم عشوائي من 5 أحرف.</small>
         
-        <label style="display:flex; align-items:center; gap:8px; cursor:pointer; color: var(--text); margin-top: 10px; margin-bottom: 20px;">
+        <label style="display:flex; align-items:center; gap:8px; cursor:pointer; color: var(--text); margin-top: 10px; margin-bottom: 10px;">
             <input type="checkbox" id="jocStrip" class="checkbox" checked style="margin:0;">
             حذف الحروف الإنجليزية والأرقام والرموز
         </label>
-        
-        <div style="display:flex; gap:12px; margin-top:10px;">
+
+        <div style="background:var(--accent-soft); border:1px solid var(--accent); border-radius:10px; padding:14px; margin-bottom:14px;">
+            <label style="display:flex; align-items:center; gap:10px; cursor:pointer; color:var(--text); font-size:14px; margin-bottom:8px;">
+                <input type="checkbox" id="jocMp3Index" class="checkbox" style="margin:0; width:18px; height:18px;" onchange="toggleMp3Index()">
+                تحويل الفهرس إلى MP3 صوتي (Edge TTS) 64kbps
+            </label>
+            <small style="color:var(--text-muted); line-height:1.6; display:block; margin-bottom:10px;">يتم توليد MP3 من نص الفهرس بشكل تلقائي (مقسم لأجزاء ثم يُدمج)، ويتطلب اتصال بالإنترنت. يتم حذف الملفات المؤقتة عند إغلاق الخادم.</small>
+            <div id="ttsOptions" style="display:none; gap:10px; flex-direction:column;">
+                <div class="grid-2">
+                    <div>
+                        <label>الصوت (اللكنة):</label>
+                        <select id="ttsVoice"></select>
+                    </div>
+                    <div>
+                        <label>السرعة:</label>
+                        <select id="ttsRate">
+                            <option value="+0%">عادية (+0%)</option>
+                            <option value="-10%">أبطأ (-10%)</option>
+                            <option value="-20%">أبطأ بكثير (-20%)</option>
+                            <option value="+10%">أسرع (+10%)</option>
+                            <option value="+20%">أسرع بكثير (+20%)</option>
+                        </select>
+                    </div>
+                </div>
+
+                <div style="margin-top:6px;">
+                    <div style="display:flex; align-items:center; gap:8px; color:var(--text); font-size:13.5px; font-weight:600; margin-bottom:8px;">
+                        <svg class="icon" style="width:16px;height:16px;" viewBox="0 0 24 24"><path d="M11 5 6 9H2v6h4l5 4V5z"></path><path d="M15.54 8.46a5 5 0 0 1 0 7.07"></path><path d="M19.07 4.93a10 10 0 0 1 0 14.14"></path></svg>
+                        إخفاء الملف الصوتي (تمويه)
+                    </div>
+                    <div style="display:flex; gap:6px; background:var(--bg); border:1px solid var(--border); border-radius:10px; padding:4px;">
+                        <label class="seg option" data-mode="none" style="flex:1; text-align:center; padding:9px 6px; border-radius:7px; cursor:pointer; font-size:12.5px; color:var(--text-muted); display:flex; align-items:center; justify-content:center; gap:5px;">
+                            <svg class="icon" style="width:15px;height:15px;" viewBox="0 0 24 24"><path d="M11 5 6 9H2v6h4l5 4V5z"></path></svg>
+                            بدون
+                        </label>
+                        <label class="seg option" data-mode="noise" style="flex:1; text-align:center; padding:9px 6px; border-radius:7px; cursor:pointer; font-size:12.5px; color:var(--text-muted); display:flex; align-items:center; justify-content:center; gap:5px;">
+                            <svg class="icon" style="width:15px;height:15px;" viewBox="0 0 24 24"><line x1="1" y1="12" x2="6" y2="12"></line><line x1="23" y1="12" x2="18" y2="12"></line><line x1="9" y1="9" x2="15" y2="15"></line><line x1="15" y1="9" x2="9" y2="15"></line></svg>
+                            ضوضاء خفيفة
+                        </label>
+                        <label class="seg option" data-mode="file" style="flex:1; text-align:center; padding:9px 6px; border-radius:7px; cursor:pointer; font-size:12.5px; color:var(--text-muted); display:flex; align-items:center; justify-content:center; gap:5px;">
+                            <svg class="icon" style="width:15px;height:15px;" viewBox="0 0 24 24"><path d="M9 18V5l12-2v13"></path><circle cx="6" cy="18" r="3"></circle><circle cx="18" cy="16" r="3"></circle></svg>
+                            ملف مخصص
+                        </label>
+                    </div>
+                    <small id="maskHint" style="color:var(--text-muted); line-height:1.6; display:block; margin-top:6px;">إضافة ضوضاء منخفضة وغير مزعجة لمدة دقيقتين قبل بدء الفهرس الصوتي.</small>
+
+                    <div id="customFileBox" style="display:none; margin-top:8px;">
+                        <div style="display:flex; align-items:center; gap:10px; background:var(--bg); border:1px dashed var(--border); border-radius:10px; padding:10px 12px;">
+                            <input type="file" id="jocCustomAudio" accept=".mp3,audio/mpeg" hidden>
+                            <button class="btn btn-outline btn-sm" style="white-space:nowrap; flex-shrink:0;" onclick="document.getElementById('jocCustomAudio').click()">
+                                <svg class="icon" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg>
+                                اختر ملف MP3
+                            </button>
+                            <span id="customAudioName" style="flex:1; font-size:12.5px; color:var(--text-muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">لم يتم اختيار ملف بعد</span>
+                        </div>
+                        <small style="color:var(--text-muted); line-height:1.5; display:block; margin-top:6px;">يُضاف ملف MP3 المختار كاملاً في بداية الفهرس الصوتي.</small>
+                    </div>
+                </div>
+            </div>
+        </div>
+        </div>
+        <div class="modal-footer">
             <button class="btn btn-outline" style="flex:1;" onclick="document.getElementById('jocModal').style.display='none'">إلغاء</button>
             <button class="btn btn-primary" style="flex:2;" onclick="submitJocIndex()">إنشاء وتحميل</button>
         </div>
@@ -803,6 +995,7 @@ HTML_TEMPLATE = """
         </div>
         <div id="errorsBox" style="display:none; max-height:120px; overflow:auto; background:var(--bg); border:1px solid var(--border); border-radius:6px; padding:10px; margin-top:10px; font-size:12px; color:var(--danger);"></div>
         <div id="timeTakenDiv" style="display:none; color:var(--success); font-weight:500; margin-top:15px; font-size:13px; text-align:center;"></div>
+        <div id="inlineNotify" style="display:none; margin-top:14px; padding:12px 14px; border-radius:10px; font-size:13.5px; line-height:1.7; text-align:center; font-weight:600; border:1px solid; align-items:center; justify-content:center; gap:8px;"></div>
         <div style="display:flex; gap:12px; margin-top:20px;">
             <button class="btn btn-danger" id="cancelProgressBtn" style="width:100%; padding: 12px;" onclick="cancelTransfer()">إيقاف وإلغاء</button>
             <button class="btn btn-primary" id="closeProgressBtn" style="display:none; width:100%; padding: 12px;" onclick="resetTransfer()">تم وإغلاق</button>
@@ -1376,11 +1569,87 @@ HTML_TEMPLATE = """
         });
     }
 
+    let maskMode = 'noise';   // 'none' | 'noise' | 'file'
+    let customUploaded = null;  // original filename of uploaded custom mask
+
+    function toggleMp3Index() {
+        let on = document.getElementById('jocMp3Index').checked;
+        document.getElementById('ttsOptions').style.display = on ? 'flex' : 'none';
+    }
+
+    function setMaskMode(mode) {
+        maskMode = mode;
+        document.querySelectorAll('.seg.option').forEach(el => {
+            el.classList.toggle('active', el.getAttribute('data-mode') === mode);
+        });
+        document.getElementById('customFileBox').style.display = (mode === 'file') ? 'block' : 'none';
+        let hint = document.getElementById('maskHint');
+        if(mode === 'none') hint.innerHTML = 'يبدأ الفهرس الصوتي مباشرة دون أي تمويه.';
+        else if(mode === 'noise') hint.innerHTML = 'إضافة ضوضاء منخفضة وغير مزعجة لمدة دقيقتين قبل بدء الفهرس الصوتي لإخفائه.';
+        else hint.innerHTML = 'إضافة ملف MP3 مخصص كاملاً في بداية الفهرس الصوتي لإخفائه.';
+    }
+
+    function uploadCustomAudio(file) {
+        if(!file) return;
+        if(!/\\.mp3$/i.test(file.name)) { showInlineError('يرجى اختيار ملف بصيغة MP3 فقط.'); setMaskMode('none'); return; }
+        let fd = new FormData();
+        fd.append('file', file);
+        fetch('/api/tts/custom', { method: 'POST', body: fd })
+            .then(r=>r.json()).then(res=>{
+                if(res.error) { showInlineError(res.error); setMaskMode('none'); document.getElementById('customAudioName').textContent = 'لم يتم اختيار ملف بعد'; return; }
+                customUploaded = res.name || file.name;
+                document.getElementById('customAudioName').textContent = 'سيُضاف: ' + customUploaded;
+            }).catch(()=>{ showInlineError('فشل رفع الملف المخصص.'); setMaskMode('none'); });
+    }
+
+    document.addEventListener('DOMContentLoaded', function() {
+        document.querySelectorAll('.seg.option').forEach(el => {
+            el.addEventListener('click', function() { setMaskMode(this.getAttribute('data-mode')); });
+        });
+        const fin = document.getElementById('jocCustomAudio');
+        if(fin) fin.addEventListener('change', function(ev) {
+            let f = ev.target.files && ev.target.files[0];
+            if(f) uploadCustomAudio(f);
+        });
+    });
+
+    function loadTtsVoices() {
+        fetch('/api/tts/voices').then(r=>r.json()).then(data=>{
+            let sel = document.getElementById('ttsVoice');
+            sel.innerHTML = '';
+            let defaultVoice = data.default || 'ar-AE-HamdanNeural';
+            Object.keys(data.voices || {}).forEach(v => {
+                let o = document.createElement('option');
+                o.value = v;
+                o.textContent = data.voices[v] + ' — ' + v;
+                o.selected = (v === defaultVoice);
+                sel.appendChild(o);
+            });
+            if(!data.available) {
+                sel.disabled = true;
+                document.getElementById('ttsOptions').innerHTML = '<small style="color:var(--danger);">حزمة edge-tts غير مثبتة (يرجى تشغيل: pip install edge-tts)</small>';
+            }
+        }).catch(()=>{});
+    }
+
+    function makeRandomName(len) {
+        const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+        let s = '';
+        for (let i = 0; i < len; i++) s += chars[Math.floor(Math.random() * chars.length)];
+        return s;
+    }
+
     function openJocModal() {
         let dest = document.getElementById('custom_dest_path').value;
         if(!dest) return alert('يرجى تحديد مسار الوجهة أولاً.');
+        // Default name: random 5-char alphanumeric (kept if user typed one before)
+        document.getElementById('jocFileName').value = makeRandomName(5);
+        loadTtsVoices();
+        setMaskMode('noise');
         document.getElementById('jocModal').style.display = 'flex';
     }
+
+    let currentTtsFileName = null;
 
     function submitJocIndex() {
         let dest = document.getElementById('custom_dest_path').value;
@@ -1388,12 +1657,24 @@ HTML_TEMPLATE = """
         let limit = document.getElementById('jocLimit').value;
         let mode = document.getElementById('jocMode').value;
         let template = document.getElementById('jocTemplate').value;
-        let fileName = document.getElementById('jocFileName').value || 'JOC_Index.txt';
+        let nameBase = (document.getElementById('jocFileName').value || '').trim().replace(/\\.(txt|mp3)$/i, '');
+        if(!nameBase) nameBase = makeRandomName(5);
+        let txtName = nameBase + '.txt';
         let strip = document.getElementById('jocStrip').checked;
+        let doMp3 = document.getElementById('jocMp3Index').checked;
+        let obfuscate = false;
+        if(doMp3) {
+            if(maskMode === 'file') {
+                if(!customUploaded) { alert('يرجى اختيار ملف MP3 مخصص أولاً، أو اختر وضع تمويه آخر.'); return; }
+                obfuscate = 'file';
+            } else if(maskMode === 'noise') {
+                obfuscate = true;
+            }
+        }
         
         document.getElementById('jocModal').style.display = 'none';
         
-        document.getElementById('modalTitle').innerText = 'جاري إنشاء فهرس JOC...';
+        document.getElementById('modalTitle').innerText = 'جاري إنشاء الفهرس النصي...';
         document.getElementById('currentFile').innerText = 'قد تستغرق العملية بضع ثوانٍ للتحليل...';
         showProgressModal();
         document.getElementById('cancelProgressBtn').style.display = 'none';
@@ -1412,22 +1693,60 @@ HTML_TEMPLATE = """
         }).then(r=>r.json()).then(res=>{
             resetTransfer();
             if(res.error) {
-                alert(res.error);
-            } else {
-                let blob = new Blob(["\\uFEFF" + res.output], {type: "text/plain;charset=utf-8"});
-                let url = URL.createObjectURL(blob);
-                let a = document.createElement("a");
-                a.href = url;
-                a.download = fileName;
-                document.body.appendChild(a);
-                a.click();
-                document.body.removeChild(a);
-                alert("تم إنشاء وتحميل الفهرس بنجاح باسم " + fileName);
+                showInlineError(res.error);
+                return;
+            }
+            // Always download the .txt index (same base name)
+            let blob = new Blob(["\\uFEFF" + res.output], {type: "text/plain;charset=utf-8"});
+            let url = URL.createObjectURL(blob);
+            let a = document.createElement("a");
+            a.href = url;
+            a.download = txtName;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            showInlineDone('تم إنشاء وتحميل الفهرس النصي <b>' + txtName + '</b> بنجاح.');
+
+            // If mp3Index checked -> run TTS pipeline + download MP3 (same base name)
+            if(doMp3) {
+                let mp3Name = nameBase + '.mp3';
+                let voice = document.getElementById('ttsVoice').value || 'ar-AE-HamdanNeural';
+                let rate = document.getElementById('ttsRate').value || '+0%';
+                currentTtsFileName = mp3Name;
+                document.getElementById('modalTitle').innerText = 'جاري تحويل الفهرس إلى MP3 (Edge TTS)...';
+                document.getElementById('cancelProgressBtn').style.display = 'block';
+                showProgressModal();
+                fetch('/api/tts_index', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        index: res.output,
+                        voice: voice,
+                        rate: rate,
+                        filename: mp3Name,
+                        chunk_size: 1800,
+                        obfuscate: obfuscate
+                    })
+                }).then(r=>r.json()).then(r2=>{
+                    if(r2.error) { showInlineError(r2.error); resetTransfer(); return; }
+                }).catch(e=>{ resetTransfer(); showInlineError('حدث خطأ أثناء تشغيل TTS.'); });
             }
         }).catch(e=>{
             resetTransfer();
-            alert('حدث خطأ أثناء الإنشاء.');
+            showInlineError('حدث خطأ أثناء الإنشاء.');
         });
+    }
+
+    function downloadTtsFile() {
+        if(!currentTtsFileName) return;
+        let d = document.createElement('a');
+        d.href = '/api/tts/download?name=' + encodeURIComponent(currentTtsFileName);
+        d.download = currentTtsFileName;
+        document.body.appendChild(d);
+        d.click();
+        document.body.removeChild(d);
+        showInlineDone('تم إنشاء وتحميل MP3 الصوتي <b>' + currentTtsFileName + '</b> بنجاح.');
+        currentTtsFileName = null;
     }
 
     let progressModalVisible = false;
@@ -1437,8 +1756,28 @@ HTML_TEMPLATE = """
         document.getElementById('cancelProgressBtn').style.display = 'block';
         document.getElementById('closeProgressBtn').style.display = 'none';
         document.getElementById('timeTakenDiv').style.display = 'none';
+        document.getElementById('inlineNotify').style.display = 'none';
         document.getElementById('currentFile').style.color = 'var(--text-muted)';
     }
+
+    function showInlineNotify(html, type) {
+        let el = document.getElementById('inlineNotify');
+        el.innerHTML = html;
+        el.style.display = 'flex';
+        if(type === 'success') {
+            el.style.background = 'rgba(34,197,94,0.12)';
+            el.style.borderColor = 'var(--success)';
+            el.style.color = 'var(--success)';
+        } else {
+            el.style.background = 'var(--danger-soft)';
+            el.style.borderColor = 'var(--danger)';
+            el.style.color = 'var(--danger)';
+        }
+        if(!progressModalVisible) showProgressModal();
+        document.getElementById('closeProgressBtn').style.display = 'block';
+    }
+    function showInlineDone(msg) { showInlineNotify('<span>✔</span> ' + msg, 'success'); }
+    function showInlineError(msg) { showInlineNotify('<span>⚠</span> ' + msg, 'error'); }
 
     function cancelTransfer() {
         if(confirm('متأكد من الإيقاف؟')) {
@@ -1473,12 +1812,18 @@ HTML_TEMPLATE = """
                         refreshCheckboxStates();
                     }
 
+                    // Trigger MP3 download once TTS finishes successfully.
+                    if (data.status === 'done' && data.action === 'tts') {
+                        downloadTtsFile();
+                    }
+
                     document.getElementById('cancelProgressBtn').style.display = 'none';
                     document.getElementById('closeProgressBtn').style.display = 'block';
                     
                     if(data.status === 'error') {
                         document.getElementById('currentFile').innerText = 'خطأ: ' + data.log;
                         document.getElementById('currentFile').style.color = 'var(--danger)';
+                        showInlineError('فشلت العملية: ' + data.log);
                     } else if (data.status === 'done' && data.time_taken) {
                         document.getElementById('timeTakenDiv').style.display = 'block';
                         document.getElementById('timeTakenDiv').innerText = 'استغرق: ' + data.time_taken;
@@ -1507,6 +1852,7 @@ HTML_TEMPLATE = """
             document.getElementById('progressModal').style.display = 'none';
             progressModalVisible = false;
             document.getElementById('errorsBox').style.display = 'none';
+            document.getElementById('inlineNotify').style.display = 'none';
             document.getElementById('cancelProgressBtn').disabled = false;
             document.getElementById('modalTitle').innerText = 'العملية قيد التنفيذ...';
         }).catch(()=>{});
@@ -1890,6 +2236,119 @@ def generate_joc_index():
 
     return jsonify({'success': True, 'output': '\n'.join(output_lines)})
 
+# ------------- TTS (Edge) Routes -------------
+@app.route('/api/tts/voices')
+def tts_voices():
+    return jsonify({'voices': TTS_VOICES, 'default': TTS_DEFAULT_VOICE, 'available': EDGE_TTS_AVAILABLE})
+
+def tts_thread_task(index_text, voice, rate, out_name, chunk_size, obfuscate=False):
+    acquire_wakelock()
+    reset_state(status='copying', action='tts', start_time=time.time())
+    custom_path = os.path.join(TTS_CACHE_DIR, "custom_audio.mp3")
+    try:
+        if not EDGE_TTS_AVAILABLE:
+            raise RuntimeError("حزمة edge-tts غير مثبتة. قم بتشغيل: pip install edge-tts")
+        if not index_text.strip():
+            raise RuntimeError("الفهرس فارغ - لا يوجد نص للتحويل")
+
+        setup_tts_cache()
+        chunks = chunk_index_text(index_text, chunk_size)
+        total = len(chunks)
+        voice_label = TTS_VOICES.get(voice, voice)
+        try: rate_show = rate if rate else '+0%'
+        except Exception: rate_show = '+0%'
+        set_state(total=total, file=f'الصوت: {voice_label} — تم تقسيم النص إلى {total} جزء')
+        set_state(progress=2)
+
+        chunk_files = []
+        final_path = os.path.join(TTS_CACHE_DIR, out_name)
+        for i, chunk in enumerate(chunks, 1):
+            if is_cancelled(): raise TransferCancelled()
+            cpath = os.path.join(TTS_CACHE_DIR, f"chunk_{i:03d}.mp3")
+            set_state(copied=i, file=f'الصوت: {voice_label} | توليد الجزء {i} من {total}...')
+            progress = 5 + int(((i - 1) / total) * 82)
+            set_state(progress=min(progress, 88))
+            try:
+                synthesize_chunk_mp3(chunk, voice, rate, cpath)
+                chunk_files.append(cpath)
+            except Exception as e:
+                raise RuntimeError(f"فشل توليد الجزء {i}: {e}")
+            if is_cancelled(): raise TransferCancelled()
+
+        if obfuscate == 'file':
+            set_state(file='جاري إضافة الملف الصوتي المخصص في البداية...')
+            set_state(progress=92)
+            combine_mp3_chunks(chunk_files, final_path, bitrate="64k", obfuscate=True,
+                               custom_audio_path=custom_path if os.path.isfile(custom_path) else None)
+        elif obfuscate:
+            set_state(file='جاري إضافة ضوضاء تشويش خفيفة في البداية...')
+            set_state(progress=92)
+            combine_mp3_chunks(chunk_files, final_path, bitrate="64k", obfuscate=True, static_seconds=120)
+        else:
+            set_state(file='جاري دمج الأجزاء في ملف MP3 واحد (64kbps)...')
+            set_state(progress=92)
+            combine_mp3_chunks(chunk_files, final_path, bitrate="64k")
+        set_state(progress=100, copied=total)
+        finish_transfer('done', 'تم إنشاء MP3 الصوتي بنجاح.', extra={'progress': 100, 'tts_name': out_name})
+    except TransferCancelled:
+        finish_transfer('cancelled', 'تم إلغاء تحويل الفهرس إلى MP3.')
+    except Exception as e:
+        set_state(status='error', log=str(e))
+    finally:
+        release_wakelock()
+
+@app.route('/api/tts_index', methods=['POST'])
+def tts_index():
+    data = request.json or {}
+    index_text = data.get('index') or ''
+    voice = data.get('voice') or TTS_DEFAULT_VOICE
+    rate = data.get('rate') or '+0%'
+    out_name = data.get('filename') or 'JOC_Index.mp3'
+    if not out_name.lower().endswith('.mp3'):
+        out_name += '.mp3'
+    out_name = os.path.basename(out_name)
+    chunk_size = int(data.get('chunk_size', 1800))
+    obf = data.get('obfuscate', False)
+    if obf is True or obf is False:
+        obfuscate = bool(obf)
+    elif isinstance(obf, str) and obf.lower() in ('file', 'custom'):
+        obfuscate = 'file'
+    else:
+        obfuscate = bool(obf)
+
+    with transfer_lock:
+        if transfer_state['status'] == 'copying':
+            return jsonify({'error': 'هناك عملية قيد التشغيل بالفعل'})
+        transfer_state['status'] = 'copying'
+
+    threading.Thread(target=tts_thread_task, args=(index_text, voice, rate, out_name, chunk_size, obfuscate), daemon=True).start()
+    return jsonify({'success': True})
+
+@app.route('/api/tts/custom', methods=['POST'])
+def tts_custom_upload():
+    """Upload a custom masking MP3 that will be prepended before the audio index."""
+    if 'file' not in request.files:
+        return jsonify({'error': 'لم يتم إرسال ملف.'}), 400
+    f = request.files['file']
+    if not f or f.filename == '':
+        return jsonify({'error': 'لم يتم اختيار ملف.'}), 400
+    if not f.filename.lower().endswith('.mp3'):
+        return jsonify({'error': 'يرجى اختيار ملف بصيغة MP3 فقط.'}), 400
+    setup_tts_cache()
+    dest = os.path.join(TTS_CACHE_DIR, "custom_audio.mp3")
+    f.save(dest)
+    return jsonify({'success': True, 'name': os.path.basename(f.filename)})
+
+@app.route('/api/tts/download')
+def tts_download():
+    name = os.path.basename(request.args.get('name', 'JOC_Index.mp3'))
+    path = os.path.join(TTS_CACHE_DIR, name)
+    if not os.path.isfile(path):
+        return jsonify({'error': 'الملف غير موجود أو تم حذف الكاش.'}), 404
+    resp = send_file(path, as_attachment=True, download_name=name, mimetype='audio/mpeg')
+    resp.headers['Cache-Control'] = 'no-store'
+    return resp
+
 def parse_spoof_date(date_str):
     if not date_str: return None
     try: return int(datetime.datetime.strptime(date_str, "%Y-%m-%dT%H:%M").timestamp())
@@ -1948,5 +2407,18 @@ def handle_any_exception(e):
     if isinstance(e, HTTPException): return e
     return jsonify({'error': f'خطأ داخلي: {e}'}), 500
 
+def _signal_exit(signum, frame):
+    """On Ctrl+C / SIGTERM: clean the TTS cache, then exit cleanly."""
+    cleanup_tts_cache()
+    import signal as _s
+    raise SystemExit(0)
+
 if __name__ == '__main__':
+    import signal as _sig
+    for _sname in ('SIGINT', 'SIGTERM'):
+        if hasattr(_sig, _sname):
+            try:
+                _sig.signal(getattr(_sig, _sname), _signal_exit)
+            except Exception:
+                pass
     app.run(host='0.0.0.0', port=5050, debug=False, threaded=True)
