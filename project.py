@@ -907,12 +907,18 @@ HTML_TEMPLATE = """
         
         <label>اسم الملف الناتج (نفس الاسم للنص والصوت):</label>
         <input type="text" id="jocFileName" class="ltr-input" placeholder="يتم توليد اسم عشوائي تلقائياً...">
-        <small style="color:var(--text-muted); display:block; margin-top:-6px; margin-bottom:10px;">سيتم توليد: <span class="ltr-input" style="display:inline;">XXX.txt</span> (النص) و <span class="ltr-input" style="display:inline;">XXX.mp3</span> (الصوت) بنفس الاسم.<br>يُحبَّذ تركه فارغاً لإنشاء اسم عشوائي من 5 أحرف.</small>
+        <small style="color:var(--text-muted); display:block; margin-top:-6px; margin-bottom:10px;">سيتم توليد: <span class="ltr-input" style="display:inline;">XXX.txt</span> (النص، يُحمَّل اختيارياً) و <span class="ltr-input" style="display:inline;">XXX.mp3</span> (الصوت) بنفس الاسم.<br>يُحبَّذ تركه فارغاً لإنشاء اسم عشوائي من 5 أحرف.</small>
         
         <label style="display:flex; align-items:center; gap:8px; cursor:pointer; color: var(--text); margin-top: 10px; margin-bottom: 10px;">
             <input type="checkbox" id="jocStrip" class="checkbox" checked style="margin:0;">
             حذف الحروف الإنجليزية والأرقام والرموز
         </label>
+
+        <label style="display:flex; align-items:center; gap:8px; cursor:pointer; color: var(--text); margin-bottom: 10px;">
+            <input type="checkbox" id="jocDownloadTxt" class="checkbox" style="margin:0;">
+            تحميل ملف النص (.txt) بعد الإنشاء
+        </label>
+        <small style="color:var(--text-muted); line-height:1.6; display:block; margin-top:-6px; margin-bottom:14px;">يُولّد الفهرس نصياً دائماً في الخلفية، لكنه لا يُحمَّل إلا عند تفعيل هذا الخيار (التحميل ليس ضرورياً في كل مرة).</small>
 
         <div style="background:var(--accent-soft); border:1px solid var(--accent); border-radius:10px; padding:14px; margin-bottom:14px;">
             <label style="display:flex; align-items:center; gap:10px; cursor:pointer; color:var(--text); font-size:14px; margin-bottom:8px;">
@@ -976,7 +982,7 @@ HTML_TEMPLATE = """
         </div>
         <div class="modal-footer">
             <button class="btn btn-outline" style="flex:1;" onclick="document.getElementById('jocModal').style.display='none'">إلغاء</button>
-            <button class="btn btn-primary" style="flex:2;" onclick="submitJocIndex()">إنشاء وتحميل</button>
+            <button class="btn btn-primary" style="flex:2;" onclick="submitJocIndex()">إنشاء</button>
         </div>
     </div>
 </div>
@@ -995,7 +1001,7 @@ HTML_TEMPLATE = """
         </div>
         <div id="errorsBox" style="display:none; max-height:120px; overflow:auto; background:var(--bg); border:1px solid var(--border); border-radius:6px; padding:10px; margin-top:10px; font-size:12px; color:var(--danger);"></div>
         <div id="timeTakenDiv" style="display:none; color:var(--success); font-weight:500; margin-top:15px; font-size:13px; text-align:center;"></div>
-        <div id="inlineNotify" style="display:none; margin-top:14px; padding:12px 14px; border-radius:10px; font-size:13.5px; line-height:1.7; text-align:center; font-weight:600; border:1px solid; align-items:center; justify-content:center; gap:8px;"></div>
+        <div id="inlineNotify" style="display:none; flex-wrap:wrap; margin-top:14px; padding:12px 14px; border-radius:10px; font-size:13.5px; line-height:1.7; text-align:center; font-weight:600; border:1px solid; align-items:center; justify-content:center; gap:8px;"></div>
         <div style="display:flex; gap:12px; margin-top:20px;">
             <button class="btn btn-danger" id="cancelProgressBtn" style="width:100%; padding: 12px;" onclick="cancelTransfer()">إيقاف وإلغاء</button>
             <button class="btn btn-primary" id="closeProgressBtn" style="display:none; width:100%; padding: 12px;" onclick="resetTransfer()">تم وإغلاق</button>
@@ -1066,7 +1072,7 @@ HTML_TEMPLATE = """
     }
 
     function refreshCheckboxStates() {
-        document.querySelectorAll('.checkbox').forEach(cb => { cb.checked = isPathSelected(cb.value); });
+        document.querySelectorAll('.checkbox').forEach(cb => { if(cb.value && cb.value.startsWith('/')) cb.checked = isPathSelected(cb.value); });
         document.getElementById('selectedCount').innerText = selectedPaths.size;
     }
     
@@ -1650,6 +1656,26 @@ HTML_TEMPLATE = """
     }
 
     let currentTtsFileName = null;
+    let currentJocIndexText = null;
+
+    function copyJocIndex() {
+        if(currentJocIndexText === null || currentJocIndexText === '') { showInlineError('لا يوجد فهرس لنسخه.'); return; }
+        let ta = document.createElement('textarea');
+        ta.value = currentJocIndexText;
+        ta.setAttribute('readonly', '');
+        ta.style.position = 'fixed';
+        ta.style.left = '-9999px';
+        ta.style.top = '0';
+        document.body.appendChild(ta);
+        ta.focus();
+        ta.select();
+        ta.setSelectionRange(0, ta.value.length);
+        let ok = false;
+        try { ok = document.execCommand('copy'); } catch(e) {}
+        document.body.removeChild(ta);
+        if(ok) { showInlineDone('تم نسخ الفهرس بنجاح <b>' + (document.getElementById('jocFileName').value || '') + '.txt</b> — الصقه في أي مكان.'); }
+        else { showInlineError('تعذر النسخ تلقائياً، يرجى نسخ النص يدوياً.'); }
+    }
 
     function submitJocIndex() {
         let dest = document.getElementById('custom_dest_path').value;
@@ -1662,6 +1688,7 @@ HTML_TEMPLATE = """
         let txtName = nameBase + '.txt';
         let strip = document.getElementById('jocStrip').checked;
         let doMp3 = document.getElementById('jocMp3Index').checked;
+        let downloadTxt = document.getElementById('jocDownloadTxt').checked;
         let obfuscate = false;
         if(doMp3) {
             if(maskMode === 'file') {
@@ -1691,21 +1718,28 @@ HTML_TEMPLATE = """
                 strip_symbols: strip
             })
         }).then(r=>r.json()).then(res=>{
-            resetTransfer();
             if(res.error) {
                 showInlineError(res.error);
                 return;
             }
-            // Always download the .txt index (same base name)
-            let blob = new Blob(["\\uFEFF" + res.output], {type: "text/plain;charset=utf-8"});
-            let url = URL.createObjectURL(blob);
-            let a = document.createElement("a");
-            a.href = url;
-            a.download = txtName;
-            document.body.appendChild(a);
-            a.click();
-            document.body.removeChild(a);
-            showInlineDone('تم إنشاء وتحميل الفهرس النصي <b>' + txtName + '</b> بنجاح.');
+            // Generate the .txt index always; download it only if the option is checked
+            document.getElementById('modalTitle').innerText = 'تم إنشاء الفهرس النصي';
+            checkDiskSpace(document.getElementById('custom_dest_path').value);
+            currentJocIndexText = res.output;
+            if(downloadTxt) {
+                let blob = new Blob(["\\uFEFF" + res.output], {type: "text/plain;charset=utf-8"});
+                let url = URL.createObjectURL(blob);
+                let a = document.createElement("a");
+                a.href = url;
+                a.download = txtName;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+            }
+            showInlineNotify('<span>✔</span> تم إنشاء الفهرس النصي <b>' + txtName + '</b> بنجاح.'
+                + '<button class="btn btn-primary btn-sm" style="flex:1 1 100%; margin-top:8px;" onclick="copyJocIndex()">'
+                + '<svg class="icon" viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>'
+                + 'نسخ الفهرس</button>', 'success');
 
             // If mp3Index checked -> run TTS pipeline + download MP3 (same base name)
             if(doMp3) {
@@ -1732,7 +1766,6 @@ HTML_TEMPLATE = """
                 }).catch(e=>{ resetTransfer(); showInlineError('حدث خطأ أثناء تشغيل TTS.'); });
             }
         }).catch(e=>{
-            resetTransfer();
             showInlineError('حدث خطأ أثناء الإنشاء.');
         });
     }
