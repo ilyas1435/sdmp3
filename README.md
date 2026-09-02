@@ -29,6 +29,7 @@
   - `الاسم : الرقم .`
 - ✂️ **Symbol stripping** — optionally remove English letters, numbers, and symbols.
 - 🎲 **Random filename** — auto-generates a random 5-character alphanumeric name (shared between `.txt` and `.mp3`).
+- ✏️ **Review & edit before export** — optional editor shows the generated index text so you can tweak it before it's downloaded, copied, or converted to MP3. The edited text is exactly what gets used.
 
 ### 🔊 Audio Index — Text-to-Speech (Edge TTS)
 - 🗣️ **Microsoft Edge neural voices** (free, no API key) with multiple Arabic dialects plus a **multilingual male** voice.

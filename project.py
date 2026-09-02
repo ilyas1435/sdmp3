@@ -599,6 +599,8 @@ HTML_TEMPLATE = """
         label { font-weight: 500; margin-bottom: 8px; display: block; color: var(--text-muted); font-size: 13px; }
         select, input[type="text"], input[type="number"], input[type="datetime-local"] { width: 100%; padding: 12px 14px; border: 1px solid var(--border); border-radius: 10px; font-size: 14px; background-color: var(--bg); color: #fff; outline: none; margin-bottom: 12px; transition: border-color 0.15s, box-shadow 0.15s; min-height: 46px; }
         select:focus, input[type="text"]:focus, input[type="number"]:focus, input[type="datetime-local"]:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+        textarea { width: 100%; padding: 12px 14px; box-sizing: border-box; border: 1px solid var(--border); border-radius: 10px; font-family: 'Inter', monospace; font-size: 14px; line-height: 1.7; background-color: var(--bg); color: #fff; outline: none; resize: none; }
+        textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
 
         .btn { padding: 11px 16px; min-height: 44px; border: none; border-radius: 10px; cursor: pointer; font-weight: 600; font-size: 13.5px; color: #fff; transition: transform 0.08s ease, filter 0.15s ease, background 0.15s ease; display: inline-flex; align-items: center; justify-content: center; gap: 7px; }
         .btn:active { transform: scale(0.97); }
@@ -748,10 +750,6 @@ HTML_TEMPLATE = """
             <button class="btn btn-outline" style="color: var(--accent); border-color: var(--accent);" onclick="openJocModal()">
                 <svg class="icon" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path></svg>
                 إنشاء فهرس JOC
-            </button>
-            <button class="btn btn-outline" style="color: var(--warning); border-color: var(--warning);" onclick="createFolderInDest()">
-                <svg class="icon" viewBox="0 0 24 24"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path><line x1="12" y1="11" x2="12" y2="17"></line><line x1="9" y1="14" x2="15" y2="14"></line></svg>
-                مجلد جديد بالوجهة
             </button>
         </div>
     </div>
@@ -920,6 +918,12 @@ HTML_TEMPLATE = """
         </label>
         <small style="color:var(--text-muted); line-height:1.6; display:block; margin-top:-6px; margin-bottom:14px;">يُولّد الفهرس نصياً دائماً في الخلفية، لكنه لا يُحمَّل إلا عند تفعيل هذا الخيار (التحميل ليس ضرورياً في كل مرة).</small>
 
+        <label style="display:flex; align-items:center; gap:8px; cursor:pointer; color: var(--text); margin-bottom: 10px;">
+            <input type="checkbox" id="jocReviewTxt" class="checkbox" style="margin:0;">
+            مراجعة وتحرير الفهرس النصي قبل متابعة العملية
+        </label>
+        <small style="color:var(--text-muted); line-height:1.6; display:block; margin-top:-6px; margin-bottom:14px;">يفتح محرر النص بعد إنشاء الفهرس للسماح بالتعديل قبل التحميل/النسخ/التحويل إلى MP3.</small>
+
         <div style="background:var(--accent-soft); border:1px solid var(--accent); border-radius:10px; padding:14px; margin-bottom:14px;">
             <label style="display:flex; align-items:center; gap:10px; cursor:pointer; color:var(--text); font-size:14px; margin-bottom:8px;">
                 <input type="checkbox" id="jocMp3Index" class="checkbox" style="margin:0; width:18px; height:18px;" onchange="toggleMp3Index()">
@@ -983,6 +987,26 @@ HTML_TEMPLATE = """
         <div class="modal-footer">
             <button class="btn btn-outline" style="flex:1;" onclick="document.getElementById('jocModal').style.display='none'">إلغاء</button>
             <button class="btn btn-primary" style="flex:2;" onclick="submitJocIndex()">إنشاء</button>
+        </div>
+    </div>
+</div>
+
+<div class="modal" id="editTxtModal">
+    <div class="modal-content" style="max-width: 760px;">
+        <h3 style="margin-top:0; border-bottom: 1px solid var(--border); padding-bottom: 15px; display:flex; align-items:center; gap:8px; flex-shrink:0;">
+            <svg class="icon" style="color:var(--accent);" viewBox="0 0 24 24"><path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"></path></svg>
+            مراجعة وتحرير الفهرس النصي
+        </h3>
+        <div class="modal-body" style="display:flex; flex-direction:column; gap:10px; min-height:0;">
+            <div style="display:flex; justify-content:space-between; align-items:center; gap:10px;">
+                <small style="color:var(--text-muted);">عدّل النص ثم اضغط «حفظ ومتابعة» ليُستخدم في عملية التحميل/النسخ/التحويل إلى MP3.</small>
+                <small id="editTxtCount" style="color:var(--accent); font-weight:600; white-space:nowrap; flex-shrink:0;">0 حرف / 0 سطر</small>
+            </div>
+            <textarea id="editTxtArea" spellcheck="false" autocomplete="off" autocapitalize="off" autocorrect="off" style="flex:1; min-height:360px;" oninput="updateEditTxtCount()"></textarea>
+        </div>
+        <div class="modal-footer">
+            <button class="btn btn-outline" style="flex:1;" onclick="cancelEditTxt()">إلغاء</button>
+            <button class="btn btn-primary" style="flex:2;" onclick="saveEditTxt()">حفظ ومتابعة</button>
         </div>
     </div>
 </div>
@@ -1259,21 +1283,6 @@ HTML_TEMPLATE = """
             });
         });
     }
-    function createFolderInDest() {
-        let dest = document.getElementById('custom_dest_path').value;
-        if(!dest) return alert('يرجى تحديد مسار الوجهة أولاً.');
-        showInputModal('مجلد جديد', 'اسم المجلد:', '', (name) => {
-            if(!name) return;
-            fetch('/api/mkdir', {
-                method:'POST', headers:{'Content-Type':'application/json'},
-                body:JSON.stringify({path: dest, name: name})
-            }).then(r=>r.json()).then(res=>{
-                if(res.success) alert('تم إنشاء المجلد بنجاح.');
-                else alert(res.error || 'تعذر إنشاء المجلد');
-            });
-        });
-    }
-
     function loadSubFolders(path, parentElement) {
         parentElement.innerHTML = '<div style="padding:10px; color:var(--text-muted);">جاري التحميل...</div>';
         parentElement.dataset.dirPath = path;
@@ -1657,6 +1666,7 @@ HTML_TEMPLATE = """
 
     let currentTtsFileName = null;
     let currentJocIndexText = null;
+    let pendingJocActions = null;
 
     function copyJocIndex() {
         if(currentJocIndexText === null || currentJocIndexText === '') { showInlineError('لا يوجد فهرس لنسخه.'); return; }
@@ -1689,6 +1699,7 @@ HTML_TEMPLATE = """
         let strip = document.getElementById('jocStrip').checked;
         let doMp3 = document.getElementById('jocMp3Index').checked;
         let downloadTxt = document.getElementById('jocDownloadTxt').checked;
+        let reviewTxt = document.getElementById('jocReviewTxt').checked;
         let obfuscate = false;
         if(doMp3) {
             if(maskMode === 'file') {
@@ -1698,6 +1709,10 @@ HTML_TEMPLATE = """
                 obfuscate = true;
             }
         }
+        let mp3Name = nameBase + '.mp3';
+        let voice = document.getElementById('ttsVoice').value || 'ar-AE-HamdanNeural';
+        let rate = document.getElementById('ttsRate').value || '+0%';
+        pendingJocActions = { txtName: txtName, downloadTxt: downloadTxt, doMp3: doMp3, mp3Name: mp3Name, voice: voice, rate: rate, obfuscate: obfuscate };
         
         document.getElementById('jocModal').style.display = 'none';
         
@@ -1722,52 +1737,109 @@ HTML_TEMPLATE = """
                 showInlineError(res.error);
                 return;
             }
-            // Generate the .txt index always; download it only if the option is checked
             document.getElementById('modalTitle').innerText = 'تم إنشاء الفهرس النصي';
             checkDiskSpace(document.getElementById('custom_dest_path').value);
             currentJocIndexText = res.output;
-            if(downloadTxt) {
-                let blob = new Blob(["\\uFEFF" + res.output], {type: "text/plain;charset=utf-8"});
-                let url = URL.createObjectURL(blob);
-                let a = document.createElement("a");
-                a.href = url;
-                a.download = txtName;
-                document.body.appendChild(a);
-                a.click();
-                document.body.removeChild(a);
-            }
-            showInlineNotify('<span>✔</span> تم إنشاء الفهرس النصي <b>' + txtName + '</b> بنجاح.'
-                + '<button class="btn btn-primary btn-sm" style="flex:1 1 100%; margin-top:8px;" onclick="copyJocIndex()">'
-                + '<svg class="icon" viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>'
-                + 'نسخ الفهرس</button>', 'success');
-
-            // If mp3Index checked -> run TTS pipeline + download MP3 (same base name)
-            if(doMp3) {
-                let mp3Name = nameBase + '.mp3';
-                let voice = document.getElementById('ttsVoice').value || 'ar-AE-HamdanNeural';
-                let rate = document.getElementById('ttsRate').value || '+0%';
-                currentTtsFileName = mp3Name;
-                document.getElementById('modalTitle').innerText = 'جاري تحويل الفهرس إلى MP3 (Edge TTS)...';
-                document.getElementById('cancelProgressBtn').style.display = 'block';
-                showProgressModal();
-                fetch('/api/tts_index', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({
-                        index: res.output,
-                        voice: voice,
-                        rate: rate,
-                        filename: mp3Name,
-                        chunk_size: 1800,
-                        obfuscate: obfuscate
-                    })
-                }).then(r=>r.json()).then(r2=>{
-                    if(r2.error) { showInlineError(r2.error); resetTransfer(); return; }
-                }).catch(e=>{ resetTransfer(); showInlineError('حدث خطأ أثناء تشغيل TTS.'); });
+            if(reviewTxt) {
+                openEditTxtModal(null);
+            } else {
+                runPendingJocActions();
             }
         }).catch(e=>{
             showInlineError('حدث خطأ أثناء الإنشاء.');
         });
+    }
+
+    function updateEditTxtCount() {
+        let el = document.getElementById('editTxtArea');
+        let txt = el.value || '';
+        let chars = txt.length;
+        let lines = txt.split("\\n").length;
+        let countEl = document.getElementById('editTxtCount');
+        if(countEl) countEl.innerText = chars + ' حرف / ' + lines + ' سطر';
+    }
+
+    function openEditTxtModal(onSave) {
+        let txtArea = document.getElementById('editTxtArea');
+        txtArea.value = (currentJocIndexText === null || currentJocIndexText === undefined) ? '' : currentJocIndexText;
+        window._editContinueActions = (onSave === null);
+        window._editFromSubmit = (onSave === null);
+        document.getElementById('editTxtModal').style.display = 'flex';
+        if(document.getElementById('progressModal')) document.getElementById('progressModal').style.display = 'none';
+        updateEditTxtCount();
+        setTimeout(function(){ txtArea.focus(); }, 60);
+    }
+
+    function saveEditTxt() {
+        let edited = document.getElementById('editTxtArea').value;
+        let trimmed = edited.trim();
+        if(!trimmed) { showInlineError('النص فارغ — اكتب بعض المحتوى قبل المتابعة.'); return; }
+        currentJocIndexText = edited;
+        document.getElementById('editTxtModal').style.display = 'none';
+        updateEditTxtCount();
+        let shouldContinue = window._editContinueActions;
+        window._editContinueActions = false;
+        if(shouldContinue) runPendingJocActions();
+    }
+
+    function cancelEditTxt() {
+        let wasFromSubmit = window._editFromSubmit;
+        document.getElementById('editTxtModal').style.display = 'none';
+        window._editContinueActions = false;
+        window._editFromSubmit = false;
+        if(wasFromSubmit && pendingJocActions) showJocSuccessNotify(pendingJocActions.txtName);
+    }
+
+    function showJocSuccessNotify(txtName) {
+        showInlineNotify('<span>✔</span> تم إنشاء الفهرس النصي <b>' + txtName + '</b> بنجاح.'
+            + '<div style="display:flex; flex-wrap:wrap; gap:8px; margin-top:8px;">'
+            + '<button class="btn btn-primary btn-sm" style="flex:1;" onclick="copyJocIndex()">'
+            + '<svg class="icon" viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>'
+            + 'نسخ الفهرس</button>'
+            + '<button class="btn btn-outline btn-sm" style="flex:1;" onclick="openEditTxtModal(1)">'
+            + '<svg class="icon" viewBox="0 0 24 24"><path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"></path></svg>'
+            + 'تحرير النص</button>'
+            + '</div>', 'success');
+    }
+
+    function runPendingJocActions() {
+        if(!pendingJocActions) return;
+        let a = pendingJocActions;
+        let txt = currentJocIndexText || '';
+        let txtName = a.txtName;
+
+        if(a.downloadTxt && txt) {
+            let blob = new Blob(["\uFEFF" + txt], {type: "text/plain;charset=utf-8"});
+            let url = URL.createObjectURL(blob);
+            let dl = document.createElement("a");
+            dl.href = url;
+            dl.download = txtName;
+            document.body.appendChild(dl);
+            dl.click();
+            document.body.removeChild(dl);
+        }
+        showJocSuccessNotify(txtName);
+
+        if(a.doMp3) {
+            currentTtsFileName = a.mp3Name;
+            document.getElementById('modalTitle').innerText = 'جاري تحويل الفهرس إلى MP3 (Edge TTS)...';
+            document.getElementById('cancelProgressBtn').style.display = 'block';
+            showProgressModal();
+            fetch('/api/tts_index', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    index: txt,
+                    voice: a.voice,
+                    rate: a.rate,
+                    filename: a.mp3Name,
+                    chunk_size: 1800,
+                    obfuscate: a.obfuscate
+                })
+            }).then(r=>r.json()).then(r2=>{
+                if(r2.error) { showInlineError(r2.error); resetTransfer(); return; }
+            }).catch(e=>{ resetTransfer(); showInlineError('حدث خطأ أثناء تشغيل TTS.'); });
+        }
     }
 
     function downloadTtsFile() {
