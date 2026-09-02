@@ -998,9 +998,15 @@ HTML_TEMPLATE = """
             مراجعة وتحرير الفهرس النصي
         </h3>
         <div class="modal-body" style="display:flex; flex-direction:column; gap:10px; min-height:0;">
-            <div style="display:flex; justify-content:space-between; align-items:center; gap:10px;">
+            <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap;">
                 <small style="color:var(--text-muted);">عدّل النص ثم اضغط «حفظ ومتابعة» ليُستخدم في عملية التحميل/النسخ/التحويل إلى MP3.</small>
-                <small id="editTxtCount" style="color:var(--accent); font-weight:600; white-space:nowrap; flex-shrink:0;">0 حرف / 0 سطر</small>
+                <div style="display:flex; align-items:center; gap:8px;">
+                    <small id="editTxtCount" style="color:var(--accent); font-weight:600; white-space:nowrap; flex-shrink:0;">0 حرف / 0 سطر</small>
+                    <button class="btn btn-outline btn-sm" style="white-space:nowrap;" onclick="copyEditTxt()">
+                        <svg class="icon" viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+                        نسخ
+                    </button>
+                </div>
             </div>
             <textarea id="editTxtArea" spellcheck="false" autocomplete="off" autocapitalize="off" autocorrect="off" style="flex:1; min-height:360px;" oninput="updateEditTxtCount()"></textarea>
         </div>
@@ -1668,10 +1674,10 @@ HTML_TEMPLATE = """
     let currentJocIndexText = null;
     let pendingJocActions = null;
 
-    function copyJocIndex() {
-        if(currentJocIndexText === null || currentJocIndexText === '') { showInlineError('لا يوجد فهرس لنسخه.'); return; }
+    function copyTextToClipboard(text, successMsg) {
+        if(text === null || text === undefined || text === '') { showInlineError('لا يوجد محتوى لنسخه.'); return false; }
         let ta = document.createElement('textarea');
-        ta.value = currentJocIndexText;
+        ta.value = text;
         ta.setAttribute('readonly', '');
         ta.style.position = 'fixed';
         ta.style.left = '-9999px';
@@ -1683,8 +1689,18 @@ HTML_TEMPLATE = """
         let ok = false;
         try { ok = document.execCommand('copy'); } catch(e) {}
         document.body.removeChild(ta);
-        if(ok) { showInlineDone('تم نسخ الفهرس بنجاح <b>' + (document.getElementById('jocFileName').value || '') + '.txt</b> — الصقه في أي مكان.'); }
-        else { showInlineError('تعذر النسخ تلقائياً، يرجى نسخ النص يدوياً.'); }
+        if(ok) { showInlineDone(successMsg); return true; }
+        else { showInlineError('تعذر النسخ تلقائياً، يرجى نسخ النص يدوياً.'); return false; }
+    }
+
+    function copyJocIndex() {
+        copyTextToClipboard(currentJocIndexText, 'تم نسخ الفهرس بنجاح <b>' + (document.getElementById('jocFileName').value || '') + '.txt</b> — الصقه في أي مكان.');
+    }
+
+    function copyEditTxt() {
+        let txtArea = document.getElementById('editTxtArea');
+        let txt = txtArea ? txtArea.value : '';
+        copyTextToClipboard(txt, 'تم نسخ النص من المحرر بنجاح — الصقه في أي مكان.');
     }
 
     function submitJocIndex() {
@@ -1850,7 +1866,16 @@ HTML_TEMPLATE = """
         document.body.appendChild(d);
         d.click();
         document.body.removeChild(d);
-        showInlineDone('تم إنشاء وتحميل MP3 الصوتي <b>' + currentTtsFileName + '</b> بنجاح.');
+        let txtName = currentTtsFileName.replace(/\\.mp3$/i, '') + '.txt';
+        showInlineNotify('<span>✔</span> تم إنشاء وتحميل MP3 الصوتي <b>' + currentTtsFileName + '</b>، وكذا الفهرس النصي <b>' + txtName + '</b>.'
+            + '<div style="display:flex; flex-wrap:wrap; gap:8px; margin-top:8px;">'
+            + '<button class="btn btn-primary btn-sm" style="flex:1;" onclick="copyJocIndex()">'
+            + '<svg class="icon" viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>'
+            + 'نسخ الفهرس</button>'
+            + '<button class="btn btn-outline btn-sm" style="flex:1;" onclick="openEditTxtModal(1)">'
+            + '<svg class="icon" viewBox="0 0 24 24"><path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"></path></svg>'
+            + 'تحرير النص</button>'
+            + '</div>', 'success');
         currentTtsFileName = null;
     }
 
