@@ -478,8 +478,28 @@ TTS_VOICES = {
 }
 TTS_DEFAULT_VOICE = "ar-AE-HamdanNeural"
 
+def _cut_at_word_boundary(text, limit):
+    """Split text at limit, ending on a complete word.
+
+    Returns (head_chunk, remainder) where head_chunk ends at a whitespace
+    boundary so no word is truncated across chunks. If the text contains no
+    whitespace within limit (a single unbroken over-long word), falls back to
+    a character split so no text is ever lost.
+    """
+    text = text.rstrip()
+    if len(text) <= limit:
+        return text, ""
+    pos = text.rfind(' ', 0, limit + 1)
+    if pos <= 0:
+        pos = text.rfind('\t', 0, limit + 1)
+    if pos <= 0:
+        pos = text.rfind('\u00a0', 0, limit + 1)
+    if pos <= 0:
+        return text[:limit], text[limit:]
+    return text[:pos].rstrip(), text[pos + 1:].lstrip()
+
 def chunk_index_text(index_text, max_chars=1800):
-    """Split big JOC index text into safe chunks for TTS (line-aware)."""
+    """Split big JOC index text into safe chunks for TTS (line-aware, word-safe)."""
     lines = index_text.split('\n')
     chunks = []
     current = ""
@@ -494,11 +514,14 @@ def chunk_index_text(index_text, max_chars=1800):
         else:
             if current:
                 chunks.append(current.rstrip())
-            # Hard-split a single over-long line if needed
+            # Split a single over-long line at word boundaries so no word is
+            # truncated across chunks (which would distort pronunciation).
             if len(line) > max_chars:
-                for i in range(0, len(line), max_chars):
-                    chunks.append(line[i:i + max_chars])
-                current = ""
+                while line and len(line) > max_chars:
+                    head, line = _cut_at_word_boundary(line, max_chars)
+                    if head:
+                        chunks.append(head)
+                current = line
             else:
                 current = line
     if current:
