@@ -9,6 +9,7 @@ Usage:
   sdmp3 update [--force] [--restart]
                                  pull the latest version from GitHub
   sdmp3 doctor                   check python / ffmpeg / edge-tts / storage / port
+  sdmp3 unlock [--revert]        grant Termux all-files access via Shizuku (optional)
   sdmp3 version                  print version and git commit
   sdmp3 open                     open the UI in the Android browser
 """
@@ -208,6 +209,37 @@ def external_storage():
         if name and name not in cards:
             cards.append(name)
     return cards
+
+
+def rish(command, timeout=10):
+    """Run a command through Shizuku's rish shell, or None if unavailable.
+
+    rish sends the remote command's output to stderr, so the streams are merged.
+    """
+    path = shutil.which("rish")
+    if not path:
+        return None
+    try:
+        return subprocess.run([path, "-c", command], stdout=subprocess.PIPE,
+                              stderr=subprocess.STDOUT, text=True, timeout=timeout)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+
+
+def shizuku_shell():
+    res = rish("id")
+    return bool(res and res.returncode == 0 and "uid=2000" in (res.stdout or ""))
+
+
+def all_files_granted():
+    res = rish("appops get com.termux MANAGE_EXTERNAL_STORAGE")
+    return bool(res and "allow" in (res.stdout or "").lower())
+
+
+def print_manual_unlock():
+    print("     manual way: Settings -> Apps -> Termux -> Special app access", flush=True)
+    print("                  -> All files access -> Allow", flush=True)
+    print("     the app keeps working without it, but SD card writes may be blocked.", flush=True)
 
 
 def module_version(dist_name):
@@ -487,6 +519,20 @@ def cmd_doctor():
     cards = external_storage()
     check(bool(cards), "external sd cards", ", ".join(cards) if cards else "none mounted", hard=False)
 
+    if shutil.which("rish"):
+        running = shizuku_shell()
+        check(running, "shizuku", "running" if running else "installed but not running", hard=False)
+        if running:
+            granted = all_files_granted()
+            check(
+                granted,
+                "sd card all-files access",
+                "granted" if granted else "not granted - run: sdmp3 unlock",
+                hard=False,
+            )
+    else:
+        warn("shizuku: not set up (optional - 'sdmp3 unlock' helps SD writes)")
+
     inst = read_instance()
     if inst:
         check(True, "port {}".format(inst["port"]), "in use by sdmp3 (pid {})".format(inst["pid"]))
@@ -516,6 +562,45 @@ def cmd_doctor():
         warn("{} warning(s) - optional features may not work".format(len(warnings)))
     ok("environment looks good")
     return 0
+
+
+def cmd_unlock(argv):
+    """Grant Termux all-files access through Shizuku. Purely optional."""
+    revert = "--revert" in argv
+    action = "default" if revert else "allow"
+
+    if not shutil.which("rish"):
+        fail("rish not found - Shizuku is not set up for Termux")
+        print_manual_unlock()
+        return 1
+
+    info("asking Shizuku for a shell...")
+    if not shizuku_shell():
+        fail("Shizuku is installed but not running")
+        print("     open the Shizuku app, start it, then retry.", flush=True)
+        print_manual_unlock()
+        return 1
+    ok("Shizuku shell available (uid=2000)")
+
+    info("{} all-files access for com.termux...".format("revoking" if revert else "granting"))
+    res = rish("appops set com.termux MANAGE_EXTERNAL_STORAGE {}".format(action))
+    if res is None or res.returncode != 0:
+        fail("could not change the permission")
+        print_manual_unlock()
+        return 1
+
+    if revert:
+        ok("all-files access revoked")
+        return 0
+
+    if all_files_granted():
+        ok("granted - the app can now write to the SD card")
+        info("undo later with: sdmp3 unlock --revert")
+        return 0
+
+    warn("command sent, but the permission still reads as not granted")
+    print_manual_unlock()
+    return 1
 
 
 def cmd_open(argv):
@@ -562,6 +647,8 @@ def main(argv=None):
         return cmd_update(force="--force" in rest, restart="--restart" in rest)
     if cmd == "doctor":
         return cmd_doctor()
+    if cmd == "unlock":
+        return cmd_unlock(rest)
     if cmd == "open":
         return cmd_open(rest)
     if cmd.startswith("-"):

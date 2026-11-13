@@ -39,10 +39,11 @@ def get_app_version():
         return APP_VERSION_FALLBACK
 
 
-# Cache optimization: 512KB to ensure stable flow
-COPY_BUFFER_SIZE = 512 * 1024  
-# Force hardware sync every 16MB to prevent RAM bloat and freezing
-SYNC_THRESHOLD = 16 * 1024 * 1024  
+# Read/write block size. 2MB keeps copies sequential (order is the whole point
+# of this app) while cutting the number of FUSE round-trips vs the old 512KB.
+COPY_BUFFER_SIZE = 2 * 1024 * 1024
+# Force hardware sync every 64MB: fewer stalls, same crash-safety granularity.
+SYNC_THRESHOLD = 64 * 1024 * 1024
 
 transfer_lock = threading.RLock()
 
@@ -134,6 +135,92 @@ def release_wakelock():
         subprocess.run(["termux-wake-unlock"], timeout=3, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except Exception:
         pass
+
+# ------------- Shizuku (100% optional) -------------
+# Shizuku runs ADB-level shell commands without root. It is used ONLY to read
+# its status and to grant "all files access" to the SD card. Nothing in the app
+# depends on it: when the app or the `rish` helper is missing, every call below
+# returns None quickly and the rest of the app keeps working normally.
+SHIZUKU_LOCK = threading.Lock()
+SHIZUKU_CACHE = {'ts': 0.0, 'data': None}
+SHIZUKU_TTL = 60
+SHIZUKU_TIMEOUT = 6
+
+
+def rish(command, timeout=SHIZUKU_TIMEOUT):
+    """Run a shell command through Shizuku. Returns its output, or None if unavailable.
+
+    rish forwards the remote command's output on stderr, so both streams are
+    merged here - reading stdout only would always look empty.
+    """
+    rish_path = shutil.which('rish')
+    if not rish_path:
+        return None
+    try:
+        res = subprocess.run([rish_path, '-c', command], stdout=subprocess.PIPE,
+                             stderr=subprocess.STDOUT, text=True, timeout=timeout)
+    except Exception:
+        return None
+    return res.stdout or ''
+
+
+def shizuku_refresh():
+    """Ask Shizuku for its state (slow: up to a few seconds)."""
+    data = {'installed': bool(shutil.which('rish')), 'running': False,
+            'all_files': False, 'checked': True, 'detail': 'غير مثبت'}
+    if data['installed']:
+        out = rish('id')
+        if out and 'uid=2000' in out:
+            data['running'] = True
+            data['detail'] = 'مفعّل'
+            ops = rish('appops get com.termux MANAGE_EXTERNAL_STORAGE') or ''
+            data['all_files'] = 'allow' in ops.lower()
+        else:
+            data['detail'] = 'متوقف'
+    with SHIZUKU_LOCK:
+        SHIZUKU_CACHE['ts'] = time.time()
+        SHIZUKU_CACHE['data'] = data
+    return dict(data)
+
+
+def shizuku_status():
+    """Cached Shizuku state - never blocks the web UI."""
+    with SHIZUKU_LOCK:
+        data = SHIZUKU_CACHE.get('data')
+    if data is not None:
+        return dict(data)
+    return {'installed': bool(shutil.which('rish')), 'running': False,
+            'all_files': False, 'checked': False, 'detail': 'جاري الفحص'}
+
+
+def shizuku_refresher():
+    """Background loop so no request ever pays the rish cost."""
+    while True:
+        try:
+            shizuku_refresh()
+        except Exception:
+            pass
+        time.sleep(SHIZUKU_TTL)
+
+
+def removable_sd():
+    """First external (non-emulated) /storage mount + whether we may write to it."""
+    path = None
+    try:
+        df_output = subprocess.check_output("df -h", shell=True, text=True, timeout=5)
+        for line in df_output.splitlines():
+            if '/storage/' in line and 'emulated' not in line:
+                path = line.split()[-1]
+                break
+    except Exception:
+        return {'path': None, 'writable': None}
+    if not path:
+        return {'path': None, 'writable': None}
+    try:
+        return {'path': path, 'writable': bool(os.access(path, os.W_OK))}
+    except Exception:
+        return {'path': path, 'writable': None}
+
 
 def natural_sort_key(text):
     return [int(c) if c.isdigit() else c.lower() for c in re.split(r'(\d+)', text)]
@@ -342,20 +429,28 @@ def copy_thread_task(paths, dest, excludes=None):
         set_state(file='جاري ترتيب الملفات بتسلسل JOC...')
         
         ordered_tasks = []
-        def build_dfs_queue(current_src, current_dest):
+        def build_dfs_queue(current_src, current_dest, entry=None):
+            """DFS pre-order + natural sort.
+
+            NEVER parallelize this copy: the FAT directory-entry order (and the
+            cluster order) is exactly what old MP3 players use to play files in
+            sequence, so files must be written one at a time in this order.
+            """
             if current_src in excludes: return
-            name = os.path.basename(current_src)
+            name = entry.name if entry is not None else os.path.basename(current_src)
             dst_path = os.path.join(current_dest, name)
-            
-            if os.path.isfile(current_src):
+
+            # DirEntry.is_file()/is_dir() reuse the stat that scandir already did,
+            # so we no longer pay 2-3 extra FUSE round-trips per file.
+            if (entry.is_file() if entry is not None else os.path.isfile(current_src)):
                 ordered_tasks.append((current_src, dst_path, 'file'))
-            elif os.path.isdir(current_src):
+            elif (entry.is_dir() if entry is not None else os.path.isdir(current_src)):
                 ordered_tasks.append((current_src, dst_path, 'dir'))
                 try:
                     with os.scandir(current_src) as it:
                         children = sorted(it, key=lambda e: natural_sort_key(e.name))
-                        for entry in children:
-                            build_dfs_queue(entry.path, dst_path)
+                        for child in children:
+                            build_dfs_queue(child.path, dst_path, child)
                 except Exception: pass
 
         for p in sorted(paths, key=natural_sort_key):
@@ -633,6 +728,10 @@ HTML_TEMPLATE = """
         .app-header .badge svg { stroke: var(--accent); width:22px; height:22px; }
         .app-header h1 { font-size: 18px; color: #fff; margin:0; font-weight: 700; letter-spacing: -0.2px; }
         .app-header p { margin: 2px 0 0; font-size: 12.5px; color: var(--text-muted); }
+        .pill-row { display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; }
+        .pill { font-size: 11px; line-height: 1; padding: 5px 9px; border-radius: 999px; border: 1px solid var(--border); color: var(--text-muted); background: rgba(255,255,255,0.03); white-space: nowrap; }
+        .pill-ok { color: var(--success); border-color: rgba(34,197,94,0.35); background: rgba(34,197,94,0.08); }
+        .pill-warn { color: var(--warning); border-color: rgba(245,158,11,0.35); background: rgba(245,158,11,0.08); }
 
         .card { background: var(--card); padding: 18px; border-radius: var(--radius); border: 1px solid var(--border); margin-bottom: 16px; }
         .card-title { display:flex; align-items:center; gap:8px; font-size: 14px; font-weight:600; color:#fff; margin: 0 0 14px; }
@@ -727,6 +826,11 @@ HTML_TEMPLATE = """
         <div>
             <h1>SD Card Coffee</h1>
             <p>نقل، تنظيم، وتمويه الملفات باحترافية</p>
+            <div class="pill-row">
+                <span class="pill" id="appVersionPill">v{{ app_version }}</span>
+                <span class="pill" id="shizukuPill" title="Shizuku أداة اختيارية: تمنح Termux وصولاً كاملاً لكارت الذاكرة">Shizuku: جاري الفحص</span>
+                <span class="pill" id="sdWritePill" title="هل يمكن الكتابة على كارت الذاكرة الخارجي؟">كتابة الكارت: جاري الفحص</span>
+            </div>
         </div>
     </div>
 
@@ -1665,6 +1769,36 @@ HTML_TEMPLATE = """
             }).catch(()=>{ showInlineError('فشل رفع الملف المخصص.'); setMaskMode('none'); });
     }
 
+    function loadSystemInfo(force, isRetry) {
+        fetch('/api/system' + (force ? '?refresh=1' : ''))
+            .then(function(r){ return r.json(); })
+            .then(function(d){
+                var vEl = document.getElementById('appVersionPill');
+                if (vEl && d.version) vEl.textContent = 'v' + d.version;
+
+                var s = d.shizuku || {};
+                var sEl = document.getElementById('shizukuPill');
+                if (sEl) {
+                    if (!s.installed) { sEl.textContent = 'Shizuku: غير مثبت'; sEl.className = 'pill'; }
+                    else if (!s.running) { sEl.textContent = 'Shizuku: متوقف'; sEl.className = 'pill pill-warn'; }
+                    else { sEl.textContent = 'Shizuku: مفعّل'; sEl.className = 'pill pill-ok'; }
+                }
+
+                var sd = d.sd || {};
+                var sdEl = document.getElementById('sdWritePill');
+                if (sdEl) {
+                    if (sd.writable === true) { sdEl.textContent = 'كتابة الكارت: نعم'; sdEl.className = 'pill pill-ok'; }
+                    else if (sd.writable === false) { sdEl.textContent = 'كتابة الكارت: لا'; sdEl.className = 'pill pill-warn'; }
+                    else { sdEl.textContent = 'كتابة الكارت: لا يوجد كارت'; sdEl.className = 'pill'; }
+                }
+
+                if (s.checked === false && !isRetry) {
+                    setTimeout(function(){ loadSystemInfo(true, true); }, 2000);
+                }
+            })
+            .catch(function(){});
+    }
+
     document.addEventListener('DOMContentLoaded', function() {
         document.querySelectorAll('.seg.option').forEach(el => {
             el.addEventListener('click', function() { setMaskMode(this.getAttribute('data-mode')); });
@@ -1674,6 +1808,8 @@ HTML_TEMPLATE = """
             let f = ev.target.files && ev.target.files[0];
             if(f) uploadCustomAudio(f);
         });
+        loadSystemInfo(false, false);
+        setInterval(function(){ loadSystemInfo(false, true); }, 120000);
     });
 
     function loadTtsVoices() {
@@ -2036,7 +2172,23 @@ HTML_TEMPLATE = """
 
 @app.route('/')
 def index():
-    return render_template_string(HTML_TEMPLATE, storages=get_available_storages())
+    return render_template_string(HTML_TEMPLATE, storages=get_available_storages(),
+                                  app_version=get_app_version())
+
+@app.route('/api/system')
+def system_info():
+    """Version + optional Shizuku state + SD write access, for the header pills."""
+    if request.args.get('refresh') == '1':
+        shizuku = shizuku_refresh()
+    else:
+        shizuku = shizuku_status()
+    return jsonify({
+        'version': get_app_version(),
+        'edge_tts': EDGE_TTS_AVAILABLE,
+        'ffmpeg': bool(shutil.which('ffmpeg')),
+        'shizuku': shizuku,
+        'sd': removable_sd(),
+    })
 
 @app.route('/api/items')
 def get_items():
@@ -2628,6 +2780,11 @@ def main(argv=None):
                 pass
 
     print(f"sdmp3 {get_app_version()} - serving on {args.host}:{args.port}", flush=True)
+    # Keep the optional Shizuku status warm; harmless no-op when it is not installed.
+    try:
+        threading.Thread(target=shizuku_refresher, daemon=True).start()
+    except Exception:
+        pass
     print(f"  local:   http://localhost:{args.port}", flush=True)
     ip = _lan_ip()
     if ip and args.host in ('0.0.0.0', '', '::'):

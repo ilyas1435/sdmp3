@@ -24,6 +24,28 @@ The app is installed as the Termux command **`sdmp3`** so users never call `pyth
 
 Gotchas: `/sdcard` is `noexec`, so the command must live in `$PREFIX/bin`; git checkouts on `/sdcard` need `git config --global --add safe.directory <path>` (dubious-ownership), which `install.sh` and `sdmp3 update` handle.
 
+## Rule: never parallelize file writes
+The product is **playback order**. Old MP3 players order a folder by its FAT32
+directory-entry order and expect contiguous files. `build_dfs_queue` (DFS
+pre-order + `natural_sort_key`) plus a single-threaded, one-file-at-a-time copy
+loop is what guarantees this. Parallel copies interleave both directory entries
+and clusters and **break the app's main feature** — do not add them, even as an
+option.
+
+## Shizuku is optional (never required)
+`rish`/Shizuku is used only for (a) reading its status and (b) `sdmp3 unlock` →
+`appops set com.termux MANAGE_EXTERNAL_STORAGE allow`. Every helper in
+`project.py` (`rish`, `shizuku_status`, `shizuku_refresh`, `removable_sd`) must
+degrade to `None`/`False` without raising, so the app fully works with no
+Shizuku installed. Status is cached (`SHIZUKU_TTL`) and refreshed by a daemon
+thread so no HTTP request ever blocks on a shell call.
+
+## Version + status in the UI
+`VERSION` is rendered into the header as `v{{ app_version }}` and also served by
+`/api/system` together with the Shizuku state and SD write access; the JS
+`loadSystemInfo()` fills the pills (version / `Shizuku` / `كتابة الكارت`). Bump
+`VERSION` for user-visible changes.
+
 ## CRITICAL: escape handling inside HTML_TEMPLATE
 `HTML_TEMPLATE` is a **plain `"""..."""` Python string**, not raw and not an f-string. Python processes backslash escapes in the embedded JS at parse time. To emit a literal backslash sequence to the browser you must **double the backslash**:
 - Write `txt.split("\\n")` in Python so the browser receives `split('\n')`. A single `\n` becomes a real newline and **breaks the whole script block**.

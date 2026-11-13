@@ -114,7 +114,26 @@ bash ~/.local/share/sdmp3/install.sh --uninstall --purge  # also delete the sour
 | `update`           | `git pull` from GitHub (refuses if you edited the source) |
 | `version`          | Print version + git commit                                |
 | `doctor`           | Environment check                                         |
+| `unlock`           | Grant SD-card all-files access via Shizuku (optional)      |
 | `open`             | Open the UI in the Android browser                        |
+
+### 🔓 SD card write access (optional — Shizuku or settings)
+
+On Android 11+ the SD card is write-protected for apps unless Termux gets
+**All files access**. The app works without it, but copies to the card may be
+blocked. If you use [Shizuku](https://shizuku.rikka.app/):
+
+```bash
+sdmp3 unlock             # grants com.termux MANAGE_EXTERNAL_STORAGE
+sdmp3 unlock --revert    # undo
+```
+
+Without Shizuku: **Settings → Apps → Termux → Special app access → All files
+access → Allow**.
+
+Shizuku is **never required**: if `rish`/Shizuku is missing the app runs exactly
+as before, and the UI badge shows `Shizuku: غير مثبت`. The header also shows the
+app version and whether the card is writable.
 
 ---
 
