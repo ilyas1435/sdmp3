@@ -5,7 +5,9 @@ import subprocess
 import threading
 import time
 import datetime
+import json
 import re
+import shlex
 import atexit
 import tempfile
 import asyncio
@@ -25,7 +27,7 @@ app = Flask(__name__)
 
 # Version is kept in the VERSION file next to this script so that the `sdmp3`
 # CLI can read it without importing the app.
-APP_VERSION_FALLBACK = "1.5.2"
+APP_VERSION_FALLBACK = "1.5.3"
 
 # Toggled by --no-wakelock (see main() at the bottom).
 WAKELOCK_ENABLED = True
@@ -90,7 +92,9 @@ DEFAULT_STATE = {
     'last_progress_ts': 0,
     'cancel': False,
     'start_time': 0,
-    'time_taken': ''
+    'time_taken': '',
+    'delete_failures': [],
+    'card_damage': False
 }
 transfer_state = dict(DEFAULT_STATE)
 
@@ -130,10 +134,11 @@ def get_state_snapshot():
     # blocked in a syscall and cannot update its own state. Reporting the stall
     # is what turns a silent freeze into a message the user can act on.
     #
-    # Only copy/spoof can hang on a volume. TTS is network-bound (Edge TTS) and
-    # never writes to the card, so applying the card wording to it produced the
-    # false "pull the SD card out" warning while the audio was being generated.
-    if snap.get('status') == 'copying' and snap.get('action') in ('copy', 'spoof'):
+    # Only copy/spoof/delete can hang on a volume. TTS is network-bound (Edge
+    # TTS) and never writes to the card, so applying the card wording to it
+    # produced the false "pull the SD card out" warning while the audio was
+    # being generated.
+    if snap.get('status') == 'copying' and snap.get('action') in ('copy', 'spoof', 'delete'):
         last = snap.get('last_progress_ts') or snap.get('start_time') or 0
         idle = (time.time() - last) if last else 0
         if idle >= STALL_SECONDS:
@@ -217,6 +222,9 @@ def release_wakelock():
 SHIZUKU_LOCK = threading.Lock()
 SHIZUKU_CACHE = {'ts': 0.0, 'data': None}
 SHIZUKU_TTL = 60
+# A recursive rm through rish can take a while on a big tree, but it must never
+# hang the delete worker forever.
+SHIZUKU_DELETE_TIMEOUT = 300
 SHIZUKU_TIMEOUT = 6
 
 
@@ -264,6 +272,49 @@ def shizuku_status():
         return dict(data)
     return {'installed': bool(shutil.which('rish')), 'running': False,
             'all_files': False, 'checked': False, 'detail': 'جاري الفحص'}
+
+
+def shizuku_delete(path):
+    """Remove `path` through Shizuku (shell uid 2000).
+
+    Last resort only: the shell user can delete Android/data, Android/obb and
+    read-only entries that the app itself is denied. Returns True only when the
+    path is really gone afterwards, never on a hopeful exit code.
+    """
+    if not path:
+        return False
+    try:
+        if not shizuku_status().get('running'):
+            return False
+    except Exception:
+        return False
+    try:
+        quoted = shlex.quote(str(path))
+        command = ('rm -rf -- {} ; if [ -e {} ]; then echo SDMP3_STILL_THERE; '
+                   'else echo SDMP3_GONE; fi'.format(quoted, quoted))
+    except Exception:
+        return False
+
+    # rish can block for minutes on a big tree. Run it aside and keep the
+    # progress heartbeat alive, otherwise the UI announces a dead card during a
+    # delete that is actually working.
+    box = {}
+
+    def _run():
+        box['out'] = rish(command, timeout=SHIZUKU_DELETE_TIMEOUT)
+
+    worker = threading.Thread(target=_run, daemon=True)
+    worker.start()
+    started = time.time()
+    while worker.is_alive():
+        touch_progress()
+        if time.time() - started > SHIZUKU_DELETE_TIMEOUT + 10:
+            log_event('delete via Shizuku timed out: {!r}'.format(path))
+            return False
+        worker.join(1.0)
+
+    text = box.get('out') or ''
+    return 'SDMP3_GONE' in text and 'SDMP3_STILL_THERE' not in text
 
 
 def shizuku_refresher():
@@ -496,46 +547,103 @@ def log_event(message):
         pass
 
 
-def _is_storage_root(path):
-    """True for a mount root like /sdcard, /storage/emulated/0 or /storage/ABCD-1234."""
-    p = str(path).rstrip('/')
-    if p in ('/sdcard', '/mnt/sdcard', '/storage/emulated/0', '/storage/self/primary'):
-        return True
-    parts = [x for x in p.split('/') if x]
-    return len(parts) == 2 and parts[0] == 'storage'
+def _allowed_storage_roots():
+    """Every directory a destructive operation may touch.
 
-
-def is_inside_storage(path):
-    """True when `path` lives on a user volume (/sdcard or /storage/<vol>/...).
-
-    Guards destructive routes: the whole point of this app is the shared
-    storage, so a delete outside it is always a mistake, not a feature.
+    Android denies `os.listdir('/storage')` to Termux, so this list *cannot* be
+    built by listing that directory. The old version did exactly that, which
+    silently dropped every real volume root (a card, a USB stick) and made the
+    delete route refuse `/storage/XXXX-XXXX/...` with "internal storage only".
+    Volumes are discovered the same way the storage cards are: through
+    get_available_storages() (df + /proc/mounts).
     """
+    global _STORAGE_ROOTS_CACHE
+    now = time.time()
+    if _STORAGE_ROOTS_CACHE['ts'] and now - _STORAGE_ROOTS_CACHE['ts'] < 5.0:
+        return _STORAGE_ROOTS_CACHE['roots']
+
+    candidates = ['/sdcard', '/storage/emulated/0', '/mnt/sdcard']
     try:
-        real = os.path.realpath(path)
-    except OSError:
-        return False
+        candidates += [st.get('path', '') for st in get_available_storages()]
+    except Exception:
+        pass
     roots = set()
-    for candidate in ('/sdcard', '/storage/emulated/0'):
+    for candidate in candidates:
+        if not candidate:
+            continue
         try:
             if os.path.exists(candidate):
                 roots.add(os.path.realpath(candidate))
         except OSError:
             pass
+    # Where Android really mounts removable volumes. Listing this needs no
+    # special permission and covers a card that df could not parse.
     try:
-        for name in os.listdir('/storage'):
-            full = os.path.join('/storage', name)
-            if os.path.isdir(full):
-                try:
+        for name in os.listdir('/mnt/media_rw'):
+            full = os.path.join('/mnt/media_rw', name)
+            try:
+                if os.path.isdir(full):
                     roots.add(os.path.realpath(full))
-                except OSError:
-                    pass
+            except OSError:
+                pass
     except OSError:
         pass
-    for root in roots:
-        if real == root or real.startswith(root + os.sep):
-            return True
-    return False
+    _STORAGE_ROOTS_CACHE = {'ts': now, 'roots': roots}
+    return roots
+
+
+_STORAGE_ROOTS_CACHE = {'ts': 0.0, 'roots': set()}
+
+
+def _is_storage_root(path):
+    """True for a volume root like /sdcard, /storage/emulated/0 or /storage/ABCD-1234."""
+    p = str(path).rstrip('/') or '/'
+    if p in ('/', '/storage', '/mnt', '/sdcard', '/mnt/sdcard',
+             '/storage/emulated', '/storage/emulated/0'):
+        return True
+    try:
+        real = os.path.realpath(p)
+    except OSError:
+        real = p
+    return real in _allowed_storage_roots()
+
+
+def protected_target_reason(path):
+    """Why `path` must never be deleted, or None if it is fair game.
+
+    The delete is deliberately strong (the user wants to remove anything, fast),
+    so the only things kept out of reach are the volume roots themselves and the
+    paths whose loss would break the device or the app: `/`, `/data`, Termux's
+    prefix and this app's own checkout. Everything inside a volume - including
+    Android/data and Android/obb - is allowed; Shizuku removes what Android
+    refuses to the app.
+    """
+    try:
+        real = os.path.realpath(path).rstrip('/') or '/'
+    except OSError:
+        real = str(path).rstrip('/') or '/'
+
+    if _is_storage_root(real):
+        return 'لا يمكن حذف جذر التخزين نفسه'
+
+    protected = {'/', '/data', '/data/data', '/data/user', '/system', '/vendor',
+                 '/proc', '/sys', '/storage'}
+    for extra in (os.path.expanduser('~'),
+                  os.environ.get('PREFIX') or '/data/data/com.termux/files/usr',
+                  os.path.dirname(os.path.abspath(__file__))):
+        try:
+            if extra:
+                protected.add(os.path.realpath(extra).rstrip('/') or '/')
+        except OSError:
+            pass
+
+    for item in protected:
+        # Refuse the protected path itself *and* any ancestor of it: deleting
+        # /data/data would take Termux and every other app with it.
+        if real == item or item.startswith(real + '/'):
+            return 'هذا مسار نظام أو مسار التطبيق نفسه — محمي من الحذف'
+    return None
+
 
 
 def android_private_reason(path):
@@ -715,13 +823,15 @@ def force_delete_tree(target, cancel_check=None, progress_cb=None):
                 ok, reason = try_remove_entry(fp)
                 if ok: deleted += 1
                 else: note(fp, reason)
-                if progress_cb and (deleted + len(failures)) % 20 == 0:
-                    progress_cb(deleted, len(failures))
+                # One callback per entry: each unlink is also the heartbeat that
+                # keeps stall detection honest on a slow or dying card.
+                if progress_cb: progress_cb(deleted, len(failures))
             for name in dirs:
                 dp = os.path.join(root, name)
                 ok, reason = try_remove_entry(dp)
                 if ok: deleted += 1
                 else: note(dp, reason)
+                if progress_cb: progress_cb(deleted, len(failures))
     except Exception as exc:
         note(target, describe_os_error(exc))
 
@@ -1351,21 +1461,33 @@ HTML_TEMPLATE = """
             --kind-internal: #d0b49f;
             --kind-internal-ink: #d0b49f;
             --kind-internal-soft: rgba(208, 180, 159, 0.16);
-            --kind-sdcard: #ab6b51;
+            /* Brighter clay: the palette clay (#ab6b51) disappeared on a dark
+               tile and sat too close to the sand of internal storage. */
+            --kind-sdcard: #d98b63;
             --kind-sdcard-ink: #dda88c;
-            --kind-sdcard-soft: rgba(171, 107, 81, 0.20);
+            --kind-sdcard-soft: rgba(217, 139, 99, 0.20);
             --kind-usb: #8fa9c4;
             --kind-usb-ink: #a8bfd6;
             --kind-usb-soft: rgba(143, 169, 196, 0.16);
-            --kind-card: #be9078;
-            --kind-card-ink: #be9078;
-            --kind-card-soft: rgba(190, 144, 120, 0.16);
+            /* Unknown volume: quiet olive, the one hue the palette was missing. */
+            --kind-card: #a3b18a;
+            --kind-card-ink: #b7c39f;
+            --kind-card-soft: rgba(163, 177, 138, 0.18);
+            /* Icon tiles need more colour than a pill background to read. */
+            --kind-internal-tile: rgba(208, 180, 159, 0.22);
+            --kind-sdcard-tile: rgba(217, 139, 99, 0.24);
+            --kind-usb-tile: rgba(143, 169, 196, 0.22);
+            --kind-card-tile: rgba(163, 177, 138, 0.24);
             /* Border tints derived from each kind's *ink* so a pill's outline
                matches its text instead of borrowing another theme's hue. */
             --kind-internal-line: rgba(208, 180, 159, 0.42);
             --kind-sdcard-line: rgba(221, 168, 140, 0.50);
             --kind-usb-line: rgba(168, 191, 214, 0.42);
-            --kind-card-line: rgba(190, 144, 120, 0.42);
+            --kind-card-line: rgba(183, 195, 159, 0.45);
+            /* Sand fill for the secondary "apply spoofing" action: warm, part of
+               the palette, and clearly not the teal primary button. */
+            --sand-fill: #d0b49f;
+            --sand-fill-hover: #c4a88f;
             --radius: 14px;
         }
         * { box-sizing: border-box; font-family: system-ui, -apple-system, 'Segoe UI', Roboto, 'Noto Sans Arabic', 'IBM Plex Sans Arabic', sans-serif; -webkit-tap-highlight-color: transparent; }
@@ -1412,8 +1534,8 @@ HTML_TEMPLATE = """
         .btn-success:hover { filter: brightness(1.08); }
         .btn-danger { background: var(--danger); color: var(--accent-ink); }
         .btn-danger:hover { filter: brightness(1.08); }
-        .btn-warning { background: var(--warning); color: var(--accent-ink); }
-        .btn-warning:hover { filter: brightness(1.08); }
+        .btn-sand { background: var(--sand-fill); color: var(--accent-ink); }
+        .btn-sand:hover { background: var(--sand-fill-hover); }
         .btn-outline { background: var(--card-2); border: 1px solid var(--border); color: var(--text); }
         .btn-outline:hover { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent-soft); }
         .btn-sm { padding: 8px 12px; min-height: 38px; font-size: 12.5px; }
@@ -1433,6 +1555,10 @@ HTML_TEMPLATE = """
         .children.open { display: block; }
 
         .row-actions { display:flex; gap:6px; margin-inline-start:auto; flex-shrink:0; padding-inline-start:10px; }
+        /* Files in the picker keep their size on the far side, so the delete and
+           rename buttons line up with the folder rows above them. */
+        .picker-file-row .row-actions { margin-inline-start: 0; padding-inline-start: 6px; }
+        .picker-file-row .file-size { margin-inline-start: auto; }
         .icon-btn { width:30px; height:30px; border-radius:8px; border:1px solid var(--border); background:var(--field); color:var(--text-muted); display:flex; align-items:center; justify-content:center; cursor:pointer; flex-shrink:0; }
         .icon-btn svg { width:14px; height:14px; }
         .icon-btn:active { transform: scale(0.92); }
@@ -1449,11 +1575,11 @@ HTML_TEMPLATE = """
         .storage-card:hover { border-color: var(--kind, var(--accent)); }
         .storage-card.active { border-color: var(--kind, var(--accent)); background: var(--kind-soft, var(--accent-soft)); }
         .storage-card .storage-ico { width: 36px; height: 36px; padding: 7px; flex-shrink: 0; box-sizing: border-box;
-            border-radius: 10px; background: var(--kind-soft, var(--accent-soft)); color: var(--kind, var(--text-muted)); }
-        .storage-card.kind-internal { --kind: var(--kind-internal); --kind-ink: var(--kind-internal-ink); --kind-soft: var(--kind-internal-soft); }
-        .storage-card.kind-sdcard { --kind: var(--kind-sdcard); --kind-ink: var(--kind-sdcard-ink); --kind-soft: var(--kind-sdcard-soft); }
-        .storage-card.kind-usb { --kind: var(--kind-usb); --kind-ink: var(--kind-usb-ink); --kind-soft: var(--kind-usb-soft); }
-        .storage-card.kind-card { --kind: var(--kind-card); --kind-ink: var(--kind-card-ink); --kind-soft: var(--kind-card-soft); }
+            border-radius: 10px; background: var(--kind-tile, var(--accent-soft)); color: var(--kind, var(--text-muted)); }
+        .storage-card.kind-internal { --kind: var(--kind-internal); --kind-ink: var(--kind-internal-ink); --kind-soft: var(--kind-internal-soft); --kind-tile: var(--kind-internal-tile); }
+        .storage-card.kind-sdcard { --kind: var(--kind-sdcard); --kind-ink: var(--kind-sdcard-ink); --kind-soft: var(--kind-sdcard-soft); --kind-tile: var(--kind-sdcard-tile); }
+        .storage-card.kind-usb { --kind: var(--kind-usb); --kind-ink: var(--kind-usb-ink); --kind-soft: var(--kind-usb-soft); --kind-tile: var(--kind-usb-tile); }
+        .storage-card.kind-card { --kind: var(--kind-card); --kind-ink: var(--kind-card-ink); --kind-soft: var(--kind-card-soft); --kind-tile: var(--kind-card-tile); }
         .storage-meta { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex-grow: 1; }
         .storage-name { font-size: 14px; font-weight: 600; }
         .storage-path { font-size: 11px; color: var(--text-muted); direction: ltr; text-align: right;
@@ -1480,13 +1606,32 @@ HTML_TEMPLATE = """
         .modal-content { background: var(--card); padding: 20px; border-radius: 18px; width: 100%; max-width: 600px; border: 1px solid var(--border); max-height: max(70vh, 480px); display: flex; flex-direction: column; box-shadow: 0 24px 48px -12px rgba(0,0,0,0.6); margin: auto; }
         .modal-content .modal-body { overflow-y: auto; flex: 1 1 auto; min-height: 0; -webkit-overflow-scrolling: touch; }
         .modal-content .modal-footer { display: flex; gap: 12px; margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--border); flex-shrink: 0; }
+        /* The folder picker keeps one height whatever the folder holds: a 3-item
+           folder and a 3 000-item folder used to resize the dialog, which moved
+           the Confirm button under the finger. */
+        .modal-content.modal-picker { height: min(84vh, 720px); max-height: 84vh; }
+        .modal-content.modal-picker #destTree { max-height: none; }
         @media (max-width: 480px) {
             .modal { padding: 8px; align-items: stretch; }
             .modal-content { padding: 16px; max-height: 92vh; border-radius: 14px; }
+            .modal-content.modal-picker { height: 92vh; max-height: 92vh; }
         }
 
         .progress-bar { width: 100%; height: 10px; background: var(--field); border-radius: 999px; overflow: hidden; margin: 15px 0; border: 1px solid var(--border);}
         .progress-fill { height: 100%; background: var(--accent); width: 0%; border-radius: 999px; transition: width 0.3s ease; }
+        /* A delete has no known total, so its bar sweeps instead of pretending
+           to know a percentage. The solid fill keeps it readable when the user
+           asked the system for reduced motion. */
+        .progress-fill.indeterminate {
+            width: 100% !important; background-color: var(--accent);
+            background-image: linear-gradient(90deg, rgba(236,226,216,0) 0%, rgba(236,226,216,0.55) 50%, rgba(236,226,216,0) 100%);
+            background-size: 40% 100%; background-repeat: no-repeat;
+            animation: sdmp3-sweep 1.3s linear infinite;
+        }
+        @keyframes sdmp3-sweep {
+            0%   { background-position: -40% 0; }
+            100% { background-position: 140% 0; }
+        }
         .ltr-input { direction: ltr; text-align: left; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
 
         .disk-space-container { margin-bottom: 10px; font-size: 13px; color: var(--text-muted); display: none;}
@@ -1669,7 +1814,7 @@ HTML_TEMPLATE = """
         <label>تاريخ ووقت البدء العشوائي:</label>
         <input type="datetime-local" id="spoofDateInput">
         <small style="color:var(--text-muted); line-height: 1.5;">عملية مستقلة لتعديل تواريخ الملفات والمجلدات لإخفاء آثار النقل. <br>في حال ترك الوجهة فارغة سيتم تطبيق التمويه على كامل الذاكرة (/sdcard).</small>
-        <button class="btn btn-warning" style="margin-top:10px; width:100%;" onclick="startSpoofOnly()">
+        <button class="btn btn-sand" style="margin-top:10px; width:100%;" onclick="startSpoofOnly()">
             تطبيق التمويه
         </button>
     </div>
@@ -1693,7 +1838,7 @@ HTML_TEMPLATE = """
 
 <!-- Modals -->
 <div class="modal" id="destBrowserModal">
-    <div class="modal-content">
+    <div class="modal-content modal-picker">
         <h3 id="pathBrowserTitle" style="margin-top:0; font-size: 16px; border-bottom: 1px solid var(--border); padding-bottom: 15px;">اختر مجلد</h3>
         <div style="display:flex; gap: 8px; margin-bottom: 12px; margin-top: 10px;">
             <button class="btn btn-outline btn-sm" style="padding: 10px 14px;" onclick="goUpDest()">
@@ -1705,8 +1850,8 @@ HTML_TEMPLATE = """
             <span id="pickerStorageBadge" class="pill" style="display:none;"></span>
             <span id="pickerCounts" style="font-size:11.5px; color:var(--text-muted);"></span>
         </div>
-        <div class="picker-hint">المجلدات قابلة للاختيار • الملفات للعرض فقط</div>
-        <div id="destTree" class="tree" style="flex-grow: 1; max-height: 50vh;"></div>
+        <div class="picker-hint">المجلدات قابلة للاختيار • الملفات يمكن حذفها أو إعادة تسميتها</div>
+        <div id="destTree" class="tree" style="flex: 1 1 auto; min-height: 0;"></div>
         <div style="display:flex; justify-content:space-between; margin-top:15px; padding-top: 15px; border-top: 1px solid var(--border);">
             <button class="btn btn-outline btn-sm" onclick="createNewFolder()">+ مجلد جديد</button>
             <div style="display:flex; gap: 10px;">
@@ -2295,14 +2440,15 @@ HTML_TEMPLATE = """
             });
     }
 
-    // Files are read-only context here: the picker selects a *folder* (the source
-    // tree is where individual files get ticked). Long folders are paged.
+    // Folders are navigable in the picker; files are context, but they can still
+    // be renamed or deleted from here (same row actions as the source tree).
     function renderPickerFiles(tree) {
         tree.querySelectorAll('.picker-file-row, .picker-more').forEach(el => el.remove());
         pickerFiles.slice(0, pickerShown).forEach(item => {
             let div = document.createElement('div');
             div.className = 'item-row picker-file-row';
-            div.innerHTML = `<div class="item-name">${iconFile} <span></span></div><span class="file-size"></span>`;
+            div.dataset.path = item.path;
+            div.innerHTML = `<div class="item-name">${iconFile} <span></span></div><span class="file-size"></span>${rowActionsHtml(item.path, item.name, false)}`;
             div.querySelector('.item-name span').textContent = item.name;
             div.querySelector('.file-size').textContent = formatBytes(item.size);
             tree.appendChild(div);
@@ -2448,14 +2594,37 @@ HTML_TEMPLATE = """
     function handleDeleteClick(path, isDir, btnEl) {
         let name = path.split('/').filter(Boolean).pop() || path;
         showConfirmModal(`سيتم حذف "${name}" نهائياً${isDir ? ' مع كل محتوياته' : ''}. لا يمكن التراجع عن هذا الإجراء. هل تريد المتابعة؟`, () => {
+            window._deleteTarget = {path: path, btn: btnEl, isDir: isDir};
+            // Ignore whatever the *previous* run left in the state: the request
+            // below resets it, and only then may the poll act on a result.
+            window._deleteHandled = true;
             fetch('/api/delete', {
                 method: 'POST', headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({path: path})
+                body: JSON.stringify({path: path, force: true})
             }).then(r => r.json()).then(res => {
-                if (!res.success) { showDeleteError(res, path); return; }
-                purgePathFromSelections(path);
-                refreshNearestContainer(btnEl);
-            }).catch(() => alert('خطأ في الاتصال بالخادم'));
+                if (!res.success) {
+                    // Refused up front (busy, protected, missing): no worker to
+                    // follow, so report immediately.
+                    window._deleteHandled = true;
+                    showDeleteError(res, path);
+                    return;
+                }
+                window._deleteHandled = false;
+                showProgressModal();
+                document.getElementById('modalTitle').innerText = isDir ? 'جاري حذف المجلد...' : 'جاري حذف الملف...';
+                document.getElementById('progressText').innerText = 'حذف';
+                document.getElementById('countText').innerText = 'تم حذف 0';
+                document.getElementById('speedText').innerText = '';
+                document.getElementById('failedText').innerText = '';
+                document.getElementById('timeTakenDiv').style.display = 'none';
+                document.getElementById('errorsBox').style.display = 'none';
+                document.getElementById('inlineNotify').style.display = 'none';
+                document.getElementById('currentFile').innerText = name;
+                document.getElementById('currentFile').style.color = 'var(--text-muted)';
+            }).catch(() => {
+                window._deleteHandled = true;
+                alert('خطأ في الاتصال بالخادم');
+            });
         });
     }
 
@@ -3156,16 +3325,38 @@ HTML_TEMPLATE = """
         .then(data => {
             if(data.status !== 'idle') {
                 if(!progressModalVisible) showProgressModal();
-                document.getElementById('progressText').innerText = data.progress + '%';
-                document.getElementById('progressFill').style.width = data.progress + '%';
-                if(data.total > 0) document.getElementById('countText').innerText = data.copied + ' / ' + data.total;
+                // A delete has no known total (counting a tree first would double
+                // the card I/O), so its bar sweeps and the count is "deleted so
+                // far" instead of a fake percentage.
+                let fillEl = document.getElementById('progressFill');
+                if (data.action === 'delete') {
+                    if (data.status === 'copying') {
+                        fillEl.classList.add('indeterminate');
+                        document.getElementById('progressText').innerText = 'حذف';
+                        document.getElementById('countText').innerText = 'تم حذف ' + (data.copied || 0);
+                    } else {
+                        // Finished, stopped or failed: freeze the sweep so it
+                        // cannot keep implying work that is no longer happening.
+                        fillEl.classList.remove('indeterminate');
+                        fillEl.style.width = (data.status === 'done') ? '100%' : '0%';
+                        document.getElementById('progressText').innerText =
+                            (data.status === 'done') ? '100%' : '';
+                    }
+                } else {
+                    fillEl.classList.remove('indeterminate');
+                    document.getElementById('progressText').innerText = data.progress + '%';
+                    fillEl.style.width = data.progress + '%';
+                    if(data.total > 0) document.getElementById('countText').innerText = data.copied + ' / ' + data.total;
+                }
                 // A stalled card must say so instead of pretending to work.
                 // TTS never touches a card: it is network-bound, so it can be
                 // slow without any volume being in trouble.
                 if (data.stalled && data.action !== 'tts') {
-                    document.getElementById('currentFile').innerText =
-                        'الكارت لا يستجيب — لم يتم نقل أي بيانات منذ ' + data.stall_seconds + ' ثانية. ' +
-                        'أخرج الكارت وأدخله جيداً. إذا لم تعُد العملية، أعد تشغيل التطبيق: sdmp3 restart';
+                    document.getElementById('currentFile').innerText = (data.action === 'delete')
+                        ? 'الكارت لا يستجيب — لم يُحذف أي عنصر منذ ' + data.stall_seconds + ' ثانية. ' +
+                          'أخرج الكارت وأدخله جيداً. إذا لم تعُد العملية، أعد تشغيل التطبيق: sdmp3 restart'
+                        : 'الكارت لا يستجيب — لم يتم نقل أي بيانات منذ ' + data.stall_seconds + ' ثانية. ' +
+                          'أخرج الكارت وأدخله جيداً. إذا لم تعُد العملية، أعد تشغيل التطبيق: sdmp3 restart';
                     document.getElementById('currentFile').style.color = 'var(--danger-ink)';
                 } else {
                     document.getElementById('currentFile').innerText = data.file;
@@ -3201,6 +3392,18 @@ HTML_TEMPLATE = """
                     // Trigger MP3 download once TTS finishes successfully.
                     if (data.status === 'done' && data.action === 'tts') {
                         downloadTtsFile();
+                    }
+
+                    // Delete finished (or was stopped half-way): the row may no
+                    // longer exist, so refresh the list it came from and drop it
+                    // from the selection.
+                    if (data.action === 'delete' && (data.status === 'done' || data.status === 'cancelled')
+                        && !window._deleteHandled) {
+                        window._deleteHandled = true;
+                        let target = window._deleteTarget || {};
+                        purgePathFromSelections(target.path || '');
+                        refreshNearestContainer(target.btn || document.getElementById('treeContainer'));
+                        checkDiskSpace(document.getElementById('custom_dest_path').value);
                     }
 
                     document.getElementById('cancelProgressBtn').style.display = 'none';
@@ -3239,6 +3442,17 @@ HTML_TEMPLATE = """
                         box.innerHTML = lines.join('<br>');
                     } else {
                         box.style.display = 'none';
+                    }
+
+                    // A failed delete opens the detailed list: every blocked item
+                    // with its reason, instead of one vague line.
+                    if (data.status === 'error' && data.action === 'delete' && !window._deleteHandled) {
+                        window._deleteHandled = true;
+                        showDeleteError({
+                            error: data.log,
+                            failures: data.delete_failures || [],
+                            card_damage: data.card_damage
+                        }, (window._deleteTarget || {}).path || '');
                     }
                 }
             }
@@ -3358,13 +3572,96 @@ def _rank_search_results(results, q):
     return results
 
 # ------------- Folder Cache (instant search index) -------------
-# Manually built per source folder via the "Cache Folder" button. Persists in memory
-# for the lifetime of the server process (no automatic expiry), but is invalidated
-# whenever the app itself changes something inside a cached path (rename/delete/mkdir/copy)
-# so results never point at items that no longer exist.
+# Manually built per source folder via the "Cache Folder" button. Kept in memory
+# *and* mirrored to disk (see SEARCH_CACHE_FILE below), so refreshing the page or
+# restarting sdmp3 does not throw away a long indexing pass. Entries are still
+# invalidated whenever the app itself changes something inside a cached path
+# (rename/delete/mkdir/copy) so results never point at items that no longer exist.
 FOLDER_CACHE = {}          # root_path -> {'items': [...], 'count': int, 'built_at': float}
 folder_cache_lock = threading.RLock()
 folder_cache_building = set()  # root paths currently being indexed
+
+# The index lives outside the checkout so `git pull` stays clean, next to the
+# CLI's own state (instance.json / sdmp3.log).
+SEARCH_CACHE_FILE = os.path.join(
+    os.path.expanduser('~'), '.local', 'state', 'sdmp3', 'search_cache.json')
+SEARCH_CACHE_MAX_ROOTS = 32
+_cache_save_timer = {'handle': None}
+
+
+def _save_folder_cache():
+    """Persist the search index. Never raises, never matters for correctness."""
+    try:
+        with folder_cache_lock:
+            payload = dict(FOLDER_CACHE)
+        if not payload:
+            try:
+                if os.path.exists(SEARCH_CACHE_FILE):
+                    os.remove(SEARCH_CACHE_FILE)
+            except OSError:
+                pass
+            return
+        # Keep the newest roots only: an old card's index is worthless and a
+        # 100k-entry JSON written on every change would be a real cost.
+        if len(payload) > SEARCH_CACHE_MAX_ROOTS:
+            newest = sorted(payload.items(),
+                            key=lambda kv: kv[1].get('built_at', 0), reverse=True)
+            payload = dict(newest[:SEARCH_CACHE_MAX_ROOTS])
+        folder = os.path.dirname(SEARCH_CACHE_FILE)
+        os.makedirs(folder, exist_ok=True)
+        tmp = SEARCH_CACHE_FILE + '.tmp'
+        with open(tmp, 'w', encoding='utf-8') as fh:
+            json.dump(payload, fh, ensure_ascii=False, separators=(',', ':'))
+        os.replace(tmp, SEARCH_CACHE_FILE)
+    except Exception as exc:
+        log_event('search cache: could not be saved ({})'.format(exc))
+
+
+def _schedule_cache_save(delay=2.0):
+    """Debounced save: mkdir/rename/delete come in bursts."""
+    try:
+        handle = _cache_save_timer.get('handle')
+        if handle is not None:
+            handle.cancel()
+        timer = threading.Timer(delay, _save_folder_cache)
+        timer.daemon = True
+        timer.start()
+        _cache_save_timer['handle'] = timer
+    except Exception:
+        _save_folder_cache()
+
+
+def _load_folder_cache():
+    """Restore the index saved by a previous run."""
+    try:
+        with open(SEARCH_CACHE_FILE, encoding='utf-8') as fh:
+            payload = json.load(fh)
+    except (OSError, ValueError):
+        return
+    if not isinstance(payload, dict):
+        return
+    restored = 0
+    with folder_cache_lock:
+        for root, info in payload.items():
+            if not root or not isinstance(info, dict):
+                continue
+            items = info.get('items')
+            if not isinstance(items, list) or not items:
+                continue
+            try:
+                # A cached root that no longer exists (card pulled out, folder
+                # deleted outside the app) is dropped instead of returning
+                # results that cannot be opened.
+                if not os.path.isdir(root):
+                    continue
+            except OSError:
+                continue
+            FOLDER_CACHE[root] = {'items': items, 'count': len(items),
+                                  'built_at': float(info.get('built_at') or 0)}
+            restored += 1
+    if restored:
+        log_event('search cache restored from disk: {} folder(s)'.format(restored))
+
 
 def build_cache_index(root, cancel_check=None):
     items = []
@@ -3397,6 +3694,7 @@ def _cache_build_thread(root):
         items = build_cache_index(root)
         with folder_cache_lock:
             FOLDER_CACHE[root] = {'items': items, 'count': len(items), 'built_at': time.time()}
+        _save_folder_cache()
     except Exception:
         pass
     finally:
@@ -3412,6 +3710,8 @@ def invalidate_cache_for_path(path):
         stale = [r for r in FOLDER_CACHE if path == r or path.startswith(r + '/') or r.startswith(path + '/')]
         for r in stale:
             del FOLDER_CACHE[r]
+    if stale:
+        _schedule_cache_save()
 
 @app.route('/api/cache/build', methods=['POST'])
 def cache_build():
@@ -3442,6 +3742,7 @@ def cache_clear():
     root = data.get('path', '')
     with folder_cache_lock:
         FOLDER_CACHE.pop(root, None)
+    _save_folder_cache()
     return jsonify({'success': True})
 
 @app.route('/api/search')
@@ -3608,71 +3909,137 @@ def benchmark():
         except OSError:
             pass
 
+def delete_thread_task(target):
+    """Delete one path (file or whole tree) with live progress.
+
+    Runs in its own thread so the UI can show a bar and a running count instead
+    of a frozen page: a deep tree on a card takes real time, and a card that
+    stops answering must be visible as a stall, not as a dead request.
+    """
+    acquire_wakelock()
+    try:
+        # Drop the cached search index first: if the delete stops half-way, the
+        # instant search must not keep pointing at entries that are already gone.
+        invalidate_cache_for_path(target)
+        set_state(file='جاري الحذف…')
+        touch_progress()
+
+        state = {'last_ui': 0.0}
+
+        def on_progress(done, failed):
+            # One heartbeat per removed entry, but only a few UI writes per
+            # second (the browser polls once a second anyway).
+            touch_progress()
+            now = time.time()
+            if now - state['last_ui'] < 0.25:
+                return
+            state['last_ui'] = now
+            set_state(copied=done, failed=failed,
+                      file='جاري الحذف… {} عنصر'.format(done + failed))
+
+        deleted, failures = force_delete_tree(target, cancel_check=is_cancelled,
+                                              progress_cb=on_progress)
+        if is_cancelled():
+            finish_transfer('cancelled', 'تم إيقاف الحذف — ما حُذف لا يعود.')
+            return
+
+        # Last resort: Android denies some entries to the app itself
+        # (Android/data, Android/obb, read-only files). The shell user does not
+        # have that limit, so one rish rm -rf finishes the job.
+        if os.path.lexists(target):
+            if shizuku_delete(target):
+                deleted += 1
+                failures = []
+                log_event('delete via Shizuku ok: {!r}'.format(target))
+            elif failures:
+                log_event('delete blocked: {!r} ({} entries) -> {}'.format(
+                    target, len(failures),
+                    '; '.join('{} => {}'.format(p, r) for p, r in failures[:10])))
+
+        if not os.path.lexists(target):
+            set_state(copied=deleted, failed=0, delete_failures=[], card_damage=False)
+            finish_transfer('done', 'تم حذف {} نهائياً.'.format(
+                os.path.basename(str(target).rstrip('/')) or target),
+                extra={'progress': 100, 'deleted': deleted})
+            return
+
+        # Still there: say exactly what is blocked and why, not a vague failure.
+        detail = ''
+        if failures:
+            shown = failures[:4]
+            detail = ' — ' + '، '.join(
+                '{}: {}'.format(os.path.basename(str(p).rstrip('/')) or p, reason)
+                for p, reason in shown)
+            if len(failures) > len(shown):
+                detail += ' (+{})'.format(len(failures) - len(shown))
+        hint = ''
+        if any('صلاحية' in str(reason) for _, reason in failures):
+            hint = ' — شغّل: sdmp3 unlock أو فعّل Shizuku للحذف الإجباري'
+        card_damage = looks_like_card_damage(failures, deleted)
+        message = CARD_DAMAGE_HINT if card_damage else (
+            'تعذر حذف {} عنصر من أصل {}{}{}'.format(
+                len(failures), deleted + len(failures), detail, hint))
+        set_state(status='error', log=message, failed=len(failures), copied=deleted,
+                  card_damage=card_damage,
+                  errors=[p for p, _ in failures],
+                  delete_failures=[{'path': p, 'reason': r} for p, r in failures[:25]])
+    except TransferCancelled:
+        finish_transfer('cancelled', 'تم إيقاف الحذف.')
+    except Exception as e:
+        log_event('delete EXCEPTION: {!r} -> {}: {}'.format(target, type(e).__name__, e))
+        set_state(status='error', log=str(e))
+    finally:
+        release_wakelock()
+
+
 @app.route('/api/delete', methods=['POST'])
 def delete_item():
-    data = request.json or {}
-    path = data.get('path', '')
-    log_event('delete request: {!r}'.format(path))
-    if path and _is_storage_root(path):
-        log_event('delete refused (storage root): {!r}'.format(path))
-        return jsonify({'success': False, 'error': 'لا يمكن حذف جذر التخزين نفسه'})
-    if path and not is_inside_storage(path):
-        log_event('delete refused (outside storage): {!r}'.format(path))
-        return jsonify({'success': False, 'error': 'الحذف مسموح داخل الذاكرة الداخلية والكارت فقط'})
-    private_reason = android_private_reason(path)
-    if private_reason:
-        log_event('delete refused (android private dir): {!r}'.format(path))
-        return jsonify({'success': False, 'error': private_reason, 'protected': True})
-    if not path or not os.path.lexists(path): return jsonify({'success': False, 'error': 'العنصر غير موجود'})
-    if is_busy(): return jsonify({'success': False, 'error': 'النظام مشغول بعملية أخرى، حاول لاحقاً'})
+    """Start a forced, asynchronous delete.
 
-    try:
-        if os.path.isdir(path) and not os.path.islink(path):
-            deleted, failures = force_delete_tree(path)
-            invalidate_cache_for_path(path)
-            if os.path.lexists(path):
-                detail = ''
-                if failures:
-                    shown = failures[:4]
-                    detail = ' — ' + '، '.join(
-                        '{}: {}'.format(os.path.basename(str(p).rstrip('/')) or p, reason)
-                        for p, reason in shown
-                    )
-                    if len(failures) > len(shown):
-                        detail += ' (+{})'.format(len(failures) - len(shown))
-                hint = ''
-                if any('صلاحية' in str(reason) for _, reason in failures):
-                    hint = ' — جرّب: sdmp3 unlock لمنح الوصول الكامل للكارت'
-                log_event('delete FAILED: {!r} deleted={} blocked={} -> {}'.format(
-                    path, deleted,
-                    '; '.join('{} => {}'.format(p, r) for p, r in failures[:10]),
-                    'still exists'))
-                if looks_like_card_damage(failures, deleted):
-                    return jsonify({
-                        'success': False,
-                        'error': CARD_DAMAGE_HINT,
-                        'card_damage': True,
-                        'failures': [{'path': p, 'reason': r} for p, r in failures[:10]],
-                    })
-                return jsonify({
-                    'success': False,
-                    'error': 'تعذر حذف {} عنصر من أصل {}{}{}'.format(
-                        len(failures), deleted + len(failures), detail, hint),
-                    'failures': [{'path': p, 'reason': r} for p, r in failures[:10]],
-                })
-            log_event('delete ok (tree): {!r} deleted={}'.format(path, deleted))
-            return jsonify({'success': True, 'deleted': deleted})
-        else:
-            ok, reason = try_remove_entry(path)
-            if ok:
-                invalidate_cache_for_path(path)
-                log_event('delete ok (file): {!r}'.format(path))
-                return jsonify({'success': True})
-            log_event('delete FAILED (file): {!r} -> {}'.format(path, reason))
-            return jsonify({'success': False, 'error': 'تعذر الحذف: {}'.format(reason)})
-    except Exception as e:
-        log_event('delete EXCEPTION: {!r} -> {}: {}'.format(path, type(e).__name__, e))
-        return jsonify({'success': False, 'error': '{}: {}'.format(type(e).__name__, e)})
+    `force: true` (what the UI always sends) means "remove whatever it takes":
+    normal unlink, then a chmod retry, then Shizuku. Only volume roots and
+    system/app paths are refused, because those would break the device rather
+    than free space.
+    """
+    data = request.json or {}
+    path = (data.get('path') or '').strip()
+    force = bool(data.get('force'))
+    log_event('delete request: {!r} (force={})'.format(path, force))
+
+    if not path:
+        return jsonify({'success': False, 'error': 'لم يتم تحديد عنصر'})
+    if not os.path.lexists(path):
+        return jsonify({'success': False, 'error': 'العنصر غير موجود'})
+
+    reason = protected_target_reason(path)
+    if reason:
+        log_event('delete refused (protected): {!r} -> {}'.format(path, reason))
+        return jsonify({'success': False, 'error': reason, 'protected': True})
+
+    private_reason = android_private_reason(path)
+    if private_reason and not shizuku_status().get('running'):
+        log_event('delete refused (android private dir, no Shizuku): {!r}'.format(path))
+        return jsonify({
+            'success': False, 'protected': True,
+            'error': private_reason + ' — فعّل Shizuku (sdmp3 unlock) ليُحذف بالقوة'})
+
+    global ACTIVE_THREAD
+    with transfer_lock:
+        if transfer_state['status'] == 'copying' and is_thread_alive(ACTIVE_THREAD):
+            return jsonify({'success': False,
+                            'error': 'هناك عملية قيد التشغيل بالفعل، انتظر انتهاءها'})
+        if transfer_state['status'] == 'copying':
+            # The previous worker died without clearing the flag.
+            log_event('recovering a stale delete state (worker thread is gone)')
+        # Cleared here, before the thread starts: otherwise a poll that lands in
+        # between still reads the previous run's done/error state.
+        reset_state(status='copying', action='delete', start_time=time.time(),
+                    file='جاري الحذف…')
+        ACTIVE_THREAD = threading.Thread(target=delete_thread_task, args=(path,),
+                                         daemon=True)
+        ACTIVE_THREAD.start()
+    return jsonify({'success': True, 'async': True, 'force': force})
+
 
 @app.route('/api/joc_index', methods=['POST'])
 def generate_joc_index():
@@ -3780,7 +4147,8 @@ def tts_voices():
 
 def tts_thread_task(index_text, voice, rate, out_name, chunk_size, obfuscate=False):
     acquire_wakelock()
-    reset_state(status='copying', action='tts', start_time=time.time())
+    # State (status/action/start_time) is set by the route before the thread
+    # starts, so a poll can never read the previous run's result.
     custom_path = os.path.join(TTS_CACHE_DIR, "custom_audio.mp3")
     try:
         if not EDGE_TTS_AVAILABLE:
@@ -3877,12 +4245,19 @@ def tts_index():
     else:
         obfuscate = bool(obf)
 
+    global ACTIVE_THREAD
     with transfer_lock:
-        if transfer_state['status'] == 'copying':
+        if transfer_state['status'] == 'copying' and is_thread_alive(ACTIVE_THREAD):
             return jsonify({'error': 'هناك عملية قيد التشغيل بالفعل'})
-        transfer_state['status'] = 'copying'
-
-    threading.Thread(target=tts_thread_task, args=(index_text, voice, rate, out_name, chunk_size, obfuscate), daemon=True).start()
+        if transfer_state['status'] == 'copying':
+            log_event('recovering a stale tts state (worker thread is gone)')
+        reset_state(status='copying', action='tts', start_time=time.time(),
+                    file='جاري تحضير الصوت…')
+        ACTIVE_THREAD = threading.Thread(
+            target=tts_thread_task,
+            args=(index_text, voice, rate, out_name, chunk_size, obfuscate),
+            daemon=True)
+        ACTIVE_THREAD.start()
     return jsonify({'success': True})
 
 @app.route('/api/tts/custom', methods=['POST'])
@@ -4049,6 +4424,12 @@ def main(argv=None):
                 pass
 
     print(f"sdmp3 {get_app_version()} - serving on {args.host}:{args.port}", flush=True)
+    # The instant-search index survives a restart; restoring it here means the
+    # first search after `sdmp3 restart` is already fast.
+    try:
+        _load_folder_cache()
+    except Exception:
+        pass
     # Keep the optional Shizuku status warm; harmless no-op when it is not installed.
     try:
         threading.Thread(target=shizuku_refresher, daemon=True).start()

@@ -12,13 +12,15 @@
 - 📁 **Multi-storage support** — internal storage, **SD card** and **USB OTG** are detected separately and each gets its own icon, label and colour (MMC vs USB is read from the block device, since Android shows both as `/storage/XXXX-XXXX`).
 - 📦 **Fast sequential copying** — 4 MB buffers, one write pass per file, and one global flush every 256 MB; playback order comes from writing files in order, not from per-file `fsync`.
 - 🧭 **JOC physical-order sequencing** — files are copied in a natural, physical order (DFS traversal + natural sort) so hardware MP3 players play them reliably in sequence.
-- 🖥️ **Built-in file browser** — expandable tree view to browse, select, and exclude folders/files; the destination picker lists files too (with sizes), so you can confirm what a folder holds before choosing it.
+- 🖥️ **Built-in file browser** — expandable tree view to browse, select, and exclude folders/files; the destination picker lists files too (with sizes), and every row (folder **or** file, in the tree, the search results and the picker) has rename + delete.
 - 🛒 **Selection cart** — view total size of selections and copy everything with one tap.
-- ⏱️ **Instant folder indexing** — cache a folder's contents once for lightning-fast subsequent lookups.
+- ⏱️ **Instant folder indexing** — cache a folder's contents once for lightning-fast subsequent lookups. The index is **saved to disk**, so refreshing the page or restarting `sdmp3` keeps the folder cached and the source/destination paths restored.
+- 🗑️ **Forced delete with a live monitor** — deleting a file or a whole tree runs in the background and shows a sweeping progress bar plus a running "deleted N" count. It retries with loosened permissions and finally hands the job to **Shizuku** (`rish rm -rf`) so even `Android/data` can go; only volume roots and system/app paths are refused.
 
 ### 🔍 Search
 - ⚡ **Deep instant search** — find folders/files by name with a live "instant" speed badge.
 - 🗂️ **Folders-only toggle** — restrict search to folder names only.
+- 💾 **Persistent index** — a built folder index survives an F5 and a server restart (kept in `~/.local/state/sdmp3/search_cache.json`).
 
 ### 📝 JOC Index Generator
 - 🔢 **Flexible numbering** — configurable start number and max characters per line.
@@ -49,7 +51,9 @@
 - 🛡️ **Bottom-up traversal** — children are processed before parents so parents' timestamps aren't reset by their own edits.
 
 ### 🚫 Delete Support
-- 🗑️ **Force-delete** — remove files/folders directly from the browser, with protected-item reporting.
+- 🗑️ **Force-delete** — remove files/folders directly from the browser, with a background worker, a sweeping progress bar and a running "deleted N" count.
+- 🔒 **Shizuku fallback** — when Android denies an entry (`Android/data`, `Android/obb`, read-only files), the delete is handed to the shell user (`rish rm -rf`) instead of giving up.
+- 🧾 **Protected-item reporting** — whatever survives is listed name-by-name with its reason, plus a copy-details button.
 
 ### 🛡️ Reliability
 - ⚡ **Termux wake lock** — keeps the CPU awake during long transfers.
@@ -148,9 +152,9 @@ A failed delete opens a dialog that names every blocked item with its reason
 
 - `صلاحية مرفوضة` → run `sdmp3 unlock` (or grant All files access in settings).
 - Folders under `Android/data` and `Android/obb` belong to other apps and stay
-  protected even with All files access — Android does not allow removing them.
-  The app now refuses them up front with a clear message instead of a partial
-  delete.
+  protected even with All files access — Android does not allow the app to remove
+  them. If **Shizuku is running** the delete falls back to `rish rm -rf` and
+  succeeds; without it the app says so up front instead of deleting half a tree.
 - `الكارت للقراءة فقط` → the card's lock switch is on, or the card is failing.
 
 #### Damaged folder (FAT): "خطأ إدخال/إخراج" + "مجلد غير فارغ"

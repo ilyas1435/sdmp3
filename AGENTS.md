@@ -93,9 +93,17 @@ byte-identical (DFS pre-order + `natural_sort_key`) and stay single-threaded.
   *parent* of the source, e.g. `/sdcard/A` → `/sdcard`), where the planned target
   is the source file itself — `O_TRUNC` empties it and the error path deletes it.
   Both are checked in the route *and* in the worker.
-- **Destructive routes are guarded.** `/api/delete` refuses storage roots and any
-  path outside `/sdcard` + `/storage/*` (`_is_storage_root`, `is_inside_storage`),
-  so one wrong path in a request can't wipe an unrelated tree.
+- **Destructive routes are guarded, not neutered.** `/api/delete` is
+  asynchronous and forced: `force: true` (the UI always sends it) means normal
+  unlink → `chmod 777` retry → Shizuku `rm -rf`. Only `protected_target_reason()`
+  refuses a path: volume roots (`_is_storage_root`) and `/`, `/data`, Termux's
+  prefix, `$HOME` or this app's own checkout (and any ancestor of those). An
+  Android-private folder (`Android/data`, `Android/obb`) is refused **only** when
+  Shizuku is not running, because the app itself can never remove it.
+- **Never build the root list from `os.listdir('/storage')`.** Android denies
+  that to Termux (`Errno 13`), so the old `is_inside_storage()` saw only `/sdcard`
+  and refused every delete on a real SD card. `_allowed_storage_roots()` uses
+  `get_available_storages()` (df) + `/mnt/media_rw`, with a 5s cache.
 - **`ACTIVE_THREAD` + `is_thread_alive()`** recover a stale `status='copying'`
   left by a dead worker (otherwise every later copy fails with «هناك عملية قيد
   التشغيل بالفعل»). The start routes `reset_state(...)` **synchronously** before
@@ -114,10 +122,10 @@ Each storage dict carries `kind` + `icon` so the UI can label it honestly:
 
 | kind | How it is detected | Icon / label | Colour (palette) |
 |---|---|---|---|
-| `internal` | `/sdcard` | `ico-internal` — الذاكرة الداخلية | `--kind-internal` cool grey `#c4cbca` |
-| `sdcard` | `/proc/mounts` device major **179** (MMC) | `ico-sd` — كارت SD (UUID) | `--kind-sdcard` teal `#3cbbb1` |
-| `usb` | device major **8** (SCSI/USB OTG) | `ico-usb` — USB OTG (UUID) | `--kind-usb` violet `#b0a0f0` |
-| `card` | anything unrecognised (dm-*, unknown fs) | `ico-card` — كارت ذاكرة (UUID) | `--kind-card` sage `#7f918e` (ink `#9fb0ad`) |
+| `internal` | `/sdcard` | `ico-internal` — الذاكرة الداخلية | `--kind-internal` sand `#d0b49f` |
+| `sdcard` | `/proc/mounts` device major **179** (MMC) | `ico-sd` — كارت SD (UUID) | `--kind-sdcard` bright clay `#d98b63` (ink `#dda88c`) |
+| `usb` | device major **8** (SCSI/USB OTG) | `ico-usb` — USB OTG (UUID) | `--kind-usb` blue `#8fa9c4` (ink `#a8bfd6`) |
+| `card` | anything unrecognised (dm-*, unknown fs) | `ico-card` — كارت ذاكرة (UUID) | `--kind-card` olive `#a3b18a` (ink `#b7c39f`) |
 
 `storage_kind()` looks the volume up in `/proc/mounts` as `/mnt/media_rw/<UUID>` and passes the device to `classify_volume_device()`. `df -h` alone cannot tell an SD card from a USB stick — both are `/storage/XXXX-XXXX`. The icons are one SVG sprite (`<symbol id="ico-*">` right after `<body>`) referenced with `<use href="#ico-...">`; the select-based pickers were replaced by `.storage-card` buttons (`chooseStorage()` / `syncStorageCards()`), and the same icons appear in the path picker badge.
 
@@ -125,7 +133,9 @@ Theme = **Coffee Blues** (https://www.color-hex.com/color-palette/102595): teal 
 
 Teal is the accent, with a split because the palette teal is light: `--accent #39918c` marks (icons, focus, checkbox, disk bar — 3.6:1, fine for marks but not for 11px text), while filled buttons use the darker palette teal `--accent-fill #2e7a75` with a white label (4.6:1; hover `--accent-fill-hover #276a66` 5.7:1). `--accent-ink #151e28` labels the warning/success/danger fills (7.8 / 7.4 / 4.6:1). Danger: `--danger #f43f5e` fill and `--danger-ink #fc8b9b` text (6.0:1 on a card, 5.2:1 raised). Nothing glows — no gradient, no coloured button shadow, no inset card sheen; secondary buttons stay neutral `btn-outline` so only the primary action wears teal.
 
-Each volume kind owns a hue: `.storage-card.kind-*` sets a local `--kind`/`--kind-ink`/`--kind-soft` used by the card's start border, icon, active fill, active name and "الحالي/الوجهة" badge; `.pill-kind-*` and `.kind-border-*` reuse the same variables for the picker badge, the header `sdWritePill` and the path inputs. Internal = sand `#d0b49f`, SD = clay `#ab6b51` (ink `#dda88c`), USB = `#8fa9c4` (ink `#a8bfd6`), unknown = tan `#be9078`. The three warm hues are deliberately close (ΔE76 10–16, like coffee beans) and are told apart by icon + label; `-ink` exists because clay is too dark for 11px text. Only a writable card gets its kind hue in the header pill; a refusing card stays `pill-warn`.
+Each volume kind owns a hue: `.storage-card.kind-*` sets a local `--kind`/`--kind-ink`/`--kind-soft`/`--kind-tile` used by the card's start border, icon tile, active fill, active name and "الحالي/الوجهة" badge; `.pill-kind-*` and `.kind-border-*` reuse the same variables for the picker badge, the header `sdWritePill` and the path inputs. Internal = sand `#d0b49f`, SD = bright clay `#d98b63` (ink `#dda88c`), USB = blue `#8fa9c4` (ink `#a8bfd6`), unknown = olive `#a3b18a` (ink `#b7c39f`). The four are told apart by icon + label as well as hue — the palette only has so many warm earths — and `-ink` exists because the fill colours are too dark for 11px text. Only a writable card gets its kind hue in the header pill; a refusing card stays `pill-warn`.
+
+The spoofing button is `btn-sand` (`--sand-fill #d0b49f` on `--accent-ink`), not amber: `--warning` is reserved for text and warning pills, so no button introduces a hue the palette does not own.
 
 ## UI invariants
 
@@ -143,7 +153,36 @@ Each volume kind owns a hue: `.storage-card.kind-*` sets a local `--kind`/`--kin
 ## Path picker (تحديد / تصفح)
 `/api/sizes` returns sizes for a whole selection in one request (parents are
 walked once and nested selections are counted once); use it instead of calling
-`/api/size` in a loop. `/api/items` returns `{name, path, is_dir, size}` in one `scandir` pass (folders first, then files, name-sorted). The picker renders folders (navigable, with rename/delete actions) and **files as read-only rows** with a formatted size — a destination must be a folder, and single files are ticked in the source tree instead. Long folders are paged: `PICKER_FILES_STEP` (300) files per page with «عرض المزيد», so a 4 000-file folder opens instantly.
+`/api/size` in a loop. `/api/items` returns `{name, path, is_dir, size}` in one `scandir` pass (folders first, then files, name-sorted). The picker renders folders (navigable, with rename/delete actions) and files with a formatted size **and the same rename/delete icons** — a destination must be a folder, so a file row is never selectable, but it can still be tidied up from here. Long folders are paged: `PICKER_FILES_STEP` (300) files per page with «عرض المزيد», so a 4 000-file folder opens instantly.
+
+The dialog has a **fixed height** (`.modal-content.modal-picker`: `min(84vh, 720px)`, `92vh` on phones) with `#destTree` as the flex child that scrolls. Without it the dialog resized with every folder and moved the Confirm button under the user's finger.
+
+## Delete (forced, asynchronous)
+`POST /api/delete {path, force:true}` starts `delete_thread_task()` and answers
+immediately; the UI follows the normal `/transfer/status` poll with
+`action='delete'`, so the existing progress modal becomes a delete monitor:
+
+- The bar is **indeterminate** (`.progress-fill.indeterminate`, a sweeping
+  highlight) because a delete has no known total — counting the tree first would
+  double the card I/O for a number nobody needs. `countText` shows «تم حذف N».
+- `force_delete_tree(progress_cb=...)` calls the callback **per entry**, which is
+  also the stall heartbeat; the worker throttles the UI writes to ~4/s.
+- When the tree survives, `shizuku_delete()` runs `rish rm -rf` once as the last
+  resort (works for `Android/data` and `obb`). `shlex.quote` on the path, and the
+  result is only accepted when a follow-up `[ -e ]` says it is gone.
+- Failure is reported as data, not prose: `delete_failures=[{path, reason}]` plus
+  `card_damage` land in the state and open the detailed list modal.
+- The cached search index is invalidated **before** deleting, so a half-finished
+  delete cannot leave results pointing at removed entries.
+
+## Search cache
+The instant-search index (`FOLDER_CACHE`) is mirrored to
+`~/.local/state/sdmp3/search_cache.json` (outside the checkout, next to
+`instance.json`/`sdmp3.log`) after every build and on a 2s debounce after
+invalidation. It is restored in `main()` on startup, and roots that no longer
+exist (card pulled out) are dropped. `joc_source_root` / `joc_last_dest` are in
+`localStorage`, so an F5 or a restart returns to the same folder *with* its
+index — that is why `checkCacheStatus()` is called at load.
 
 ## TTS specifics
 
