@@ -24,7 +24,7 @@ app = Flask(__name__)
 
 # Version is kept in the VERSION file next to this script so that the `sdmp3`
 # CLI can read it without importing the app.
-APP_VERSION_FALLBACK = "1.4.4"
+APP_VERSION_FALLBACK = "1.5.0"
 
 # Toggled by --no-wakelock (see main() at the bottom).
 WAKELOCK_ENABLED = True
@@ -1183,41 +1183,46 @@ HTML_TEMPLATE = """
                #0a0f0d near-black · #2a1e5c deep indigo · #3cbbb1 teal
                #ee4266 rose        · #c4cbca cool grey
 
-               The five hues do not all get the same job size. The near-black is
-               the page (verbatim). The indigo is the card colour, but *darkened
-               to about a third of its lightness* (--card): at full strength it
-               is a saturated purple that fills most of the screen and fights
-               every label on it; as a plum-black it reads as "surface" while
-               still carrying the palette's hue. Hairlines are the grey at low
-               alpha, so the same line works on the page and on a card. The two
-               vivid hues are marks only: teal = action/current, rose = error.
-               Grey owns all text. That distribution is what keeps five colours
-               restful instead of loud. */
+               Comfort rules learned the hard way:
+               1. One hue family for the neutrals. Page = #0a0f0d (verbatim,
+                  chroma 1.9 = effectively neutral). Cards = the indigo pulled
+                  two thirds of the way to neutral (#211f3a, chroma 42.7 -> 19.4)
+                  instead of a saturated purple slab.
+               2. Real separation between page and card: 1.24:1 (the old 1.16
+                  made card edges read as glowing lines). Recessed fields go the
+                  other way, #141322.
+               3. Softer light: body text #d9dbe3 is 11.5:1 on a card, not 14:1.
+                  Nothing glows: no gradient and no coloured shadow on buttons.
+               4. Hue = meaning, small areas only. Teal #3cbbb1 is the single
+                  accent (primary action, focus, progress, current state), rose
+                  #ee4266 is destruction, indigo #2a1e5c is the brand tile, grey
+                  #c4cbca is text + the internal-storage hue. */
             --bg: #0a0f0d;
-            --card: #1e1842;         /* indigo #2a1e5c, dark enough to sit under text */
-            --card-2: #2b2358;       /* one lift: hovered rows, outline buttons, chips */
-            --border: rgba(196, 203, 202, 0.15);   /* neutral hairline, any surface */
-            --text: #e8ebe9;
-            --text-muted: #a6b1ae;
+            --card: #211f3a;         /* indigo, pulled toward neutral */
+            --card-2: #2b2850;       /* one lift: raised rows, outline buttons */
+            --field: #141322;        /* recessed: inputs, tree, storage rows, tracks */
+            --border: rgba(217, 219, 227, 0.13);   /* neutral hairline, any surface */
+            --text: #d9dbe3;
+            --text-muted: #a4a7b7;
+            --indigo: #2a1e5c;       /* brand tile / selected fill */
             --accent: #3cbbb1;
-            --accent-hover: #32a89f;
+            --accent-hover: #34a9a0;
             --accent-ink: #0a0f0d;   /* label colour on ANY bright fill */
             --accent-soft: rgba(60, 187, 177, 0.14);
-            --accent-glow: rgba(60, 187, 177, 0.26);
+            --accent-glow: rgba(60, 187, 177, 0.20);
             --success: #4ade80;
-            /* Rose is the palette's own alert hue: #ee4266 fills (dark label is
-               5.2:1, white would be 3.75:1) and --danger-ink is its readable
-               text shade on the indigo card (7.4:1). */
+            /* Rose is the palette's alert hue: #ee4266 fills (its dark label is
+               5.2:1) and --danger-ink is its readable text shade (7.0:1 on a
+               card) because the fill itself is only 4.2:1 as text. */
             --danger: #ee4266;
             --danger-ink: #f78ca0;
             --danger-soft: rgba(238, 66, 102, 0.12);
             --warning: #f5b942;
-            /* One hue per volume type. The SD card wears the app's own teal: it
-               is the volume this tool exists for, so it gets the signature
-               colour. Internal storage stays neutral grey, USB takes the palette
-               indigo lifted to violet, and volumes we could not identify get a
-               deliberately dull sage. Worst pair ΔE76 22.9, so colour alone
-               already separates them (on top of icon and label). */
+            /* One hue per volume type, all inside the violet family except the
+               neutral grey: internal = cool grey, SD = the accent teal (the
+               volume this app exists for), USB = indigo lifted to violet,
+               unknown = a deliberately dull blue-grey. Worst pair ΔE76 23.2,
+               so colour alone separates them. */
             --kind-internal: #c4cbca;
             --kind-internal-ink: #c4cbca;
             --kind-internal-soft: rgba(196, 203, 202, 0.12);
@@ -1227,9 +1232,9 @@ HTML_TEMPLATE = """
             --kind-usb: #b0a0f0;
             --kind-usb-ink: #b0a0f0;
             --kind-usb-soft: rgba(176, 160, 240, 0.14);
-            --kind-card: #7f918e;
-            --kind-card-ink: #9fb0ad;
-            --kind-card-soft: rgba(127, 145, 142, 0.16);
+            --kind-card: #8e90a0;
+            --kind-card-ink: #a6a9ba;
+            --kind-card-soft: rgba(142, 144, 160, 0.16);
             --radius: 14px;
         }
         * { box-sizing: border-box; font-family: 'IBM Plex Sans Arabic', 'Inter', sans-serif; -webkit-tap-highlight-color: transparent; }
@@ -1237,12 +1242,12 @@ HTML_TEMPLATE = """
         .container { max-width: 900px; margin: 0 auto; }
 
         .app-header { display:flex; align-items:center; gap:12px; padding-bottom: 18px; margin-top: 6px; margin-bottom: 6px; border-bottom: 1px solid var(--border); }
-        .app-header .badge { width:42px; height:42px; border-radius:12px; background:var(--accent-soft); display:flex; align-items:center; justify-content:center; flex-shrink:0; }
+        .app-header .badge { width:42px; height:42px; border-radius:12px; background:var(--indigo); border:1px solid rgba(60,187,177,0.28); display:flex; align-items:center; justify-content:center; flex-shrink:0; }
         .app-header .badge svg { stroke: var(--accent); width:22px; height:22px; }
         .app-header h1 { font-size: 18px; color: var(--text); margin:0; font-weight: 700; letter-spacing: -0.2px; }
         .app-header p { margin: 2px 0 0; font-size: 12.5px; color: var(--text-muted); }
         .pill-row { display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; }
-        .pill { font-size: 11px; line-height: 1; padding: 5px 9px; border-radius: 999px; border: 1px solid var(--border); color: var(--text-muted); background: rgba(196,203,202,0.04); white-space: nowrap; }
+        .pill { font-size: 11px; line-height: 1; padding: 5px 9px; border-radius: 999px; border: 1px solid var(--border); color: var(--text-muted); background: rgba(217,219,227,0.04); white-space: nowrap; }
         .pill-ok { color: var(--success); border-color: rgba(34,197,94,0.35); background: rgba(34,197,94,0.08); }
         .pill-warn { color: var(--warning); border-color: rgba(245,185,66,0.35); background: rgba(245,185,66,0.08); }
         /* Pills tinted by volume type: SD card / USB OTG / internal / unknown.
@@ -1252,19 +1257,19 @@ HTML_TEMPLATE = """
         .pill-kind-usb { color: var(--kind-usb-ink); border-color: rgba(176,160,240,0.45); background: var(--kind-usb-soft); }
         .pill-kind-card { color: var(--kind-card-ink); border-color: rgba(127,145,142,0.55); background: var(--kind-card-soft); }
 
-        .card { background: var(--card); padding: 18px; border-radius: var(--radius); border: 1px solid var(--border); margin-bottom: 16px; box-shadow: inset 0 1px 0 rgba(232,235,233,0.04); }
+        .card { background: var(--card); padding: 18px; border-radius: var(--radius); border: 1px solid var(--border); margin-bottom: 16px; }
         .card-title { display:flex; align-items:center; gap:8px; font-size: 14px; font-weight:600; color: var(--text); margin: 0 0 14px; }
         .card-title svg { width:17px; height:17px; stroke: var(--accent); }
 
         label { font-weight: 500; margin-bottom: 8px; display: block; color: var(--text-muted); font-size: 13px; }
-        select, input[type="text"], input[type="number"], input[type="datetime-local"] { width: 100%; padding: 12px 14px; border: 1px solid var(--border); border-radius: 10px; font-size: 14px; background-color: var(--bg); color: var(--text); outline: none; margin-bottom: 12px; transition: border-color 0.15s, box-shadow 0.15s; min-height: 46px; }
+        select, input[type="text"], input[type="number"], input[type="datetime-local"] { width: 100%; padding: 12px 14px; border: 1px solid var(--border); border-radius: 10px; font-size: 14px; background-color: var(--field); color: var(--text); outline: none; margin-bottom: 12px; transition: border-color 0.15s, box-shadow 0.15s; min-height: 46px; }
         select:focus, input[type="text"]:focus, input[type="number"]:focus, input[type="datetime-local"]:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
-        textarea { width: 100%; padding: 12px 14px; box-sizing: border-box; border: 1px solid var(--border); border-radius: 10px; font-family: 'Inter', monospace; font-size: 14px; line-height: 1.7; background-color: var(--bg); color: var(--text); outline: none; resize: none; }
+        textarea { width: 100%; padding: 12px 14px; box-sizing: border-box; border: 1px solid var(--border); border-radius: 10px; font-family: 'Inter', monospace; font-size: 14px; line-height: 1.7; background-color: var(--field); color: var(--text); outline: none; resize: none; }
         textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
 
         .btn { padding: 11px 16px; min-height: 44px; border: none; border-radius: 10px; cursor: pointer; font-weight: 600; font-size: 13.5px; color: var(--text); transition: transform 0.08s ease, filter 0.15s ease, background 0.15s ease; display: inline-flex; align-items: center; justify-content: center; gap: 7px; }
         .btn:active { transform: scale(0.97); }
-        .btn-primary { background: linear-gradient(135deg, var(--accent), var(--accent-hover)); color: var(--accent-ink); box-shadow: 0 6px 16px -6px var(--accent-glow); }
+        .btn-primary { background: var(--accent); color: var(--accent-ink); }
         .btn-primary:hover { filter: brightness(1.08); }
         .btn-success { background: var(--success); color: var(--accent-ink); }
         .btn-success:hover { filter: brightness(1.08); }
@@ -1276,10 +1281,10 @@ HTML_TEMPLATE = """
         .btn-outline:hover { border-color: var(--accent); color: var(--accent); }
         .btn-sm { padding: 8px 12px; min-height: 38px; font-size: 12.5px; }
 
-        .tree { max-height: 65vh; overflow: auto; background: var(--bg); border: 1px solid var(--border); border-radius: 10px; padding: 8px; }
+        .tree { max-height: 65vh; overflow: auto; background: var(--field); border: 1px solid var(--border); border-radius: 10px; padding: 8px; }
         .item-row { display: flex; align-items: center; padding: 9px 6px; border-radius: 8px; border-bottom: 1px solid var(--border); min-width: max-content; transition: background 0.15s; }
         .item-row:last-child { border-bottom: none; }
-        .item-row:hover { background: var(--card-2); }
+        .item-row:hover { background: rgba(217,219,227,0.055); }
         .toggle-btn { background: none; border: none; color: var(--text-muted); cursor: pointer; font-size: 12px; width: 26px; height: 26px; padding: 0; flex-shrink:0; }
         .excluded-badge { color: var(--warning); font-size: 11px; margin-right: 8px; background: rgba(245, 185, 66, 0.12); padding: 2px 6px; border-radius: 4px;}
         .checkbox { accent-color: var(--accent); width: 18px; height: 18px; margin: 0 10px; flex-shrink: 0; cursor: pointer;}
@@ -1288,7 +1293,7 @@ HTML_TEMPLATE = """
         .children.open { display: block; }
 
         .row-actions { display:flex; gap:6px; margin-inline-start:auto; flex-shrink:0; padding-inline-start:10px; }
-        .icon-btn { width:30px; height:30px; border-radius:8px; border:1px solid var(--border); background:var(--bg); color:var(--text-muted); display:flex; align-items:center; justify-content:center; cursor:pointer; flex-shrink:0; }
+        .icon-btn { width:30px; height:30px; border-radius:8px; border:1px solid var(--border); background:var(--field); color:var(--text-muted); display:flex; align-items:center; justify-content:center; cursor:pointer; flex-shrink:0; }
         .icon-btn svg { width:14px; height:14px; }
         .icon-btn:active { transform: scale(0.92); }
 
@@ -1298,7 +1303,7 @@ HTML_TEMPLATE = """
         .storage-grid { display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px; }
         .storage-card { display: flex; align-items: center; gap: 10px; width: 100%; padding: 10px 12px;
             border: 1px solid var(--border); border-inline-start: 3px solid var(--kind, var(--border));
-            border-radius: 10px; background: var(--bg); color: var(--text);
+            border-radius: 10px; background: var(--field); color: var(--text);
             cursor: pointer; text-align: right; transition: border-color .15s, background .15s;
             font-family: inherit; appearance: none; -webkit-appearance: none; }
         .storage-card:hover { border-color: var(--kind, var(--accent)); }
@@ -1327,10 +1332,10 @@ HTML_TEMPLATE = """
         .icon-btn:hover { color: var(--accent); border-color: var(--accent); }
         .icon-btn.danger:hover { color: var(--danger-ink); border-color: var(--danger); }
 
-        .cart { position: fixed; bottom: 0; left: 0; width: 100%; background: rgba(26, 21, 50, 0.97); backdrop-filter: blur(6px); border-top: 1px solid var(--border); padding: 14px 18px calc(14px + env(safe-area-inset-bottom)); display: flex; justify-content: space-between; align-items: center; z-index: 50; box-shadow: 0 -8px 24px -8px rgba(0,0,0,0.5); }
+        .cart { position: fixed; bottom: 0; left: 0; width: 100%; background: rgba(28, 26, 50, 0.97); backdrop-filter: blur(6px); border-top: 1px solid var(--border); padding: 14px 18px calc(14px + env(safe-area-inset-bottom)); display: flex; justify-content: space-between; align-items: center; z-index: 50; box-shadow: 0 -8px 24px -8px rgba(0,0,0,0.5); }
         .cart-buttons { display: flex; gap: 12px; }
 
-        .modal { display: none; position: fixed; inset: 0; width: 100%; height: 100%; background: rgba(5, 7, 6, 0.88); z-index: 1000; justify-content: center; align-items: safe center; padding: 16px; overflow: auto; -webkit-overflow-scrolling: touch; }
+        .modal { display: none; position: fixed; inset: 0; width: 100%; height: 100%; background: rgba(7, 8, 12, 0.88); z-index: 1000; justify-content: center; align-items: safe center; padding: 16px; overflow: auto; -webkit-overflow-scrolling: touch; }
         .modal-content { background: var(--card); padding: 20px; border-radius: 18px; width: 100%; max-width: 600px; border: 1px solid var(--border); max-height: max(70vh, 480px); display: flex; flex-direction: column; box-shadow: 0 24px 48px -12px rgba(0,0,0,0.6); margin: auto; }
         .modal-content .modal-body { overflow-y: auto; flex: 1 1 auto; min-height: 0; -webkit-overflow-scrolling: touch; }
         .modal-content .modal-footer { display: flex; gap: 12px; margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--border); flex-shrink: 0; }
@@ -1339,15 +1344,15 @@ HTML_TEMPLATE = """
             .modal-content { padding: 16px; max-height: 92vh; border-radius: 14px; }
         }
 
-        .progress-bar { width: 100%; height: 8px; background: var(--bg); border-radius: 4px; overflow: hidden; margin: 15px 0; border: 1px solid var(--border);}
-        .progress-fill { height: 100%; background: linear-gradient(90deg, var(--accent), var(--accent-hover)); width: 0%; transition: width 0.3s ease; }
+        .progress-bar { width: 100%; height: 8px; background: var(--field); border-radius: 4px; overflow: hidden; margin: 15px 0; border: 1px solid var(--border);}
+        .progress-fill { height: 100%; background: var(--accent); width: 0%; transition: width 0.3s ease; }
         .ltr-input { direction: ltr; text-align: left; font-family: 'Inter', monospace; font-size: 12px; }
 
         .disk-space-container { margin-bottom: 10px; font-size: 13px; color: var(--text-muted); display: none;}
-        .disk-bar { width: 100%; height: 6px; background: var(--bg); border-radius: 3px; overflow: hidden; margin-top: 6px; border: 1px solid var(--border);}
+        .disk-bar { width: 100%; height: 6px; background: var(--field); border-radius: 3px; overflow: hidden; margin-top: 6px; border: 1px solid var(--border);}
         .disk-used { height: 100%; background: var(--accent); width: 0%; transition: width 0.3s ease; }
 
-        .spoof-settings { background: var(--bg); padding: 16px; border-radius: 10px; border: 1px dashed var(--border); margin-bottom: 10px; display:flex; flex-direction:column; gap:10px;}
+        .spoof-settings { background: var(--field); padding: 16px; border-radius: 10px; border: 1px dashed var(--border); margin-bottom: 10px; display:flex; flex-direction:column; gap:10px;}
 
         .truncate-text {
             white-space: nowrap;
@@ -1361,7 +1366,7 @@ HTML_TEMPLATE = """
         .grid-2 { display:grid; grid-template-columns: 1fr 1fr; gap: 10px; }
         @media (max-width: 420px) { .grid-2 { grid-template-columns: 1fr; } }
 
-        .seg.option.active { background: linear-gradient(135deg, var(--accent), var(--accent-hover)); color: var(--accent-ink); font-weight: 600; box-shadow: 0 4px 12px -4px var(--accent-glow); }
+        .seg.option.active { background: var(--accent); color: var(--accent-ink); font-weight: 600; }
         .seg.option.active svg { stroke: var(--accent-ink); }
         .seg.option:hover:not(.active) { color: var(--accent); border-radius:7px; }
 
@@ -1549,7 +1554,7 @@ HTML_TEMPLATE = """
             <button class="btn btn-outline btn-sm" style="padding: 10px 14px;" onclick="goUpDest()">
                 <svg class="icon" viewBox="0 0 24 24"><line x1="12" y1="19" x2="12" y2="5"></line><polyline points="5 12 12 5 19 12"></polyline></svg>
             </button>
-            <input type="text" id="currentDestView" class="ltr-input" readonly style="margin: 0; background: var(--bg);">
+            <input type="text" id="currentDestView" class="ltr-input" readonly style="margin: 0; background: var(--field);">
         </div>
         <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:4px; min-height:22px;">
             <span id="pickerStorageBadge" class="pill" style="display:none;"></span>
@@ -1614,7 +1619,7 @@ HTML_TEMPLATE = """
                     <svg class="icon" viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
                 </button>
             </div>
-            <div id="totalSizeSelected" style="font-size:13px; font-weight:500; background:var(--bg); padding:12px; border-radius:6px; border: 1px solid var(--border);">جاري حساب المساحة...</div>
+            <div id="totalSizeSelected" style="font-size:13px; font-weight:500; background:var(--field); padding:12px; border-radius:6px; border: 1px solid var(--border);">جاري حساب المساحة...</div>
         </div>
         <div id="selectedList" style="overflow-y:auto; flex-grow:1; max-height: 50vh;"></div>
     </div>
@@ -1705,7 +1710,7 @@ HTML_TEMPLATE = """
                         <svg class="icon" style="width:16px;height:16px;" viewBox="0 0 24 24"><path d="M11 5 6 9H2v6h4l5 4V5z"></path><path d="M15.54 8.46a5 5 0 0 1 0 7.07"></path><path d="M19.07 4.93a10 10 0 0 1 0 14.14"></path></svg>
                         إخفاء الملف الصوتي (تمويه)
                     </div>
-                    <div style="display:flex; gap:6px; background:var(--bg); border:1px solid var(--border); border-radius:10px; padding:4px;">
+                    <div style="display:flex; gap:6px; background:var(--field); border:1px solid var(--border); border-radius:10px; padding:4px;">
                         <label class="seg option" data-mode="none" style="flex:1; text-align:center; padding:9px 6px; border-radius:7px; cursor:pointer; font-size:12.5px; color:var(--text-muted); display:flex; align-items:center; justify-content:center; gap:5px;">
                             <svg class="icon" style="width:15px;height:15px;" viewBox="0 0 24 24"><path d="M11 5 6 9H2v6h4l5 4V5z"></path></svg>
                             بدون
@@ -1722,7 +1727,7 @@ HTML_TEMPLATE = """
                     <small id="maskHint" style="color:var(--text-muted); line-height:1.6; display:block; margin-top:6px;">إضافة ضوضاء منخفضة وغير مزعجة لمدة دقيقتين قبل بدء الفهرس الصوتي.</small>
 
                     <div id="customFileBox" style="display:none; margin-top:8px;">
-                        <div style="display:flex; align-items:center; gap:10px; background:var(--bg); border:1px dashed var(--border); border-radius:10px; padding:10px 12px;">
+                        <div style="display:flex; align-items:center; gap:10px; background:var(--field); border:1px dashed var(--border); border-radius:10px; padding:10px 12px;">
                             <input type="file" id="jocCustomAudio" accept=".mp3,audio/mpeg" hidden>
                             <button class="btn btn-outline btn-sm" style="white-space:nowrap; flex-shrink:0;" onclick="document.getElementById('jocCustomAudio').click()">
                                 <svg class="icon" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg>
@@ -1782,7 +1787,7 @@ HTML_TEMPLATE = """
             <span id="speedText" style="color:var(--accent); font-weight:500;"></span>
             <span id="failedText"></span>
         </div>
-        <div id="errorsBox" style="display:none; max-height:200px; overflow:auto; background:var(--bg); border:1px solid var(--border); border-radius:6px; padding:10px; margin-top:10px; font-size:12px; color:var(--danger-ink);"></div>
+        <div id="errorsBox" style="display:none; max-height:200px; overflow:auto; background:var(--field); border:1px solid var(--border); border-radius:6px; padding:10px; margin-top:10px; font-size:12px; color:var(--danger-ink);"></div>
         <div id="timeTakenDiv" style="display:none; color:var(--success); font-weight:500; margin-top:15px; font-size:13px; text-align:center;"></div>
         <div id="inlineNotify" style="display:none; flex-wrap:wrap; margin-top:14px; padding:12px 14px; border-radius:10px; font-size:13.5px; line-height:1.7; text-align:center; font-weight:600; border:1px solid; align-items:center; justify-content:center; gap:8px;"></div>
         <div style="display:flex; gap:12px; margin-top:20px;">
@@ -2288,7 +2293,7 @@ HTML_TEMPLATE = """
         list.innerHTML = '';
         failures.forEach(function(f) {
             let row = document.createElement('div');
-            row.style.cssText = 'background:var(--bg); border:1px solid var(--border); border-radius:8px; padding:8px; word-break:break-all;';
+            row.style.cssText = 'background:var(--field); border:1px solid var(--border); border-radius:8px; padding:8px; word-break:break-all;';
             let nameEl = document.createElement('div');
             nameEl.style.cssText = 'color:var(--text); font-weight:500;';
             nameEl.textContent = String(f.path || '').split('/').filter(Boolean).pop() || f.path;
@@ -2417,7 +2422,7 @@ HTML_TEMPLATE = """
                 let isDir = selectedPaths.get(path);
                 let itemName = path.split('/').filter(Boolean).pop() || path;
                 list.innerHTML += `
-                    <div class="item-row" style="justify-content: space-between; margin-bottom: 8px; background: var(--bg); padding: 12px; border: 1px solid var(--border); border-radius: 6px;">
+                    <div class="item-row" style="justify-content: space-between; margin-bottom: 8px; background: var(--field); padding: 12px; border: 1px solid var(--border); border-radius: 6px;">
                         <div style="display:flex; align-items:center; gap:10px; overflow:hidden; width:65%;" title="${path}">
                             ${isDir ? iconDir : iconFile}
                             <div class="truncate-text" style="font-size:13px; color:#e2e8f0; width:100%; font-weight:500;">${itemName}</div>
