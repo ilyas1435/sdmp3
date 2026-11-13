@@ -54,6 +54,44 @@ thread so no HTTP request ever blocks on a shell call.
 ## One bad JS token disables the entire UI
 Since all JS is a single `<script>`, one syntax error kills every handler — symptoms are "no storage shown, no folders, can't select anything." `python -m py_compile` will NOT catch JS errors (the JS is just a string to Python). To lint the JS: render/extract the `<script>` contents (with Jinja `{*...}` stripped) and run `node --check`.
 
+## Copy engine — do not regress these
+The copy path is the product, and it is tuned; changes must keep the queue
+byte-identical (DFS pre-order + `natural_sort_key`) and stay single-threaded.
+
+- **`plan_transfer()`** builds the queue *and* the totals in **one** traversal.
+  The old code walked the tree twice (`scan_source` then `build_dfs_queue`), which
+  doubled the FUSE round-trips. It returns `(tasks, total_files, total_bytes,
+  skipped)`; `skipped` reports unreadable source folders instead of dropping them
+  silently (`except Exception: pass`).
+- **`copy_file_sequential()`** opens src/dst with `os.open`, uses a 4 MB buffer,
+  `posix_fadvise(POSIX_FADV_SEQUENTIAL)` hints and a partial-write loop. On any
+  error it deletes the half-written destination file so playback order can't be
+  polluted.
+- **No `fsync` per file.** The transfer calls `os.sync()` every `SYNC_THRESHOLD`
+  (64 MB) and once at the end. Ordering comes from *sequential writes*, never from
+  fsync — the per-file fsync was removed because it cost tens of ms per MP3 (the
+  main cause of "copy is very slow"). Do not add it back.
+- **`check_destination()`** writes a 5-byte probe with an 8s timeout before every
+  copy / spoof / benchmark. A card that is mounted but dead would otherwise block
+  the worker inside `write()` forever. Timed-out destinations are cached in
+  `_UNHEALTHY_DESTS` for 120s so retries fail fast instead of spawning more stuck
+  threads.
+- **Stall detection**: the worker calls `touch_progress()` per 4 MB chunk and per
+  folder during planning; `get_state_snapshot()` reports `stalled`/`stall_seconds`
+  after `STALL_SECONDS` (25s) with no bytes. The UI turns that into
+  «الكارت لا يستجيب». The worker itself cannot report a hang — it is blocked in a
+  syscall.
+- **`ACTIVE_THREAD` + `is_thread_alive()`** recover a stale `status='copying'`
+  left by a dead worker (otherwise every later copy fails with «هناك عملية قيد
+  التشغيل بالفعل»). The start routes `reset_state(...)` **synchronously** before
+  launching the thread, so a poll can't read the previous run's `done`/`error`.
+- **`/api/benchmark`** writes 32 MB with 4 MB blocks and a single end-of-file
+  flush — the same shape as a real copy. The old version fsynced every 1 MB, which
+  measured flush latency and always looked slow.
+- Expected numbers on this device: ~180 MB/s (5×40 MB files) and ~28 MB/s for
+  150×160 KB MP3s on internal storage. Small-file speed is bound by per-file FUSE
+  create/close, not by the buffer size.
+
 ## Storage detection (server-side, not JS)
 Options in the source/destination `<select>` are rendered at route `/` via Jinja `{% for st in storages %}`, backed by `get_available_storages()` (~line 122): always `/sdcard` (internal), plus external SD cards found from `df -h` `/storage/...` mounts (emulated mounts are skipped). If the select is empty, check this Python function — not the JS.
 

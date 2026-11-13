@@ -24,7 +24,7 @@ app = Flask(__name__)
 
 # Version is kept in the VERSION file next to this script so that the `sdmp3`
 # CLI can read it without importing the app.
-APP_VERSION_FALLBACK = "1.0.0"
+APP_VERSION_FALLBACK = "1.2.0"
 
 # Toggled by --no-wakelock (see main() at the bottom).
 WAKELOCK_ENABLED = True
@@ -39,11 +39,29 @@ def get_app_version():
         return APP_VERSION_FALLBACK
 
 
-# Read/write block size. 2MB keeps copies sequential (order is the whole point
-# of this app) while cutting the number of FUSE round-trips vs the old 512KB.
-COPY_BUFFER_SIZE = 2 * 1024 * 1024
-# Force hardware sync every 64MB: fewer stalls, same crash-safety granularity.
+# Read/write block size. 4MB keeps copies sequential (order is the whole point of
+# this app) while cutting the number of FUSE round-trips to a minimum.
+COPY_BUFFER_SIZE = 4 * 1024 * 1024
+# Flush the whole transfer to the card every 64MB.
+#
+# This is a *coarse* flush on purpose: it used to be an fsync after every single
+# file, which cost tens of milliseconds per MP3 and made folders full of small
+# tracks painfully slow. Ordering is guaranteed by writing the files one at a
+# time in DFS order - never by fsync - so dropping the per-file flush changes
+# speed only, not the on-disk playback order.
 SYNC_THRESHOLD = 64 * 1024 * 1024
+
+# A transfer that has moved no bytes for this long is reported as stalled.
+# A pulled or dying SD card blocks the worker *inside* write() forever, so the
+# worker cannot report anything itself - the clock is watched from the request
+# side instead. 25s is well above the worst case for one 4MB chunk on a slow
+# (Class 4) card.
+STALL_SECONDS = 25
+# How long to refuse a destination after a probe timed out, instead of spawning
+# another worker that would hang in exactly the same place.
+UNHEALTHY_DEST_TTL = 120
+# Seconds to wait for the destination to answer a tiny write before a transfer.
+DEST_PROBE_TIMEOUT = 8
 
 transfer_lock = threading.RLock()
 
@@ -57,11 +75,32 @@ DEFAULT_STATE = {
     'progress': 0,
     'log': '',
     'errors': [],
+    'skipped': [],
+    'hint': '',
+    'copied_bytes': 0,
+    'total_bytes': 0,
+    'speed_mbps': 0,
+    'eta_seconds': 0,
+    'stalled': False,
+    'stall_seconds': 0,
+    'last_progress_ts': 0,
     'cancel': False,
     'start_time': 0,
     'time_taken': ''
 }
 transfer_state = dict(DEFAULT_STATE)
+
+# Worker currently running a copy or a spoof pass. Tracking it lets us detect a
+# dead worker: otherwise a crashed transfer would leave status='copying' forever
+# and every new attempt would fail with "already running".
+ACTIVE_THREAD = None
+
+
+def is_thread_alive(thread):
+    try:
+        return bool(thread is not None and thread.is_alive())
+    except Exception:
+        return False
 
 def reset_state(**overrides):
     with transfer_lock:
@@ -78,7 +117,29 @@ def set_state(**kwargs):
 
 def get_state_snapshot():
     with transfer_lock:
-        return dict(transfer_state)
+        snap = dict(transfer_state)
+    # Stall detection is computed on read: while a card hangs, the worker is
+    # blocked in a syscall and cannot update its own state. Reporting the stall
+    # is what turns a silent freeze into a message the user can act on.
+    if snap.get('status') == 'copying':
+        last = snap.get('last_progress_ts') or snap.get('start_time') or 0
+        idle = (time.time() - last) if last else 0
+        if idle >= STALL_SECONDS:
+            snap['stalled'] = True
+            snap['stall_seconds'] = int(idle)
+    else:
+        snap['stalled'] = False
+        snap['stall_seconds'] = 0
+    return snap
+
+
+def touch_progress():
+    """Heartbeat for the stall detector (never raises, never blocks long)."""
+    try:
+        with transfer_lock:
+            transfer_state['last_progress_ts'] = time.time()
+    except Exception:
+        pass
 
 def is_busy():
     with transfer_lock:
@@ -271,38 +332,6 @@ def count_files(paths, cancel_check=None, count_dirs=False):
         except Exception: pass
     return total
 
-def scan_source(paths, excludes=None, cancel_check=None):
-    excludes = excludes or set()
-    total_files = 0
-    total_bytes = 0
-    stack = [p for p in paths if p not in excludes]
-    counter = 0
-    while stack:
-        if cancel_check is not None:
-            counter += 1
-            if counter % 300 == 0 and cancel_check():
-                return total_files, total_bytes
-        p = stack.pop()
-        if p in excludes: continue
-        try:
-            if os.path.islink(p): continue
-            if os.path.isdir(p):
-                with os.scandir(p) as it:
-                    for entry in it:
-                        if entry.path in excludes: continue
-                        try:
-                            if entry.is_symlink(): continue
-                            if entry.is_dir(follow_symlinks=False): stack.append(entry.path)
-                            elif entry.is_file(follow_symlinks=False):
-                                total_files += 1
-                                total_bytes += entry.stat(follow_symlinks=False).st_size
-                        except Exception: pass
-            elif os.path.isfile(p):
-                total_files += 1
-                total_bytes += os.path.getsize(p)
-        except Exception: pass
-    return total_files, total_bytes
-
 def format_size(size_bytes):
     if size_bytes == 0: return "0 B"
     size_name = ("B", "KB", "MB", "GB", "TB")
@@ -338,6 +367,14 @@ CARD_DAMAGE_HINT = (
     'بأنه «غير فارغ» لكنه لا يستطيع قراءة محتوياته (خطأ إدخال/إخراج). '
     'ليست مشكلة صلاحيات — أصلح الكارت من الكمبيوتر: chkdsk /f في ويندوز أو '
     'fsck.vfat -a في لينكس، ثم احذف المجلد عادةً'
+)
+
+# Shown when the card refuses *writes* (errno 5 EIO / 30 read-only).
+CARD_WRITE_HINT = (
+    'الكارت يرفض الكتابة (خطأ إدخال/إخراج) وليس مشكلة صلاحيات. انسخ بياناتك '
+    'منه ثم أصلح نظام الملفات من الكمبيوتر: chkdsk X: /f في ويندوز أو '
+    'fsck.vfat -a في لينكس. إذا تكرر الخطأ بعد الإصلاح فالكارت متعب أو '
+    'سعته غير حقيقية — استبدله'
 )
 
 
@@ -416,6 +453,74 @@ def describe_os_error(exc):
     text = str(exc).strip()
     return text or 'خطأ غير معروف'
 
+
+# Destinations whose probe timed out -> absolute time until which we refuse them.
+_UNHEALTHY_DESTS = {}
+
+
+def _probe_write(dest, result):
+    probe = os.path.join(dest, '.sdmp3_probe')
+    try:
+        fd = os.open(probe, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o666)
+        try:
+            os.write(fd, b'sdmp3')
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        try:
+            os.remove(probe)
+        except OSError:
+            pass
+        result.append(None)
+    except Exception as exc:
+        try:
+            if os.path.exists(probe):
+                os.remove(probe)
+        except Exception:
+            pass
+        result.append(exc)
+
+
+def check_destination(dest, timeout=DEST_PROBE_TIMEOUT):
+    """Return None if the destination answers, otherwise an Arabic error.
+
+    Writing a 5-byte probe file with a hard timeout catches the case that made
+    the whole app look dead: a card that is still mounted but no longer answers,
+    so every write blocks forever inside the kernel. Without this the UI sits at
+    "copying" with 0% and no error, which is exactly how it used to fail.
+    """
+    if not dest or not os.path.isdir(dest):
+        return 'مسار الوجهة غير صالح'
+
+    now = time.time()
+    dead_until = _UNHEALTHY_DESTS.get(dest)
+    if dead_until is not None:
+        if now < dead_until:
+            return ('الكارت لا يستجيب (تم اكتشاف ذلك قبل قليل). أخرجه وأدخله '
+                    'جيداً ثم أعد المحاولة.')
+        _UNHEALTHY_DESTS.pop(dest, None)
+
+    result = []
+    worker = threading.Thread(target=_probe_write, args=(dest, result), daemon=True)
+    worker.start()
+    worker.join(timeout)
+    if worker.is_alive():
+        # The probe is stuck in the kernel; remember it and stop probing.
+        _UNHEALTHY_DESTS[dest] = time.time() + UNHEALTHY_DEST_TTL
+        log_event('destination NOT responding (>{:.0f}s): {!r}'.format(timeout, dest))
+        return ('الوجهة لا تستجيب (الكارت معلّق). أخرجه وأدخله ثم أعد المحاولة. '
+                'إذا استمرت المشكلة أعد تشغيل التطبيق: sdmp3 restart')
+    if not result:
+        return 'تعذر اختبار الوجهة'
+    if result[0] is None:
+        return None
+    exc = result[0]
+    log_event('destination probe failed: {!r} -> {}'.format(dest, exc))
+    reason = describe_os_error(exc)
+    if isinstance(exc, OSError) and getattr(exc, 'errno', None) in (5, 30):
+        return 'تعذر الكتابة على الوجهة — ' + CARD_WRITE_HINT
+    return 'تعذر الكتابة على الوجهة: ' + reason
+
 def try_remove_entry(path):
     """Remove one file/link/dir. Returns (ok, reason)."""
     try:
@@ -493,132 +598,302 @@ def force_delete_tree(target, cancel_check=None, progress_cb=None):
     if progress_cb: progress_cb(deleted, len(failures))
     return deleted, failures
 
-def stable_chunked_copy(src, dst, cancel_check=None):
+def _advise_sequential(fd):
+    """Tell the kernel this file is read/written front-to-back.
+
+    Lets the FUSE/vfat layer read ahead and batch writes. Purely a hint: if the
+    platform does not support it, nothing happens.
+    """
+    try:
+        os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_SEQUENTIAL)
+    except (AttributeError, OSError):
+        pass
+
+
+def copy_file_sequential(src, dst, cancel_check=None, on_bytes=None):
+    """Copy one file from start to finish, in order, with a large buffer.
+
+    Deliberately single-file and single-threaded: the FAT directory-entry order
+    is what old MP3 players use to play a folder in sequence, so this must never
+    be parallelised. Returns the number of bytes copied.
+
+    There is no fsync per file any more - the caller flushes every SYNC_THRESHOLD
+    bytes and once at the end with os.sync().
+    """
     if cancel_check is not None and cancel_check():
         raise TransferCancelled()
-    
-    bytes_written_since_sync = 0
+
+    written_total = 0
+    src_fd = None
+    dst_fd = None
     try:
-        with open(src, 'rb') as fsrc, open(dst, 'wb') as fdst:
-            while True:
-                if cancel_check is not None and cancel_check():
-                    raise TransferCancelled()
-                
-                buf = fsrc.read(COPY_BUFFER_SIZE)
-                if not buf: break
-                
-                fdst.write(buf)
-                bytes_written_since_sync += len(buf)
-                
-                if bytes_written_since_sync >= SYNC_THRESHOLD:
-                    fdst.flush()
-                    os.fsync(fdst.fileno())
-                    bytes_written_since_sync = 0
-                    
-            fdst.flush()
-            os.fsync(fdst.fileno())
-    except Exception as e:
+        src_fd = os.open(src, os.O_RDONLY)
+        dst_fd = os.open(dst, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o666)
+        _advise_sequential(src_fd)
+        _advise_sequential(dst_fd)
+        while True:
+            if cancel_check is not None and cancel_check():
+                raise TransferCancelled()
+            chunk = os.read(src_fd, COPY_BUFFER_SIZE)
+            if not chunk:
+                break
+            view = memoryview(chunk)
+            offset = 0
+            while offset < len(chunk):
+                offset += os.write(dst_fd, view[offset:])
+            written_total += len(chunk)
+            if on_bytes is not None:
+                on_bytes(len(chunk))
+    except BaseException:
+        # Never leave a half-written MP3 behind: it would break playback order.
+        if dst_fd is not None:
+            try: os.close(dst_fd)
+            except OSError: pass
+            dst_fd = None
         try:
             if os.path.exists(dst): os.remove(dst)
-        except Exception: pass
-        raise e
+        except OSError: pass
+        raise
+    finally:
+        if src_fd is not None:
+            try: os.close(src_fd)
+            except OSError: pass
+        if dst_fd is not None:
+            try: os.close(dst_fd)
+            except OSError: pass
+    return written_total
+
+def plan_transfer(paths, dest, excludes=None, cancel_check=None, on_progress=None):
+    """Build the copy queue AND the totals in a single traversal.
+
+    Returns (tasks, total_files, total_bytes, skipped):
+
+      tasks       exact write order (folder first, then its children, natural
+                  sort) - the queue that guarantees JOC playback order
+      skipped     source folders that could not be read at all, with a reason
+                  (e.g. the damaged FAT entry that Android answers with EIO)
+
+    The old code walked the whole tree twice (scan_source, then build_dfs_queue);
+    on FUSE every stat is a round-trip, so this halves the planning cost.
+
+    `on_progress` is called once per folder so a huge tree over a slow card does
+    not look like a stalled transfer while it is still being scanned.
+    """
+    excludes = excludes or set()
+    tasks = []
+    total_files = 0
+    total_bytes = 0
+    skipped = []
+
+    def walk(src, dst, entry=None):
+        nonlocal total_files, total_bytes
+        if src in excludes:
+            return
+        if cancel_check is not None and cancel_check():
+            raise TransferCancelled()
+
+        name = entry.name if entry is not None else os.path.basename(src)
+        dst_path = os.path.join(dst, name)
+        try:
+            # DirEntry.is_file()/is_dir() reuse the stat scandir already did, so
+            # a file costs no extra FUSE round-trip here.
+            is_file = entry.is_file() if entry is not None else os.path.isfile(src)
+            is_dir = entry.is_dir() if entry is not None else os.path.isdir(src)
+        except OSError as exc:
+            skipped.append((src, describe_os_error(exc)))
+            return
+
+        if is_file:
+            tasks.append((src, dst_path, 'file'))
+            total_files += 1
+            try:
+                size = (entry.stat(follow_symlinks=False).st_size
+                        if entry is not None else os.path.getsize(src))
+                total_bytes += max(size, 0)
+            except OSError:
+                pass
+        elif is_dir:
+            tasks.append((src, dst_path, 'dir'))
+            if on_progress is not None:
+                try:
+                    on_progress()
+                except Exception:
+                    pass
+            try:
+                with os.scandir(src) as it:
+                    children = sorted(it, key=lambda e: natural_sort_key(e.name))
+            except OSError as exc:
+                # Report it instead of silently dropping the folder.
+                skipped.append((src, describe_os_error(exc)))
+                return
+            for child in children:
+                walk(child.path, dst_path, child)
+
+    for root in sorted(paths, key=natural_sort_key):
+        walk(root, dest)
+    return tasks, total_files, total_bytes, skipped
+
+
+def dest_inside_source(paths, dest):
+    """True when the destination lives inside one of the sources.
+
+    Copying a folder into itself would duplicate the tree into itself for as
+    long as there is free space, so it is refused before anything is written.
+    """
+    try:
+        dest_real = os.path.realpath(dest)
+    except OSError:
+        return False
+    for path in paths:
+        try:
+            src_real = os.path.realpath(path)
+        except OSError:
+            continue
+        if dest_real == src_real or dest_real.startswith(src_real + os.sep):
+            return True
+    return False
+
 
 def copy_thread_task(paths, dest, excludes=None):
     acquire_wakelock()
     reset_state(status='copying', action='copy', start_time=time.time())
     copied = 0
-    failed_names = []
+    bytes_done = 0
+    bytes_since_sync = 0
+    failed_details = []
+    write_failed = False
     excludes = excludes or set()
-
     last_ui_update = time.time()
-    UI_UPDATE_INTERVAL = 1.0  
+    UI_UPDATE_INTERVAL = 0.5
+    started = time.time()
 
     try:
-        set_state(file='جاري فحص الملفات (قد يأخذ ثواني قليلة)...')
-        total, needed_bytes = scan_source(paths, excludes, cancel_check=is_cancelled)
-        if is_cancelled(): raise TransferCancelled()
-        set_state(total=total)
+        # Safety net: the route already refuses this, but the worker must never
+        # be able to duplicate a tree into itself either.
+        if dest_inside_source(paths, dest):
+            raise RuntimeError('لا يمكن النسخ إلى مجلد داخل المصدر: {}'.format(dest))
+
+        set_state(file='جاري فحص الملفات وترتيبها بتسلسل JOC...')
+        touch_progress()
+        tasks, total, needed_bytes, skipped = plan_transfer(
+            paths, dest, excludes, cancel_check=is_cancelled, on_progress=touch_progress)
+        if is_cancelled():
+            raise TransferCancelled()
+        touch_progress()
+        set_state(total=total, total_bytes=needed_bytes)
+
+        log_event('copy start: {} file(s), {}, dest={!r}, skipped={}'.format(
+            total, format_size(needed_bytes), dest, len(skipped)))
+        if skipped:
+            set_state(skipped=['{} — {}'.format(p, r) for p, r in skipped[:20]])
+            for p, r in skipped[:10]:
+                log_event('copy skipped (unreadable): {!r} -> {}'.format(p, r))
 
         if not has_enough_space(dest, needed_bytes):
-            raise RuntimeError(f"المساحة المتوفرة غير كافية. المطلوب تقريباً: {format_size(needed_bytes)}")
+            raise RuntimeError(
+                'المساحة المتوفرة غير كافية. المطلوب تقريباً: {}'.format(format_size(needed_bytes)))
 
-        set_state(file='جاري ترتيب الملفات بتسلسل JOC...')
-        
-        ordered_tasks = []
-        def build_dfs_queue(current_src, current_dest, entry=None):
-            """DFS pre-order + natural sort.
-
-            NEVER parallelize this copy: the FAT directory-entry order (and the
-            cluster order) is exactly what old MP3 players use to play files in
-            sequence, so files must be written one at a time in this order.
-            """
-            if current_src in excludes: return
-            name = entry.name if entry is not None else os.path.basename(current_src)
-            dst_path = os.path.join(current_dest, name)
-
-            # DirEntry.is_file()/is_dir() reuse the stat that scandir already did,
-            # so we no longer pay 2-3 extra FUSE round-trips per file.
-            if (entry.is_file() if entry is not None else os.path.isfile(current_src)):
-                ordered_tasks.append((current_src, dst_path, 'file'))
-            elif (entry.is_dir() if entry is not None else os.path.isdir(current_src)):
-                ordered_tasks.append((current_src, dst_path, 'dir'))
-                try:
-                    with os.scandir(current_src) as it:
-                        children = sorted(it, key=lambda e: natural_sort_key(e.name))
-                        for child in children:
-                            build_dfs_queue(child.path, dst_path, child)
-                except Exception: pass
-
-        for p in sorted(paths, key=natural_sort_key):
-            build_dfs_queue(p, dest)
-            
         set_state(file='جاري النقل المستقر المباشر...')
 
-        for src, dst_path, kind in ordered_tasks:
-            if is_cancelled(): raise TransferCancelled()
+        def on_bytes(count):
+            nonlocal bytes_done, bytes_since_sync
+            bytes_done += count
+            bytes_since_sync += count
+            # Heartbeat per chunk: a slow-but-working card keeps the transfer
+            # "alive", only a really hung one falls silent long enough to flag.
+            touch_progress()
+
+        for src, dst_path, kind in tasks:
+            if is_cancelled():
+                raise TransferCancelled()
             name = os.path.basename(src)
 
             if kind == 'file':
                 try:
-                    stable_chunked_copy(src, dst_path, cancel_check=is_cancelled)
+                    copy_file_sequential(src, dst_path, cancel_check=is_cancelled, on_bytes=on_bytes)
                     copied += 1
                 except TransferCancelled:
                     raise
                 except Exception as e:
-                    failed_names.append(name)
+                    reason = describe_os_error(e)
+                    failed_details.append((src, reason))
+                    log_event('copy failed: {!r} -> {}'.format(src, reason))
+                    if isinstance(e, OSError) and getattr(e, 'errno', None) in (5, 30):
+                        # The card itself refuses writes (a dying card or broken
+                        # FAT). Keep going so the user sees the full picture, but
+                        # flag it for the final hint.
+                        write_failed = True
                     if isinstance(e, OSError) and getattr(e, 'errno', None) == 28:
-                        raise RuntimeError("انتهت المساحة الخالية في الوجهة أثناء النسخ.")
+                        raise RuntimeError('انتهت المساحة الخالية في الوجهة أثناء النسخ.')
 
-                current_time = time.time()
-                if current_time - last_ui_update >= UI_UPDATE_INTERVAL:
-                    done_count = copied + len(failed_names)
-                    progress = int((done_count / total) * 100) if total else 0
-                    set_state(copied=copied, failed=len(failed_names), progress=progress, file=name)
-                    last_ui_update = current_time
+                # Flush the whole transfer to the card occasionally, never per file.
+                if bytes_since_sync >= SYNC_THRESHOLD:
+                    try: os.sync()
+                    except OSError: pass
+                    bytes_since_sync = 0
 
             elif kind == 'dir':
                 try:
                     os.makedirs(dst_path, exist_ok=True)
-                except Exception:
-                    failed_names.append(name)
+                except Exception as e:
+                    reason = describe_os_error(e)
+                    failed_details.append((src, reason))
+                    log_event('mkdir failed: {!r} -> {}'.format(src, reason))
+
+            now = time.time()
+            if now - last_ui_update >= UI_UPDATE_INTERVAL:
+                elapsed = max(now - started, 0.001)
+                speed = bytes_done / elapsed / (1024 * 1024)
+                if needed_bytes:
+                    progress = int(min(bytes_done / needed_bytes, 1) * 100)
+                    remaining = max(needed_bytes - bytes_done, 0)
+                    eta = int(remaining / (speed * 1024 * 1024)) if speed > 0 else 0
+                else:
+                    done_count = copied + len(failed_details)
+                    progress = int((done_count / total) * 100) if total else 0
+                    eta = 0
+                set_state(copied=copied, failed=len(failed_details),
+                          progress=min(progress, 99), file=name,
+                          copied_bytes=bytes_done, speed_mbps=round(speed, 2),
+                          eta_seconds=eta)
+                last_ui_update = now
 
         set_state(file='جاري تأكيد كتابة البيانات النهائية...')
         try: os.sync()
-        except Exception: pass
+        except OSError: pass
 
-        if failed_names:
-            final_msg = f'اكتمل النسخ مع فشل {len(failed_names)} ملف - راجع التفاصيل'
+        elapsed = max(time.time() - started, 0.001)
+        avg_speed = bytes_done / elapsed / (1024 * 1024)
+        if failed_details:
+            final_msg = 'اكتمل النسخ مع فشل {} عنصر - راجع التفاصيل'.format(len(failed_details))
         else:
             final_msg = 'اكتمل النسخ بنجاح.'
-        
+
+        log_event('copy done: copied={} failed={} bytes={} in {:.1f}s ({:.2f} MB/s)'.format(
+            copied, len(failed_details), bytes_done, elapsed, avg_speed))
+
         invalidate_cache_for_path(dest)
-        finish_transfer('done', final_msg, extra={'progress': 100, 'copied': copied, 'errors': failed_names[:30]})
+        finish_transfer('done', final_msg, extra={
+            'progress': 100,
+            'copied': copied,
+            'failed': len(failed_details),
+            'errors': ['{} — {}'.format(os.path.basename(p), r) for p, r in failed_details[:30]],
+            'skipped': ['{} — {}'.format(p, r) for p, r in skipped[:20]],
+            'copied_bytes': bytes_done,
+            'speed_mbps': round(avg_speed, 2),
+            'eta_seconds': 0,
+            'hint': CARD_WRITE_HINT if write_failed else '',
+        })
 
     except TransferCancelled:
         try: os.sync()
-        except Exception: pass
+        except OSError: pass
+        log_event('copy cancelled by user after {}s'.format(int(time.time() - started)))
         finish_transfer('cancelled', 'تم إلغاء النسخ.')
     except Exception as e:
+        try: os.sync()
+        except OSError: pass
+        log_event('copy ERROR: {}: {}'.format(type(e).__name__, e))
         set_state(status='error', log=str(e))
     finally:
         release_wakelock()
@@ -1300,10 +1575,11 @@ HTML_TEMPLATE = """
         </div>
         <div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
         <div id="currentFile" class="ltr-input truncate-text" style="font-size:12px; color:var(--text-muted); background:transparent; border:none; padding:0; width: 100%;">جاري التحضير...</div>
-        <div style="display:flex; justify-content:flex-end; font-size:12px; color:var(--text-muted); margin-top:8px;">
+        <div style="display:flex; justify-content:space-between; font-size:12px; color:var(--text-muted); margin-top:8px;">
+            <span id="speedText" style="color:var(--accent); font-weight:500;"></span>
             <span id="failedText"></span>
         </div>
-        <div id="errorsBox" style="display:none; max-height:120px; overflow:auto; background:var(--bg); border:1px solid var(--border); border-radius:6px; padding:10px; margin-top:10px; font-size:12px; color:var(--danger);"></div>
+        <div id="errorsBox" style="display:none; max-height:200px; overflow:auto; background:var(--bg); border:1px solid var(--border); border-radius:6px; padding:10px; margin-top:10px; font-size:12px; color:var(--danger);"></div>
         <div id="timeTakenDiv" style="display:none; color:var(--success); font-weight:500; margin-top:15px; font-size:13px; text-align:center;"></div>
         <div id="inlineNotify" style="display:none; flex-wrap:wrap; margin-top:14px; padding:12px 14px; border-radius:10px; font-size:13.5px; line-height:1.7; text-align:center; font-weight:600; border:1px solid; align-items:center; justify-content:center; gap:8px;"></div>
         <div style="display:flex; gap:12px; margin-top:20px;">
@@ -1874,7 +2150,9 @@ HTML_TEMPLATE = """
         fetch('/transfer/start', {
             method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(reqData)
         }).then(r=>r.json()).then(data=>{
-            if(data.error) alert(data.error); else showProgressModal();
+            // A refused copy (dead card, no permission, self-copy) is shown in
+            // the modal banner so the whole reason stays readable, not in alert().
+            if(data.error) showInlineError('تعذر بدء النسخ: ' + data.error); else showProgressModal();
         });
     }
 
@@ -1895,7 +2173,7 @@ HTML_TEMPLATE = """
 
         fetch('/transfer/spoof_only', {
             method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({dest: dest, spoof_date: spoofDate})
-        }).then(r=>r.json()).then(data=>{ if(data.error) alert(data.error); else showProgressModal(); });
+        }).then(r=>r.json()).then(data=>{ if(data.error) showInlineError('تعذر بدء التمويه: ' + data.error); else showProgressModal(); });
     }
 
     function runDiagnostic() {
@@ -1914,9 +2192,11 @@ HTML_TEMPLATE = """
                 alert('خطأ أثناء الفحص: ' + data.error);
                 resetTransfer();
             } else {
-                let estMin = Math.floor(data.est_10gb / 60);
-                let msg = `سرعة الكتابة الفعلية: ${data.speed_mbps} MB/s\\n\\n`;
-                msg += `الوقت التقديري لنسخ 10 جيجابايت: حوالي ${estMin} دقيقة.`;
+                let estMin = Math.round(data.est_10gb / 60);
+                let est = estMin >= 60 ? (estMin / 60).toFixed(1) + ' ساعة' : estMin + ' دقيقة';
+                let msg = 'سرعة الكتابة على الوجهة: ' + data.speed_mbps + ' MB/s\\n\\n';
+                msg += 'الوقت التقديري لنسخ 10 جيجابايت: حوالي ' + est + '.\\n\\n';
+                msg += 'القياس يتم بنفس طريقة النسخ الحقيقية (' + (data.size_mb || 32) + ' ميجابايت، دفعة واحدة).';
                 alert(msg);
                 resetTransfer();
                 document.getElementById('modalTitle').innerText = 'العملية قيد التنفيذ...';
@@ -2256,7 +2536,20 @@ HTML_TEMPLATE = """
         document.getElementById('currentFile').style.color = 'var(--text-muted)';
     }
 
+    // Escape server text before it goes into innerHTML (paths can contain < > &).
+    function esc(s) {
+        return String(s === undefined || s === null ? '' : s)
+            .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+
     function showInlineNotify(html, type) {
+        // The modal must be reset *before* the banner is filled in: showProgressModal()
+        // hides #inlineNotify, which used to wipe the message right after setting it.
+        if(!progressModalVisible) {
+            showProgressModal();
+            document.getElementById('modalTitle').innerText =
+                (type === 'success') ? 'تمت العملية' : 'تعذر إكمال العملية';
+        }
         let el = document.getElementById('inlineNotify');
         el.innerHTML = html;
         el.style.display = 'flex';
@@ -2269,11 +2562,11 @@ HTML_TEMPLATE = """
             el.style.borderColor = 'var(--danger)';
             el.style.color = 'var(--danger)';
         }
-        if(!progressModalVisible) showProgressModal();
+        document.getElementById('cancelProgressBtn').style.display = 'none';
         document.getElementById('closeProgressBtn').style.display = 'block';
     }
     function showInlineDone(msg) { showInlineNotify('<span>✔</span> ' + msg, 'success'); }
-    function showInlineError(msg) { showInlineNotify('<span>⚠</span> ' + msg, 'error'); }
+    function showInlineError(msg) { showInlineNotify('<span>⚠</span> ' + esc(msg), 'error'); }
 
     function cancelTransfer() {
         if(confirm('متأكد من الإيقاف؟')) {
@@ -2296,8 +2589,33 @@ HTML_TEMPLATE = """
                 document.getElementById('progressText').innerText = data.progress + '%';
                 document.getElementById('progressFill').style.width = data.progress + '%';
                 if(data.total > 0) document.getElementById('countText').innerText = data.copied + ' / ' + data.total;
-                document.getElementById('currentFile').innerText = data.file;
+                // A stalled card must say so instead of pretending to work.
+                if (data.stalled) {
+                    document.getElementById('currentFile').innerText =
+                        'الكارت لا يستجيب — لم يتم نقل أي بيانات منذ ' + data.stall_seconds + ' ثانية. ' +
+                        'أخرج الكارت وأدخله جيداً. إذا لم تعُد العملية، أعد تشغيل التطبيق: sdmp3 restart';
+                    document.getElementById('currentFile').style.color = 'var(--danger)';
+                } else {
+                    document.getElementById('currentFile').innerText = data.file;
+                    document.getElementById('currentFile').style.color = 'var(--text-muted)';
+                }
                 document.getElementById('failedText').innerText = data.failed ? ('فشل: ' + data.failed) : '';
+
+                // Live throughput + remaining time, so "slow" is a number.
+                let speedEl = document.getElementById('speedText');
+                if (speedEl) {
+                    if (data.speed_mbps > 0) {
+                        let eta = '';
+                        if (data.eta_seconds > 0) {
+                            let m = Math.floor(data.eta_seconds / 60);
+                            let s = data.eta_seconds % 60;
+                            eta = ' • متبقي ~' + (m > 0 ? m + ' د ' : '') + s + ' ث';
+                        }
+                        speedEl.innerText = data.speed_mbps + ' MB/s' + eta;
+                    } else {
+                        speedEl.innerText = '';
+                    }
+                }
 
                 if(data.status === 'done' || data.status === 'cancelled' || data.status === 'error') {
                     
@@ -2322,16 +2640,33 @@ HTML_TEMPLATE = """
                         showInlineError('فشلت العملية: ' + data.log);
                     } else if (data.status === 'done' && data.time_taken) {
                         document.getElementById('timeTakenDiv').style.display = 'block';
-                        document.getElementById('timeTakenDiv').innerText = 'استغرق: ' + data.time_taken;
+                        document.getElementById('timeTakenDiv').innerText = 'استغرق: ' + data.time_taken
+                            + (data.speed_mbps ? ' • متوسط السرعة: ' + data.speed_mbps + ' MB/s' : '');
                     } else if (data.status === 'cancelled' && data.time_taken) {
                         document.getElementById('timeTakenDiv').style.display = 'block';
                         document.getElementById('timeTakenDiv').innerText = 'تم الإيقاف بعد: ' + data.time_taken;
                     }
                     
-                    if(data.errors && data.errors.length > 0) {
-                        let box = document.getElementById('errorsBox');
+                    // Show why items failed (path + reason) and which source
+                    // folders were unreadable, not just a list of names.
+                    let box = document.getElementById('errorsBox');
+                    let lines = [];
+                    if (data.errors && data.errors.length > 0) {
+                        lines.push('<b>عناصر فشلت:</b>');
+                        data.errors.forEach(function(n){ lines.push('- ' + esc(n)); });
+                    }
+                    if (data.skipped && data.skipped.length > 0) {
+                        lines.push('<b>تم تخطي (غير مقروء):</b>');
+                        data.skipped.forEach(function(n){ lines.push('- ' + esc(n)); });
+                    }
+                    if (data.hint) {
+                        lines.push('<b>ملاحظة:</b> ' + esc(data.hint));
+                    }
+                    if (lines.length) {
                         box.style.display = 'block';
-                        box.innerHTML = 'ملفات فشلت:<br>' + data.errors.map(n => '- ' + n).join('<br>');
+                        box.innerHTML = lines.join('<br>');
+                    } else {
+                        box.style.display = 'none';
                     }
                 }
             }
@@ -2611,38 +2946,59 @@ def disk_usage_route():
 
 @app.route('/api/benchmark', methods=['POST'])
 def benchmark():
+    """Measure real sequential write speed on the destination.
+
+    Writes 32MB with the same 4MB blocks and the same single end-of-file flush
+    that the copy engine uses, so the number matches what a real copy achieves.
+    (The old version called fsync after every 1MB, which measures flush latency
+    and always looked slow.)
+    """
     data = request.json or {}
     dest = data.get('dest', '')
     if not dest or not os.path.isdir(dest):
         return jsonify({'error': 'مسار الوجهة غير صالح'})
-    
+
+    problem = check_destination(dest)
+    if problem: return jsonify({'error': problem})
+
     test_file = os.path.join(dest, '.speedtest_tmp')
+    size_mb = 32
     try:
-        chunk = bytearray(1024 * 1024) 
-        start_time = time.time()
-        
-        with open(test_file, 'wb') as f:
-            for _ in range(50): 
-                f.write(chunk)
-                f.flush()
-                os.fsync(f.fileno())
-        
-        duration = time.time() - start_time
-        speed_mbps = 50 / duration if duration > 0 else 0
+        block = b'\0' * COPY_BUFFER_SIZE
+        written = 0
+        target = size_mb * 1024 * 1024
+
+        start_time = time.perf_counter()
+        fd = os.open(test_file, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o666)
+        try:
+            _advise_sequential(fd)
+            while written < target:
+                chunk = block[:min(len(block), target - written)]
+                written += os.write(fd, chunk)
+            os.fsync(fd)          # one flush, exactly like a real transfer
+        finally:
+            os.close(fd)
+        duration = max(time.perf_counter() - start_time, 1e-6)
+
+        speed_mbps = written / duration / (1024 * 1024)
         est_seconds_10gb = (10 * 1024) / speed_mbps if speed_mbps > 0 else 0
-        
-        os.remove(test_file)
-        
+        log_event('benchmark: {!r} {:.2f} MB/s ({}MB)'.format(dest, speed_mbps, size_mb))
+
         return jsonify({
             'success': True,
             'speed_mbps': round(speed_mbps, 2),
-            'est_10gb': round(est_seconds_10gb)
+            'est_10gb': round(est_seconds_10gb),
+            'size_mb': size_mb,
         })
     except Exception as e:
-        if os.path.exists(test_file):
-            try: os.remove(test_file)
-            except: pass
+        log_event('benchmark ERROR: {}'.format(e))
         return jsonify({'error': str(e)})
+    finally:
+        try:
+            if os.path.exists(test_file):
+                os.remove(test_file)
+        except OSError:
+            pass
 
 @app.route('/api/delete', methods=['POST'])
 def delete_item():
@@ -2913,11 +3269,31 @@ def start_transfer():
     if not dest or not os.path.isdir(dest): return jsonify({'error': 'مسار الوجهة غير صالح'})
     if not os.access(dest, os.W_OK): return jsonify({'error': 'لا توجد صلاحية كتابة'})
 
-    with transfer_lock:
-        if transfer_state['status'] == 'copying': return jsonify({'error': 'هناك عملية قيد التشغيل بالفعل'})
-        transfer_state['status'] = 'copying'
+    # A card can be mounted but dead. Check it now (with a timeout) so the user
+    # gets "الكارت لا يستجيب" instead of a transfer that freezes at 0%.
+    problem = check_destination(dest)
+    if problem: return jsonify({'error': problem})
+    if dest_inside_source(paths, dest):
+        return jsonify({'error': 'لا يمكن النسخ إلى مجلد داخل المصدر: ' + dest})
 
-    threading.Thread(target=copy_thread_task, args=(paths, dest, set(p for p in data.get('excludes', []) if p)), daemon=True).start()
+    global ACTIVE_THREAD
+    with transfer_lock:
+        if transfer_state['status'] == 'copying' and is_thread_alive(ACTIVE_THREAD):
+            return jsonify({'error': 'هناك عملية قيد التشغيل بالفعل'})
+        if transfer_state['status'] == 'copying':
+            # The previous worker died without clearing the flag; recover instead
+            # of blocking every future copy with "already running" forever.
+            log_event('recovering a stale copy state (worker thread is gone)')
+            transfer_state['status'] = 'idle'
+        # Clear the previous run here, not in the worker: otherwise a poll that
+        # lands between this request and the thread start still sees the old
+        # 'done'/'error' state and the UI reports the wrong result.
+        reset_state(status='copying', action='copy', start_time=time.time())
+        ACTIVE_THREAD = threading.Thread(
+            target=copy_thread_task,
+            args=(paths, dest, set(p for p in data.get('excludes', []) if p)),
+            daemon=True)
+        ACTIVE_THREAD.start()
     return jsonify({'success': True})
 
 @app.route('/transfer/spoof_only', methods=['POST'])
@@ -2928,11 +3304,21 @@ def start_spoof_only():
     if not dest or not os.path.isdir(dest): return jsonify({'error': 'مسار الوجهة غير صالح'})
     if not spoof_timestamp: return jsonify({'error': 'تاريخ التمويه غير صالح'})
 
-    with transfer_lock:
-        if transfer_state['status'] == 'copying': return jsonify({'error': 'النظام مشغول'})
-        transfer_state['status'] = 'copying'
+    problem = check_destination(dest)
+    if problem: return jsonify({'error': problem})
 
-    threading.Thread(target=spoof_only_thread, args=(dest, spoof_timestamp), daemon=True).start()
+    global ACTIVE_THREAD
+    with transfer_lock:
+        if transfer_state['status'] == 'copying' and is_thread_alive(ACTIVE_THREAD):
+            return jsonify({'error': 'النظام مشغول'})
+        if transfer_state['status'] == 'copying':
+            log_event('recovering a stale spoof state (worker thread is gone)')
+            transfer_state['status'] = 'idle'
+        # Same race as copy: clear the previous result before the worker starts.
+        reset_state(status='copying', action='spoof', start_time=time.time())
+        ACTIVE_THREAD = threading.Thread(
+            target=spoof_only_thread, args=(dest, spoof_timestamp), daemon=True)
+        ACTIVE_THREAD.start()
     return jsonify({'success': True})
 
 @app.route('/transfer/cancel')

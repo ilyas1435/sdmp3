@@ -24,6 +24,7 @@ import signal
 import socket
 import subprocess
 import sys
+import threading
 import time
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -561,6 +562,37 @@ def cmd_check_card(argv):
     return 1 if total_damaged else 0
 
 
+def probe_card(path, timeout=8):
+    """Return (ok, message) for a mounted card.
+
+    Catches the failure mode that makes the app look frozen: a card that is
+    still listed as mounted but no longer answers, so even a 5-byte write blocks
+    forever inside the kernel. Runs with a hard timeout.
+    """
+    result = []
+
+    def worker():
+        probe = os.path.join(path, ".sdmp3_probe")
+        try:
+            with open(probe, "wb") as fh:
+                fh.write(b"sdmp3")
+                fh.flush()
+                os.fsync(fh.fileno())
+            os.remove(probe)
+            result.append(None)
+        except OSError as exc:
+            result.append(exc)
+
+    thread = threading.Thread(target=worker, daemon=True)
+    thread.start()
+    thread.join(timeout)
+    if thread.is_alive():
+        return False, "NOT RESPONDING (>{}s) - remove and reinsert the card".format(timeout)
+    if result and result[0] is not None:
+        return False, "write failed: {}".format(result[0])
+    return True, "writable"
+
+
 def cmd_doctor():
     failures = []
     warnings = []
@@ -604,6 +636,9 @@ def cmd_doctor():
 
     cards = external_storage()
     check(bool(cards), "external sd cards", ", ".join(cards) if cards else "none mounted", hard=False)
+    for mount in external_mounts():
+        healthy, message = probe_card(mount)
+        check(healthy, "card {}".format(mount), message, hard=False)
 
     if shutil.which("rish"):
         running = shizuku_shell()

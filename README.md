@@ -55,6 +55,10 @@
 - ⚡ **Termux wake lock** — keeps the CPU awake during long transfers.
 - ♻️ **Safe shutdown** — Ctrl+C / SIGTERM cleans up TTS cache cleanly.
 - 🌐 **Network access** — serves on `0.0.0.0:5050` for access from any device.
+- 📊 **Honest progress** — live MB/s and ETA, per-file failure reasons, and an
+  "الكارت لا يستجيب" warning instead of a silent freeze when a card stops answering.
+- 🧾 **Every transfer is logged** — start, per-file failures, finish (with average
+  speed) and errors go to `sdmp3.log` under `[sdmp3]`.
 
 ---
 
@@ -113,7 +117,7 @@ bash ~/.local/share/sdmp3/install.sh --uninstall --purge  # also delete the sour
 | `status`           | Show version, pid, port, uptime and URLs                  |
 | `update`           | `git pull` from GitHub (refuses if you edited the source) |
 | `version`          | Print version + git commit                                |
-| `doctor`           | Environment check                                         |
+| `doctor`           | Environment check (includes a write probe on each mounted card) |
 | `check-card`       | Find folders Android can no longer read (FAT damage)      |
 | `unlock`           | Grant SD-card all-files access via Shizuku (optional)      |
 | `open`             | Open the UI in the Android browser                        |
@@ -171,6 +175,47 @@ to the log, so it can be inspected later:
 ```bash
 tail -f ~/.local/state/sdmp3/sdmp3.log | grep '\[sdmp3\]'
 ```
+
+### 🧯 Troubleshooting: copy fails or is very slow
+
+Copy problems are almost always the **card**, not the app. The app now checks the
+destination before it starts, so the failure names itself instead of hanging:
+
+| Message | Meaning | Fix |
+|---|---|---|
+| `تعذر الكتابة على الوجهة — الكارت يرفض الكتابة (خطأ إدخال/إخراج)` | The card is mounted and readable, but every write returns `EIO` — broken FAT or a worn-out card | Back up what you can, then repair on a PC (`chkdsk X: /f`, `sudo fsck.vfat -a /dev/sdX`) or format the card; if it still fails, replace it |
+| `الوجهة لا تستجيب (الكارت معلّق)` | The card was pulled or died while mounted; even a 5-byte write blocks forever | Remove and reinsert the card, then retry. If the app stays stuck: `sdmp3 restart` |
+| `الكارت لا يستجيب — لم يتم نقل أي بيانات منذ N ثانية` (during a copy) | Same, detected mid-transfer (no bytes moved for 25s) | Remove/reinsert; the transfer continues by itself if the card returns |
+| `المساحة المتوفرة غير كافية` | Not enough free space for the whole selection | Free space or copy fewer folders |
+| `لا يمكن النسخ إلى مجلد داخل المصدر` | Destination is inside the source | Pick a destination outside the copied folders |
+
+`sdmp3 doctor` probes every mounted card with a real write (8s timeout) and
+reports `NOT RESPONDING` or `write failed: ...` for a bad one.
+
+Per-file failures are listed with their reason (`name.mp3 — صلاحية مرفوضة`),
+unreadable source folders appear as `تم تخطي (غير مقروء)`, and the whole transfer
+is logged with its average speed:
+
+```bash
+grep '\[sdmp3\]' ~/.local/state/sdmp3/sdmp3.log | tail
+```
+
+#### Why a copy of many small MP3s is slower than a big file
+
+Copies are strictly **one file at a time in JOC order** — that is the whole point
+of the app (old players follow FAT directory order). Each file costs a create +
+write + close round-trip through Android's FUSE layer, so speed is dominated by
+the number of files, not their size. Measured on this device:
+
+| Workload | Speed |
+|---|---|
+| Internal storage, 5 × 40 MB files | ~180 MB/s |
+| Internal storage, 150 × 160 KB MP3s | ~28 MB/s (≈190 files/s) |
+| Slow Class-4 card | card limited — usually 4–12 MB/s |
+
+The in-app speed test writes 32 MB with the same 4 MB blocks and the same single
+end-of-file flush as a real copy, so its number matches what a copy actually
+achieves (the old test flushed every 1 MB and always looked slow).
 
 ---
 
