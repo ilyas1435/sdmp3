@@ -97,14 +97,16 @@ Options are rendered at route `/` via Jinja `{% for st in storages %}`, backed b
 
 Each storage dict carries `kind` + `icon` so the UI can label it honestly:
 
-| kind | How it is detected | Icon / label |
-|---|---|---|
-| `internal` | `/sdcard` | `ico-internal` — الذاكرة الداخلية |
-| `sdcard` | `/proc/mounts` device major **179** (MMC) | `ico-sd` — كارت SD (UUID) |
-| `usb` | device major **8** (SCSI/USB OTG) | `ico-usb` — USB OTG (UUID) |
-| `card` | anything unrecognised (dm-*, unknown fs) | `ico-card` — كارت ذاكرة (UUID) |
+| kind | How it is detected | Icon / label | Colour |
+|---|---|---|---|
+| `internal` | `/sdcard` | `ico-internal` — الذاكرة الداخلية | `--kind-internal` cyan `#22d3ee` |
+| `sdcard` | `/proc/mounts` device major **179** (MMC) | `ico-sd` — كارت SD (UUID) | `--kind-sdcard` blue `#60a5fa` |
+| `usb` | device major **8** (SCSI/USB OTG) | `ico-usb` — USB OTG (UUID) | `--kind-usb` pink `#f472b6` |
+| `card` | anything unrecognised (dm-*, unknown fs) | `ico-card` — كارت ذاكرة (UUID) | `--kind-card` slate `#94a3b8` |
 
 `storage_kind()` looks the volume up in `/proc/mounts` as `/mnt/media_rw/<UUID>` and passes the device to `classify_volume_device()`. `df -h` alone cannot tell an SD card from a USB stick — both are `/storage/XXXX-XXXX`. The icons are one SVG sprite (`<symbol id="ico-*">` right after `<body>`) referenced with `<use href="#ico-...">`; the select-based pickers were replaced by `.storage-card` buttons (`chooseStorage()` / `syncStorageCards()`), and the same icons appear in the path picker badge.
+
+The site accent is **indigo** (`--accent`/`--accent-hover`/`--accent-soft`/`--accent-glow` in `:root`); nothing else hardcodes it. Each volume kind owns a hue: `.storage-card.kind-*` sets a local `--kind`/`--kind-soft` used by the card's start border, icon, active fill and "الحالي/الوجهة" badge; `.pill-kind-*` and `.kind-border-*` reuse the same variables for the picker badge, the header `sdWritePill` and the path inputs. Green/amber/red stay reserved for success/warning/danger — that is why USB OTG is pink rather than green. Only a writable card gets its kind hue in the header pill; a refusing card stays `pill-warn`.
 
 ## Path picker (تحديد / تصفح)
 `/api/items` returns `{name, path, is_dir, size}` in one `scandir` pass (folders first, then files, name-sorted). The picker renders folders (navigable, with rename/delete actions) and **files as read-only rows** with a formatted size — a destination must be a folder, and single files are ticked in the source tree instead. Long folders are paged: `PICKER_FILES_STEP` (300) files per page with «عرض المزيد», so a 4 000-file folder opens instantly.

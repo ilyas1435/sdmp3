@@ -9,7 +9,7 @@
 ## ✨ Features
 
 ### 🗂️ File Transfer & Organizing
-- 📁 **Multi-storage support** — internal storage, **SD card** and **USB OTG** are detected separately and each gets its own icon + label (MMC vs USB is read from the block device, since Android shows both as `/storage/XXXX-XXXX`).
+- 📁 **Multi-storage support** — internal storage, **SD card** and **USB OTG** are detected separately and each gets its own icon, label and colour (MMC vs USB is read from the block device, since Android shows both as `/storage/XXXX-XXXX`).
 - 📦 **Fast sequential copying** — 4 MB buffers, one write pass per file, and a single flush every 64 MB; playback order comes from writing files in order, not from per-file `fsync`.
 - 🧭 **JOC physical-order sequencing** — files are copied in a natural, physical order (DFS traversal + natural sort) so hardware MP3 players play them reliably in sequence.
 - 🖥️ **Built-in file browser** — expandable tree view to browse, select, and exclude folders/files; the destination picker lists files too (with sizes), so you can confirm what a folder holds before choosing it.

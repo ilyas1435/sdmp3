@@ -24,7 +24,7 @@ app = Flask(__name__)
 
 # Version is kept in the VERSION file next to this script so that the `sdmp3`
 # CLI can read it without importing the app.
-APP_VERSION_FALLBACK = "1.3.0"
+APP_VERSION_FALLBACK = "1.4.0"
 
 # Toggled by --no-wakelock (see main() at the bottom).
 WAKELOCK_ENABLED = True
@@ -1185,13 +1185,24 @@ HTML_TEMPLATE = """
             --border: #26314a;
             --text: #f5f7fb;
             --text-muted: #8b96ac;
-            --accent: #c17f3e;
-            --accent-hover: #a8672e;
-            --accent-soft: rgba(193, 127, 62, 0.16);
+            --accent: #6366f1;
+            --accent-hover: #4f46e5;
+            --accent-soft: rgba(99, 102, 241, 0.16);
+            --accent-glow: rgba(99, 102, 241, 0.55);
             --success: #22c55e;
             --danger: #f43f5e;
             --danger-soft: rgba(244, 63, 94, 0.12);
             --warning: #f59e0b;
+            /* One hue per volume type. Green/amber/red stay reserved for
+               success/warning/danger, so USB OTG gets the free pink hue. */
+            --kind-internal: #22d3ee;
+            --kind-internal-soft: rgba(34, 211, 238, 0.14);
+            --kind-sdcard: #60a5fa;
+            --kind-sdcard-soft: rgba(96, 165, 250, 0.14);
+            --kind-usb: #f472b6;
+            --kind-usb-soft: rgba(244, 114, 182, 0.14);
+            --kind-card: #94a3b8;
+            --kind-card-soft: rgba(148, 163, 184, 0.14);
             --radius: 14px;
         }
         * { box-sizing: border-box; font-family: 'IBM Plex Sans Arabic', 'Inter', sans-serif; -webkit-tap-highlight-color: transparent; }
@@ -1207,6 +1218,11 @@ HTML_TEMPLATE = """
         .pill { font-size: 11px; line-height: 1; padding: 5px 9px; border-radius: 999px; border: 1px solid var(--border); color: var(--text-muted); background: rgba(255,255,255,0.03); white-space: nowrap; }
         .pill-ok { color: var(--success); border-color: rgba(34,197,94,0.35); background: rgba(34,197,94,0.08); }
         .pill-warn { color: var(--warning); border-color: rgba(245,158,11,0.35); background: rgba(245,158,11,0.08); }
+        /* Pills tinted by volume type: SD card / USB OTG / internal / unknown. */
+        .pill-kind-internal { color: var(--kind-internal); border-color: rgba(34,211,238,0.4); background: var(--kind-internal-soft); }
+        .pill-kind-sdcard { color: var(--kind-sdcard); border-color: rgba(96,165,250,0.4); background: var(--kind-sdcard-soft); }
+        .pill-kind-usb { color: var(--kind-usb); border-color: rgba(244,114,182,0.4); background: var(--kind-usb-soft); }
+        .pill-kind-card { color: var(--kind-card); border-color: rgba(148,163,184,0.4); background: var(--kind-card-soft); }
 
         .card { background: var(--card); padding: 18px; border-radius: var(--radius); border: 1px solid var(--border); margin-bottom: 16px; }
         .card-title { display:flex; align-items:center; gap:8px; font-size: 14px; font-weight:600; color:#fff; margin: 0 0 14px; }
@@ -1220,7 +1236,7 @@ HTML_TEMPLATE = """
 
         .btn { padding: 11px 16px; min-height: 44px; border: none; border-radius: 10px; cursor: pointer; font-weight: 600; font-size: 13.5px; color: #fff; transition: transform 0.08s ease, filter 0.15s ease, background 0.15s ease; display: inline-flex; align-items: center; justify-content: center; gap: 7px; }
         .btn:active { transform: scale(0.97); }
-        .btn-primary { background: linear-gradient(135deg, var(--accent), var(--accent-hover)); box-shadow: 0 6px 16px -6px rgba(99,102,241,0.6); }
+        .btn-primary { background: linear-gradient(135deg, var(--accent), var(--accent-hover)); box-shadow: 0 6px 16px -6px var(--accent-glow); }
         .btn-primary:hover { filter: brightness(1.08); }
         .btn-success { background: var(--success); }
         .btn-success:hover { filter: brightness(1.08); }
@@ -1248,26 +1264,35 @@ HTML_TEMPLATE = """
         .icon-btn svg { width:14px; height:14px; }
         .icon-btn:active { transform: scale(0.92); }
 
-        /* Storage picker: one card per volume, icon + Arabic label + real path. */
+        /* Storage picker: one card per volume, icon + Arabic label + real path.
+           Each kind sets --kind/--kind-soft so the card is coloured by *what it
+           is* (SD / USB / internal) instead of by the global accent. */
         .storage-grid { display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px; }
         .storage-card { display: flex; align-items: center; gap: 10px; width: 100%; padding: 10px 12px;
-            border: 1px solid var(--border); border-radius: 10px; background: var(--bg); color: var(--text);
+            border: 1px solid var(--border); border-inline-start: 3px solid var(--kind, var(--border));
+            border-radius: 10px; background: var(--bg); color: var(--text);
             cursor: pointer; text-align: right; transition: border-color .15s, background .15s;
             font-family: inherit; appearance: none; -webkit-appearance: none; }
-        .storage-card:hover { border-color: var(--accent); }
-        .storage-card.active { border-color: var(--accent); background: var(--accent-soft); }
-        .storage-card .storage-ico { width: 22px; height: 22px; flex-shrink: 0; color: var(--text-muted); }
-        .storage-card.kind-internal .storage-ico { color: var(--accent); }
-        .storage-card.kind-sdcard .storage-ico { color: #5aa9ff; }
-        .storage-card.kind-usb .storage-ico { color: #34d399; }
-        .storage-card.active .storage-ico { color: var(--accent); }
+        .storage-card:hover { border-color: var(--kind, var(--accent)); }
+        .storage-card.active { border-color: var(--kind, var(--accent)); background: var(--kind-soft, var(--accent-soft)); }
+        .storage-card .storage-ico { width: 22px; height: 22px; flex-shrink: 0; color: var(--kind, var(--text-muted)); }
+        .storage-card.kind-internal { --kind: var(--kind-internal); --kind-soft: var(--kind-internal-soft); }
+        .storage-card.kind-sdcard { --kind: var(--kind-sdcard); --kind-soft: var(--kind-sdcard-soft); }
+        .storage-card.kind-usb { --kind: var(--kind-usb); --kind-soft: var(--kind-usb-soft); }
+        .storage-card.kind-card { --kind: var(--kind-card); --kind-soft: var(--kind-card-soft); }
         .storage-meta { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex-grow: 1; }
         .storage-name { font-size: 13.5px; font-weight: 600; }
         .storage-path { font-size: 11px; color: var(--text-muted); direction: ltr; text-align: right;
             overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .storage-card.active .storage-name { color: var(--kind, var(--accent)); }
         .storage-badge { display: none; margin-inline-start: auto; font-size: 10px; padding: 3px 7px; border-radius: 999px;
             border: 1px solid var(--border); color: var(--text-muted); white-space: nowrap; }
-        .storage-card.active .storage-badge { display: inline-block; color: var(--accent); border-color: var(--accent); }
+        .storage-card.active .storage-badge { display: inline-block; color: var(--kind, var(--accent)); border-color: var(--kind, var(--accent)); }
+        /* Path box in the picker: border says which volume you are browsing. */
+        .kind-border-internal { border-color: var(--kind-internal) !important; }
+        .kind-border-sdcard { border-color: var(--kind-sdcard) !important; }
+        .kind-border-usb { border-color: var(--kind-usb) !important; }
+        .kind-border-card { border-color: var(--kind-card) !important; }
         .picker-hint { font-size: 11.5px; color: var(--text-muted); margin: 6px 2px 8px; }
         .picker-file-row .item-name { color: var(--text-muted); cursor: default; }
         .file-size { margin-inline-start: auto; font-size: 11px; color: var(--text-muted); direction: ltr; padding-inline-start: 10px; }
@@ -1849,6 +1874,8 @@ HTML_TEMPLATE = """
     // STORAGE_ROOTS comes from the server (name, path, kind, icon) so the
     // browser shows the same labels + icons as the selection cards.
     const STORAGE_ROOTS = {{ storages|tojson }};
+    // Every kind the server can emit; used to reset the picker path-box colour.
+    const STORAGE_KIND_LIST = ['internal', 'sdcard', 'usb', 'card'];
 
     function chooseStorage(mode, btn) {
         let path = btn.dataset.path;
@@ -1866,6 +1893,13 @@ HTML_TEMPLATE = """
             let active = !!root && (current === root || current.startsWith(root + '/'));
             card.classList.toggle('active', active);
         });
+        // Tint the matching path box so the input itself says which volume it is.
+        let box = document.getElementById(mode === 'source' ? 'custom_source_path' : 'custom_dest_path');
+        if (box) {
+            let st = storageForPath(current);
+            STORAGE_KIND_LIST.forEach(function(k) { box.classList.remove('kind-border-' + k); });
+            if (st) box.classList.add('kind-border-' + st.kind);
+        }
     }
 
     function storageForPath(path) {
@@ -1957,7 +1991,7 @@ HTML_TEMPLATE = """
     }
 
     function checkDiskSpace(path) {
-        if(!path) return;
+        if(!path) { syncStorageCards('dest', ''); return; }
         localStorage.setItem('joc_last_dest', path);
         syncStorageCards('dest', path);
         fetch('/api/disk_usage?path=' + encodeURIComponent(path))
@@ -2006,13 +2040,18 @@ HTML_TEMPLATE = """
         // Which storage are we inside? (internal / SD card / USB OTG)
         let storage = storageForPath(path);
         let badge = document.getElementById('pickerStorageBadge');
+        let pathBox = document.getElementById('currentDestView');
+        let kind = storage ? storage.kind : null;
         if (storage) {
             badge.textContent = storage.name;
-            badge.className = 'pill' + (storage.kind === 'usb' ? ' pill-ok' : '');
+            badge.className = 'pill pill-kind-' + kind;
             badge.style.display = 'inline-block';
         } else {
             badge.style.display = 'none';
         }
+        // Same hue on the path box, so a deep folder still names its volume.
+        STORAGE_KIND_LIST.forEach(function(k) { pathBox.classList.remove('kind-border-' + k); });
+        if (kind) pathBox.classList.add('kind-border-' + kind);
 
         fetch('/api/items?path=' + encodeURIComponent(path))
             .then(res => res.json())
@@ -2516,7 +2555,9 @@ HTML_TEMPLATE = """
                 if (sdEl) {
                     // Say *which* volume it is (SD card / USB OTG), not just "الكارت".
                     var kindLabel = {sdcard: 'كارت SD', usb: 'USB OTG', card: 'كارت', internal: 'ذاكرة'}[sd.kind] || 'الكارت';
-                    if (sd.writable === true) { sdEl.textContent = 'كتابة ' + kindLabel + ': نعم'; sdEl.className = 'pill pill-ok'; }
+                    // Writable -> the volume's own hue; refusing -> warning amber,
+                    // so a dead card can never look healthy.
+                    if (sd.writable === true) { sdEl.textContent = 'كتابة ' + kindLabel + ': نعم'; sdEl.className = 'pill pill-kind-' + (sd.kind || 'card'); }
                     else if (sd.writable === false) { sdEl.textContent = 'كتابة ' + kindLabel + ': لا'; sdEl.className = 'pill pill-warn'; }
                     else { sdEl.textContent = 'كتابة الكارت: لا يوجد كارت'; sdEl.className = 'pill'; }
                     // Hovering explains *why* the card is not writable (EIO, lock, ...).
