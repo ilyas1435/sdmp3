@@ -193,6 +193,23 @@ def format_duration(seconds):
     return "{}s".format(secs)
 
 
+def external_storage():
+    """SD card names, detected the same way the app does (df -h /storage/...)."""
+    cards = []
+    try:
+        out = subprocess.run(["df", "-h"], capture_output=True, text=True, timeout=10).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return cards
+    for line in out.splitlines():
+        if "/storage/" not in line or "emulated" in line:
+            continue
+        mount = line.split()[-1]
+        name = os.path.basename(mount)
+        if name and name not in cards:
+            cards.append(name)
+    return cards
+
+
 def module_version(dist_name):
     try:
         return importlib.metadata.version(dist_name)
@@ -467,15 +484,7 @@ def cmd_doctor():
     writable = os.path.isdir("/sdcard") and os.access("/sdcard", os.W_OK)
     check(writable, "/sdcard writable", "yes" if writable else "no - run: termux-setup-storage", hard=False)
 
-    cards = []
-    try:
-        for name in sorted(os.listdir("/storage")):
-            path = os.path.join("/storage", name)
-            if name in ("emulated", "self") or not os.path.isdir(path):
-                continue
-            cards.append(name)
-    except OSError:
-        pass
+    cards = external_storage()
     check(bool(cards), "external sd cards", ", ".join(cards) if cards else "none mounted", hard=False)
 
     inst = read_instance()
