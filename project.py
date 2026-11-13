@@ -24,7 +24,7 @@ app = Flask(__name__)
 
 # Version is kept in the VERSION file next to this script so that the `sdmp3`
 # CLI can read it without importing the app.
-APP_VERSION_FALLBACK = "1.5.0"
+APP_VERSION_FALLBACK = "1.5.1"
 
 # Toggled by --no-wakelock (see main() at the bottom).
 WAKELOCK_ENABLED = True
@@ -1179,62 +1179,51 @@ HTML_TEMPLATE = """
     <meta name="theme-color" content="#0a0f0d">
     <style>
         :root {
-            /* Coolors palette — https://coolors.co/ee4266-2a1e5c-0a0f0d-c4cbca-3cbbb1
-               #0a0f0d near-black · #2a1e5c deep indigo · #3cbbb1 teal
-               #ee4266 rose        · #c4cbca cool grey
+            /* "Coffee Blues" palette — https://www.color-hex.com/color-palette/102595
+               #39918c teal · #d0b49f sand · #be9078 tan · #ab6b51 clay · #2f435a slate
+               The page/card shades are the palette slate darkened (x0.45 / x0.70 /
+               x0.87) so the UI stays dark; the slate itself is the border. Warm
+               sand light (#ece2d8) on cool slate is the whole character of this
+               theme — do not neutralise either side. */
+            --bg: #151e28;
+            --card: #212f3f;
+            --card-2: #2a3a4c;
+            --field: #151e28;        /* recessed: inputs, tree, storage rows, tracks */
+            --border: #2f435a;
+            --text: #ece2d8;
+            --text-muted: #b0a59b;
 
-               Comfort rules learned the hard way:
-               1. One hue family for the neutrals. Page = #0a0f0d (verbatim,
-                  chroma 1.9 = effectively neutral). Cards = the indigo pulled
-                  two thirds of the way to neutral (#211f3a, chroma 42.7 -> 19.4)
-                  instead of a saturated purple slab.
-               2. Real separation between page and card: 1.24:1 (the old 1.16
-                  made card edges read as glowing lines). Recessed fields go the
-                  other way, #141322.
-               3. Softer light: body text #d9dbe3 is 11.5:1 on a card, not 14:1.
-                  Nothing glows: no gradient and no coloured shadow on buttons.
-               4. Hue = meaning, small areas only. Teal #3cbbb1 is the single
-                  accent (primary action, focus, progress, current state), rose
-                  #ee4266 is destruction, indigo #2a1e5c is the brand tile, grey
-                  #c4cbca is text + the internal-storage hue. */
-            --bg: #0a0f0d;
-            --card: #211f3a;         /* indigo, pulled toward neutral */
-            --card-2: #2b2850;       /* one lift: raised rows, outline buttons */
-            --field: #141322;        /* recessed: inputs, tree, storage rows, tracks */
-            --border: rgba(217, 219, 227, 0.13);   /* neutral hairline, any surface */
-            --text: #d9dbe3;
-            --text-muted: #a4a7b7;
-            --indigo: #2a1e5c;       /* brand tile / selected fill */
-            --accent: #3cbbb1;
-            --accent-hover: #34a9a0;
-            --accent-ink: #0a0f0d;   /* label colour on ANY bright fill */
-            --accent-soft: rgba(60, 187, 177, 0.14);
-            --accent-glow: rgba(60, 187, 177, 0.20);
-            --success: #4ade80;
-            /* Rose is the palette's alert hue: #ee4266 fills (its dark label is
-               5.2:1) and --danger-ink is its readable text shade (7.0:1 on a
-               card) because the fill itself is only 4.2:1 as text. */
-            --danger: #ee4266;
-            --danger-ink: #f78ca0;
-            --danger-soft: rgba(238, 66, 102, 0.12);
-            --warning: #f5b942;
-            /* One hue per volume type, all inside the violet family except the
-               neutral grey: internal = cool grey, SD = the accent teal (the
-               volume this app exists for), USB = indigo lifted to violet,
-               unknown = a deliberately dull blue-grey. Worst pair ΔE76 23.2,
-               so colour alone separates them. */
-            --kind-internal: #c4cbca;
-            --kind-internal-ink: #c4cbca;
-            --kind-internal-soft: rgba(196, 203, 202, 0.12);
-            --kind-sdcard: #3cbbb1;
-            --kind-sdcard-ink: #3cbbb1;
-            --kind-sdcard-soft: rgba(60, 187, 177, 0.14);
-            --kind-usb: #b0a0f0;
-            --kind-usb-ink: #b0a0f0;
-            --kind-usb-soft: rgba(176, 160, 240, 0.14);
-            --kind-card: #8e90a0;
-            --kind-card-ink: #a6a9ba;
-            --kind-card-soft: rgba(142, 144, 160, 0.16);
+            /* Teal is the accent. The palette teal is light enough to *mark*
+               (#39918c = 3.6:1 on a card) but a filled button needs a label at
+               4.5:1+, and white on #39918c is only 3.75 — so filled buttons use
+               the palette's darker teal (#2e7a75, white label 5.05:1). */
+            --accent: #39918c;
+            --accent-hover: #2e7a75;
+            --accent-fill: #2e7a75;
+            --accent-fill-hover: #276a66;
+            --accent-ink: #151e28;   /* label on warning/success/danger fills */
+            --accent-soft: rgba(57, 145, 140, 0.18);
+            --accent-glow: rgba(57, 145, 140, 0.40);
+            --success: #22c55e;
+            --danger: #f43f5e;
+            --danger-ink: #fc8b9b;   /* danger *text* (6.0:1 card, 5.2:1 raised) */
+            --danger-soft: rgba(244, 63, 94, 0.12);
+            --warning: #f59e0b;
+
+            /* One hue per volume type, all from the same palette. Clay is too
+               dark for 11px pill text, so the kinds carry an -ink variant. */
+            --kind-internal: #d0b49f;
+            --kind-internal-ink: #d0b49f;
+            --kind-internal-soft: rgba(208, 180, 159, 0.16);
+            --kind-sdcard: #ab6b51;
+            --kind-sdcard-ink: #dda88c;
+            --kind-sdcard-soft: rgba(171, 107, 81, 0.20);
+            --kind-usb: #8fa9c4;
+            --kind-usb-ink: #a8bfd6;
+            --kind-usb-soft: rgba(143, 169, 196, 0.16);
+            --kind-card: #be9078;
+            --kind-card-ink: #be9078;
+            --kind-card-soft: rgba(190, 144, 120, 0.16);
             --radius: 14px;
         }
         * { box-sizing: border-box; font-family: 'IBM Plex Sans Arabic', 'Inter', sans-serif; -webkit-tap-highlight-color: transparent; }
@@ -1242,12 +1231,12 @@ HTML_TEMPLATE = """
         .container { max-width: 900px; margin: 0 auto; }
 
         .app-header { display:flex; align-items:center; gap:12px; padding-bottom: 18px; margin-top: 6px; margin-bottom: 6px; border-bottom: 1px solid var(--border); }
-        .app-header .badge { width:42px; height:42px; border-radius:12px; background:var(--indigo); border:1px solid rgba(60,187,177,0.28); display:flex; align-items:center; justify-content:center; flex-shrink:0; }
+        .app-header .badge { width:42px; height:42px; border-radius:12px; background:var(--accent-soft); display:flex; align-items:center; justify-content:center; flex-shrink:0; }
         .app-header .badge svg { stroke: var(--accent); width:22px; height:22px; }
         .app-header h1 { font-size: 18px; color: var(--text); margin:0; font-weight: 700; letter-spacing: -0.2px; }
         .app-header p { margin: 2px 0 0; font-size: 12.5px; color: var(--text-muted); }
         .pill-row { display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; }
-        .pill { font-size: 11px; line-height: 1; padding: 5px 9px; border-radius: 999px; border: 1px solid var(--border); color: var(--text-muted); background: rgba(217,219,227,0.04); white-space: nowrap; }
+        .pill { font-size: 11px; line-height: 1; padding: 5px 9px; border-radius: 999px; border: 1px solid var(--border); color: var(--text-muted); background: rgba(236,226,216,0.04); white-space: nowrap; }
         .pill-ok { color: var(--success); border-color: rgba(34,197,94,0.35); background: rgba(34,197,94,0.08); }
         .pill-warn { color: var(--warning); border-color: rgba(245,185,66,0.35); background: rgba(245,185,66,0.08); }
         /* Pills tinted by volume type: SD card / USB OTG / internal / unknown.
@@ -1269,8 +1258,8 @@ HTML_TEMPLATE = """
 
         .btn { padding: 11px 16px; min-height: 44px; border: none; border-radius: 10px; cursor: pointer; font-weight: 600; font-size: 13.5px; color: var(--text); transition: transform 0.08s ease, filter 0.15s ease, background 0.15s ease; display: inline-flex; align-items: center; justify-content: center; gap: 7px; }
         .btn:active { transform: scale(0.97); }
-        .btn-primary { background: var(--accent); color: var(--accent-ink); }
-        .btn-primary:hover { filter: brightness(1.08); }
+        .btn-primary { background: var(--accent-fill); color: #f7f4f0; }
+        .btn-primary:hover { background: var(--accent-fill-hover); }
         .btn-success { background: var(--success); color: var(--accent-ink); }
         .btn-success:hover { filter: brightness(1.08); }
         .btn-danger { background: var(--danger); color: var(--accent-ink); }
@@ -1284,7 +1273,7 @@ HTML_TEMPLATE = """
         .tree { max-height: 65vh; overflow: auto; background: var(--field); border: 1px solid var(--border); border-radius: 10px; padding: 8px; }
         .item-row { display: flex; align-items: center; padding: 9px 6px; border-radius: 8px; border-bottom: 1px solid var(--border); min-width: max-content; transition: background 0.15s; }
         .item-row:last-child { border-bottom: none; }
-        .item-row:hover { background: rgba(217,219,227,0.055); }
+        .item-row:hover { background: var(--card-2); }
         .toggle-btn { background: none; border: none; color: var(--text-muted); cursor: pointer; font-size: 12px; width: 26px; height: 26px; padding: 0; flex-shrink:0; }
         .excluded-badge { color: var(--warning); font-size: 11px; margin-right: 8px; background: rgba(245, 185, 66, 0.12); padding: 2px 6px; border-radius: 4px;}
         .checkbox { accent-color: var(--accent); width: 18px; height: 18px; margin: 0 10px; flex-shrink: 0; cursor: pointer;}
@@ -1332,10 +1321,10 @@ HTML_TEMPLATE = """
         .icon-btn:hover { color: var(--accent); border-color: var(--accent); }
         .icon-btn.danger:hover { color: var(--danger-ink); border-color: var(--danger); }
 
-        .cart { position: fixed; bottom: 0; left: 0; width: 100%; background: rgba(28, 26, 50, 0.97); backdrop-filter: blur(6px); border-top: 1px solid var(--border); padding: 14px 18px calc(14px + env(safe-area-inset-bottom)); display: flex; justify-content: space-between; align-items: center; z-index: 50; box-shadow: 0 -8px 24px -8px rgba(0,0,0,0.5); }
+        .cart { position: fixed; bottom: 0; left: 0; width: 100%; background: rgba(24, 33, 44, 0.97); backdrop-filter: blur(6px); border-top: 1px solid var(--border); padding: 14px 18px calc(14px + env(safe-area-inset-bottom)); display: flex; justify-content: space-between; align-items: center; z-index: 50; box-shadow: 0 -8px 24px -8px rgba(0,0,0,0.5); }
         .cart-buttons { display: flex; gap: 12px; }
 
-        .modal { display: none; position: fixed; inset: 0; width: 100%; height: 100%; background: rgba(7, 8, 12, 0.88); z-index: 1000; justify-content: center; align-items: safe center; padding: 16px; overflow: auto; -webkit-overflow-scrolling: touch; }
+        .modal { display: none; position: fixed; inset: 0; width: 100%; height: 100%; background: rgba(8, 12, 16, 0.88); z-index: 1000; justify-content: center; align-items: safe center; padding: 16px; overflow: auto; -webkit-overflow-scrolling: touch; }
         .modal-content { background: var(--card); padding: 20px; border-radius: 18px; width: 100%; max-width: 600px; border: 1px solid var(--border); max-height: max(70vh, 480px); display: flex; flex-direction: column; box-shadow: 0 24px 48px -12px rgba(0,0,0,0.6); margin: auto; }
         .modal-content .modal-body { overflow-y: auto; flex: 1 1 auto; min-height: 0; -webkit-overflow-scrolling: touch; }
         .modal-content .modal-footer { display: flex; gap: 12px; margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--border); flex-shrink: 0; }
@@ -1366,8 +1355,8 @@ HTML_TEMPLATE = """
         .grid-2 { display:grid; grid-template-columns: 1fr 1fr; gap: 10px; }
         @media (max-width: 420px) { .grid-2 { grid-template-columns: 1fr; } }
 
-        .seg.option.active { background: var(--accent); color: var(--accent-ink); font-weight: 600; }
-        .seg.option.active svg { stroke: var(--accent-ink); }
+        .seg.option.active { background: var(--accent-fill); color: #f7f4f0; font-weight: 600; }
+        .seg.option.active svg { stroke: #f7f4f0; }
         .seg.option:hover:not(.active) { color: var(--accent); border-radius:7px; }
 
         svg.icon { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
