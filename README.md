@@ -135,15 +135,25 @@ Shizuku is **never required**: if `rish`/Shizuku is missing the app runs exactly
 as before, and the UI badge shows `Shizuku: غير مثبت`. The header also shows the
 app version and whether the card is writable.
 
-### 🧯 Troubleshooting: "تعذر حذف بعض العناصر المحمية"
+### 🧯 Troubleshooting: "تعذر حذف بعض العناصر المحمية / تعذر إكمال الحذف"
 
-The delete dialog now names the exact items that could not be removed, with the
-reason (`صلاحية مرفوضة`, `الكارت للقراءة فقط`, `مشغول`, `مجلد غير فارغ`...).
+A failed delete opens a dialog that names every blocked item with its reason
+(`صلاحية مرفوضة`, `الكارت للقراءة فقط`, `مشغول`, `مجلد غير فارغ`...) and has a
+**نسخ التفاصيل** (copy details) button, so the exact problem can be shared.
 
 - `صلاحية مرفوضة` → run `sdmp3 unlock` (or grant All files access in settings).
 - Folders under `Android/data` and `Android/obb` belong to other apps and stay
   protected even with All files access — Android does not allow removing them.
+  The app now refuses them up front with a clear message instead of a partial
+  delete.
 - `الكارت للقراءة فقط` → the card's lock switch is on, or the card is failing.
+
+Every delete attempt (path, deleted count, blocked items and reasons) is written
+to the log, so it can be inspected later:
+
+```bash
+tail -f ~/.local/state/sdmp3/sdmp3.log | grep '\[sdmp3\]'
+```
 
 ---
 

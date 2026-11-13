@@ -333,6 +333,46 @@ def apply_spoof_time(path, timestamp):
         except Exception:
             return False
 
+def log_event(message):
+    """Write a support line to the server log (sdmp3.log). Never raises."""
+    try:
+        print('[sdmp3] ' + str(message), flush=True)
+    except Exception:
+        pass
+
+
+def _is_storage_root(path):
+    """True for a mount root like /sdcard, /storage/emulated/0 or /storage/ABCD-1234."""
+    p = str(path).rstrip('/')
+    if p in ('/sdcard', '/mnt/sdcard', '/storage/emulated/0', '/storage/self/primary'):
+        return True
+    parts = [x for x in p.split('/') if x]
+    return len(parts) == 2 and parts[0] == 'storage'
+
+
+def android_private_reason(path):
+    """Android/data and Android/obb belong to other apps - always undeletable.
+
+    Even with MANAGE_EXTERNAL_STORAGE Android refuses to remove another app's
+    private folder, so we say so up front instead of failing item by item.
+    Only a *storage root* Android folder counts; a user folder that merely
+    happens to be named "Android/data" deeper in the tree is not affected.
+    """
+    try:
+        real = os.path.realpath(path)
+    except Exception:
+        real = str(path)
+    parts = [p for p in real.split('/') if p]
+    for i in range(len(parts) - 1):
+        if parts[i].lower() == 'android' and parts[i + 1].lower() in ('data', 'obb'):
+            parent = '/' + '/'.join(parts[:i])
+            if _is_storage_root(parent):
+                return ('مجلد خاص بتطبيق آخر (Android/{}) — أندرويد يمنع حذفه '
+                        'حتى مع الوصول الكامل'.format(parts[i + 1]))
+
+    return None
+
+
 def describe_os_error(exc):
     """Human (Arabic) reason for a failed filesystem operation."""
     if exc is None:
@@ -1059,6 +1099,18 @@ HTML_TEMPLATE = """
     </div>
 </div>
 
+<div class="modal" id="deleteErrorModal">
+    <div class="modal-content" style="max-width: 460px;">
+        <h3 style="margin-top:0; font-size: 16px; border-bottom: 1px solid var(--border); padding-bottom: 15px;">تعذر إكمال الحذف</h3>
+        <p id="deleteErrorSummary" style="color: var(--text); font-size: 13.5px; line-height: 1.6; margin: 4px 0 10px;"></p>
+        <div id="deleteErrorList" style="display:flex; flex-direction:column; gap:6px; overflow-y:auto; max-height: 36vh;"></div>
+        <div style="display:flex; gap:10px; margin-top:14px;">
+            <button class="btn btn-outline" style="flex:1;" onclick="document.getElementById('deleteErrorModal').style.display='none'">إغلاق</button>
+            <button class="btn btn-primary" style="flex:1;" id="copyDeleteErrBtn" onclick="copyDeleteErrors()">نسخ التفاصيل</button>
+        </div>
+    </div>
+</div>
+
 <div class="modal" id="selectedModal" onclick="closeSelectedModal(event)">
     <div class="modal-content" onclick="event.stopPropagation()">
         <div style="display:flex; flex-direction:column; gap:8px; border-bottom:1px solid var(--border); padding-bottom:15px; margin-bottom:12px;">
@@ -1600,11 +1652,70 @@ HTML_TEMPLATE = """
                 method: 'POST', headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify({path: path})
             }).then(r => r.json()).then(res => {
-                if (!res.success) { alert(res.error || 'فشل الحذف'); return; }
+                if (!res.success) { showDeleteError(res, path); return; }
                 purgePathFromSelections(path);
                 refreshNearestContainer(btnEl);
             }).catch(() => alert('خطأ في الاتصال بالخادم'));
         });
+    }
+
+    // Readable delete failure: names every blocked item with its reason instead of
+    // a single cryptic line, and offers a copy button so it can be reported.
+    function showDeleteError(res, path) {
+        let failures = res.failures || [];
+        let summary = document.getElementById('deleteErrorSummary');
+        let list = document.getElementById('deleteErrorList');
+        summary.textContent = res.error || 'فشل الحذف';
+        list.innerHTML = '';
+        failures.forEach(function(f) {
+            let row = document.createElement('div');
+            row.style.cssText = 'background:var(--bg); border:1px solid var(--border); border-radius:8px; padding:8px; word-break:break-all;';
+            let nameEl = document.createElement('div');
+            nameEl.style.cssText = 'color:var(--text); font-weight:500;';
+            nameEl.textContent = String(f.path || '').split('/').filter(Boolean).pop() || f.path;
+            let reasonEl = document.createElement('div');
+            reasonEl.style.cssText = 'color:var(--danger); margin-top:2px;';
+            reasonEl.textContent = f.reason || '';
+            let pathEl = document.createElement('div');
+            pathEl.style.cssText = 'color:var(--text-muted); margin-top:2px; font-size:11px;';
+            pathEl.textContent = f.path || '';
+            row.appendChild(nameEl); row.appendChild(reasonEl); row.appendChild(pathEl);
+            list.appendChild(row);
+        });
+        list.style.display = failures.length ? 'flex' : 'none';
+        let lines = [res.error || 'فشل الحذف', 'path: ' + (path || '')];
+        failures.forEach(function(f){ lines.push((f.path || '') + ' => ' + (f.reason || '')); });
+        window._deleteErrorText = lines.join('\\n');
+        let btn = document.getElementById('copyDeleteErrBtn');
+        if (btn) btn.textContent = 'نسخ التفاصيل';
+        document.getElementById('deleteErrorModal').style.display = 'flex';
+    }
+
+    function copyDeleteErrors() {
+        let text = window._deleteErrorText || '';
+        if (!text) return;
+        let done = function() {
+            let btn = document.getElementById('copyDeleteErrBtn');
+            if (btn) { btn.textContent = 'تم النسخ ✔'; setTimeout(function(){ btn.textContent = 'نسخ التفاصيل'; }, 1800); }
+        };
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(text).then(done).catch(function(){ fallbackCopyDeleteErrors(text, done); });
+        } else {
+            fallbackCopyDeleteErrors(text, done);
+        }
+    }
+
+    function fallbackCopyDeleteErrors(text, done) {
+        let ta = document.createElement('textarea');
+        ta.value = text;
+        ta.setAttribute('readonly', '');
+        ta.style.position = 'fixed';
+        ta.style.left = '-9999px';
+        document.body.appendChild(ta);
+        ta.select();
+        ta.setSelectionRange(0, ta.value.length);
+        try { if (document.execCommand('copy')) done(); } catch(e) {}
+        document.body.removeChild(ta);
     }
     
     function toggleFolder(btn, path) {
@@ -2520,6 +2631,11 @@ def benchmark():
 def delete_item():
     data = request.json or {}
     path = data.get('path', '')
+    log_event('delete request: {!r}'.format(path))
+    private_reason = android_private_reason(path)
+    if private_reason:
+        log_event('delete refused (android private dir): {!r}'.format(path))
+        return jsonify({'success': False, 'error': private_reason, 'protected': True})
     if not path or not os.path.lexists(path): return jsonify({'success': False, 'error': 'العنصر غير موجود'})
     if is_busy(): return jsonify({'success': False, 'error': 'النظام مشغول بعملية أخرى، حاول لاحقاً'})
 
@@ -2540,21 +2656,29 @@ def delete_item():
                 hint = ''
                 if any('صلاحية' in str(reason) for _, reason in failures):
                     hint = ' — جرّب: sdmp3 unlock لمنح الوصول الكامل للكارت'
+                log_event('delete FAILED: {!r} deleted={} blocked={} -> {}'.format(
+                    path, deleted,
+                    '; '.join('{} => {}'.format(p, r) for p, r in failures[:10]),
+                    'still exists'))
                 return jsonify({
                     'success': False,
                     'error': 'تعذر حذف {} عنصر من أصل {}{}{}'.format(
                         len(failures), deleted + len(failures), detail, hint),
                     'failures': [{'path': p, 'reason': r} for p, r in failures[:10]],
                 })
+            log_event('delete ok (tree): {!r} deleted={}'.format(path, deleted))
             return jsonify({'success': True, 'deleted': deleted})
         else:
             ok, reason = try_remove_entry(path)
             if ok:
                 invalidate_cache_for_path(path)
+                log_event('delete ok (file): {!r}'.format(path))
                 return jsonify({'success': True})
+            log_event('delete FAILED (file): {!r} -> {}'.format(path, reason))
             return jsonify({'success': False, 'error': 'تعذر الحذف: {}'.format(reason)})
     except Exception as e:
-        return jsonify({'success': False, 'error': str(e)})
+        log_event('delete EXCEPTION: {!r} -> {}: {}'.format(path, type(e).__name__, e))
+        return jsonify({'success': False, 'error': '{}: {}'.format(type(e).__name__, e)})
 
 @app.route('/api/joc_index', methods=['POST'])
 def generate_joc_index():
