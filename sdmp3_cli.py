@@ -91,8 +91,9 @@ def git(*args, timeout=120):
         return subprocess.CompletedProcess(args, 1, "", str(exc))
 
 
-def git_head():
-    res = git("rev-parse", "--short", "HEAD")
+def git_head(short=True):
+    args = ("rev-parse", "--short", "HEAD") if short else ("rev-parse", "HEAD")
+    res = git(*args)
     return res.stdout.strip() if res.returncode == 0 else "unknown"
 
 
@@ -353,7 +354,8 @@ def cmd_update(force=False, restart=False):
     if not is_git_checkout():
         die("{} is not a git checkout - reinstall with install.sh".format(APP_DIR))
 
-    if git_dirty() and not force:
+    dirty = git_dirty()
+    if dirty and not force:
         die(
             "local changes in {} - commit/stash them or run 'sdmp3 update --force'".format(
                 APP_DIR
@@ -361,7 +363,7 @@ def cmd_update(force=False, restart=False):
         )
 
     branch = git_branch()
-    old_head = git_head()
+    old_head = git_head(short=False)
     old_version = app_version()
     inst = read_instance()
 
@@ -383,7 +385,7 @@ def cmd_update(force=False, restart=False):
             die("git reset failed:\n{}".format(reset.stderr.strip()))
         ok(
             "updated {} -> {} ({} -> {})".format(
-                old_version, app_version(), old_head, new_head[:7]
+                old_version, app_version(), old_head[:7], new_head[:7]
             )
         )
         if changed:
@@ -391,8 +393,12 @@ def cmd_update(force=False, restart=False):
             if len(changed) > 12:
                 shown += " ..."
             print("     changed: {}".format(shown), flush=True)
+    elif dirty:
+        # --force on an unchanged checkout: throw away the local edits
+        git("reset", "--hard", "HEAD")
+        ok("already up to date ({} @ {}) - local changes discarded".format(old_version, old_head[:7]))
     else:
-        ok("already up to date ({} @ {})".format(old_version, old_head))
+        ok("already up to date ({} @ {})".format(old_version, old_head[:7]))
 
     if "requirements.txt" in changed:
         info("installing updated Python dependencies...")
