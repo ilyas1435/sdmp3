@@ -24,7 +24,7 @@ app = Flask(__name__)
 
 # Version is kept in the VERSION file next to this script so that the `sdmp3`
 # CLI can read it without importing the app.
-APP_VERSION_FALLBACK = "1.2.0"
+APP_VERSION_FALLBACK = "1.3.0"
 
 # Toggled by --no-wakelock (see main() at the bottom).
 WAKELOCK_ENABLED = True
@@ -295,7 +295,8 @@ def removable_sd():
         return dict(cached['value'])
 
     problem = check_destination(path, timeout=5)
-    value = {'path': path, 'writable': problem is None}
+    value = {'path': path, 'writable': problem is None,
+             'kind': storage_kind(path) or 'card'}
     if problem:
         value['error'] = problem
     _sd_status_cache.update({'path': path, 'ts': now, 'value': value})
@@ -305,11 +306,69 @@ def removable_sd():
 def natural_sort_key(text):
     return [int(c) if c.isdigit() else c.lower() for c in re.split(r'(\d+)', text)]
 
+def storage_kind(mount_point):
+    """'sdcard', 'usb' or None for an external /storage/XXXX-XXXX volume.
+
+    Android mounts SD cards *and* USB sticks as /storage/UUID, so the name says
+    nothing about the device. /proc/mounts pairs the volume with its block device
+    (/dev/block/vold/public:MAJOR:MINOR) and the major tells them apart: 179 is
+    the MMC driver (SD card), 8 is the SCSI/USB one (USB OTG).
+    """
+    base = os.path.basename(str(mount_point).rstrip('/'))
+    if not base:
+        return None
+    device = None
+    try:
+        with open('/proc/mounts', encoding='utf-8', errors='replace') as fh:
+            for line in fh:
+                parts = line.split()
+                if len(parts) >= 3 and parts[1] == '/mnt/media_rw/' + base:
+                    device = parts[0]
+                    break
+    except OSError:
+        return None
+    if not device:
+        return None
+    return classify_volume_device(device)
+
+
+def classify_volume_device(device):
+    """Map a vold block device to 'sdcard' / 'usb' / None."""
+    match = re.search(r'public:(\d+):(\d+)', device)
+    if match:
+        major = int(match.group(1))
+        if major == 179:
+            return 'sdcard'
+        if major == 8:
+            return 'usb'
+        return None
+    if 'mmcblk' in device:
+        return 'sdcard'
+    if re.search(r'/sd[a-z]\d*$', device):
+        return 'usb'
+    return None
+
+
+# Icon (SVG symbol id) + Arabic label per volume kind. Anything unrecognised
+# still gets a usable card icon and label, never a blank entry.
+STORAGE_KINDS = {
+    'internal': {'label': 'الذاكرة الداخلية', 'icon': 'ico-internal'},
+    'sdcard': {'label': 'كارت SD', 'icon': 'ico-sd'},
+    'usb': {'label': 'USB OTG', 'icon': 'ico-usb'},
+    'card': {'label': 'كارت ذاكرة', 'icon': 'ico-card'},
+}
+
+
 def get_available_storages():
     storages = []
     seen_names = set()
     if os.path.exists('/sdcard'):
-        storages.append({'name': 'الذاكرة الداخلية', 'path': '/sdcard'})
+        storages.append({
+            'name': STORAGE_KINDS['internal']['label'],
+            'path': '/sdcard',
+            'kind': 'internal',
+            'icon': STORAGE_KINDS['internal']['icon'],
+        })
     try:
         df_output = subprocess.check_output("df -h", shell=True, text=True, timeout=5)
         for line in df_output.splitlines():
@@ -318,7 +377,13 @@ def get_available_storages():
                 mount_point = line.split()[-1]
                 name = os.path.basename(mount_point)
                 if name not in seen_names:
-                    storages.append({'name': f'كارت ذاكرة ({name})', 'path': mount_point})
+                    kind = storage_kind(mount_point) or 'card'
+                    storages.append({
+                        'name': '{} ({})'.format(STORAGE_KINDS[kind]['label'], name),
+                        'path': mount_point,
+                        'kind': kind,
+                        'icon': STORAGE_KINDS[kind]['icon'],
+                    })
                     seen_names.add(name)
     except Exception:
         pass
@@ -1182,6 +1247,30 @@ HTML_TEMPLATE = """
         .icon-btn { width:30px; height:30px; border-radius:8px; border:1px solid var(--border); background:var(--bg); color:var(--text-muted); display:flex; align-items:center; justify-content:center; cursor:pointer; flex-shrink:0; }
         .icon-btn svg { width:14px; height:14px; }
         .icon-btn:active { transform: scale(0.92); }
+
+        /* Storage picker: one card per volume, icon + Arabic label + real path. */
+        .storage-grid { display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px; }
+        .storage-card { display: flex; align-items: center; gap: 10px; width: 100%; padding: 10px 12px;
+            border: 1px solid var(--border); border-radius: 10px; background: var(--bg); color: var(--text);
+            cursor: pointer; text-align: right; transition: border-color .15s, background .15s;
+            font-family: inherit; appearance: none; -webkit-appearance: none; }
+        .storage-card:hover { border-color: var(--accent); }
+        .storage-card.active { border-color: var(--accent); background: var(--accent-soft); }
+        .storage-card .storage-ico { width: 22px; height: 22px; flex-shrink: 0; color: var(--text-muted); }
+        .storage-card.kind-internal .storage-ico { color: var(--accent); }
+        .storage-card.kind-sdcard .storage-ico { color: #5aa9ff; }
+        .storage-card.kind-usb .storage-ico { color: #34d399; }
+        .storage-card.active .storage-ico { color: var(--accent); }
+        .storage-meta { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex-grow: 1; }
+        .storage-name { font-size: 13.5px; font-weight: 600; }
+        .storage-path { font-size: 11px; color: var(--text-muted); direction: ltr; text-align: right;
+            overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .storage-badge { display: none; margin-inline-start: auto; font-size: 10px; padding: 3px 7px; border-radius: 999px;
+            border: 1px solid var(--border); color: var(--text-muted); white-space: nowrap; }
+        .storage-card.active .storage-badge { display: inline-block; color: var(--accent); border-color: var(--accent); }
+        .picker-hint { font-size: 11.5px; color: var(--text-muted); margin: 6px 2px 8px; }
+        .picker-file-row .item-name { color: var(--text-muted); cursor: default; }
+        .file-size { margin-inline-start: auto; font-size: 11px; color: var(--text-muted); direction: ltr; padding-inline-start: 10px; }
         .icon-btn:hover { color: var(--accent); border-color: var(--accent); }
         .icon-btn.danger:hover { color: var(--danger); border-color: var(--danger); }
 
@@ -1227,6 +1316,30 @@ HTML_TEMPLATE = """
     </style>
 </head>
 <body>
+<!-- SVG sprite: storage icons. Referenced with <use href="#ico-..."> so the same
+     stroke icon is used in the cards and in the path picker. -->
+<svg width="0" height="0" style="position:absolute; overflow:hidden;" aria-hidden="true" focusable="false">
+    <symbol id="ico-internal" viewBox="0 0 24 24">
+        <rect x="6" y="2" width="12" height="20" rx="2.5"></rect>
+        <line x1="10.5" y1="18.5" x2="13.5" y2="18.5"></line>
+    </symbol>
+    <symbol id="ico-sd" viewBox="0 0 24 24">
+        <path d="M9 2h5l4 4v14a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2V7z"></path>
+        <path d="M9.5 6.5v2.5M12 6.5v2.5M14.5 6.5v2.5"></path>
+    </symbol>
+    <symbol id="ico-usb" viewBox="0 0 24 24">
+        <path d="M9 2h6v5H9z"></path>
+        <rect x="6.5" y="7" width="11" height="14" rx="2.5"></rect>
+        <line x1="10" y1="12" x2="14" y2="12"></line>
+        <line x1="10" y1="16" x2="14" y2="16"></line>
+    </symbol>
+    <symbol id="ico-card" viewBox="0 0 24 24">
+        <rect x="4" y="4" width="16" height="16" rx="2"></rect>
+        <line x1="4" y1="10" x2="20" y2="10"></line>
+        <circle cx="8" cy="15.5" r="1"></circle>
+        <line x1="12" y1="15.5" x2="17" y2="15.5"></line>
+    </symbol>
+</svg>
 
 <div class="container">
     <div class="app-header">
@@ -1249,11 +1362,18 @@ HTML_TEMPLATE = """
             <svg class="icon" viewBox="0 0 24 24"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>
             مصدر الملفات
         </div>
-        <select id="source_select" onchange="updateSourceRoot(this.value)" style="margin-bottom: 12px;">
+        <div class="storage-grid" id="source_storage_cards">
             {% for st in storages %}
-                <option value="{{ st.path }}">{{ st.name }}</option>
+            <button type="button" class="storage-card kind-{{ st.kind }}" data-path="{{ st.path }}" onclick="chooseStorage('source', this)">
+                <svg class="icon storage-ico"><use href="#{{ st.icon }}"></use></svg>
+                <span class="storage-meta">
+                    <span class="storage-name">{{ st.name }}</span>
+                    <span class="storage-path">{{ st.path }}</span>
+                </span>
+                <span class="storage-badge">الحالي</span>
+            </button>
             {% endfor %}
-        </select>
+        </div>
         <div style="display: flex; gap: 8px; align-items: center;">
             <input type="text" id="custom_source_path" class="ltr-input" style="margin-bottom: 0; flex-grow: 1;" placeholder="/sdcard/..." readonly>
             <button class="btn btn-outline btn-sm" style="white-space: nowrap;" onclick="openPathBrowser('source')">
@@ -1275,12 +1395,18 @@ HTML_TEMPLATE = """
             <svg class="icon" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg>
             وجهة النقل
         </div>
-        <select id="dest_select" onchange="updateDestPath(this)" style="margin-bottom: 12px;">
-            <option value="">-- اضغط هنا لاختيار الوجهة --</option>
+        <div class="storage-grid" id="dest_storage_cards">
             {% for st in storages %}
-                <option value="{{ st.path }}">{{ st.name }}</option>
+            <button type="button" class="storage-card kind-{{ st.kind }}" data-path="{{ st.path }}" onclick="chooseStorage('dest', this)">
+                <svg class="icon storage-ico"><use href="#{{ st.icon }}"></use></svg>
+                <span class="storage-meta">
+                    <span class="storage-name">{{ st.name }}</span>
+                    <span class="storage-path">{{ st.path }}</span>
+                </span>
+                <span class="storage-badge">الوجهة</span>
+            </button>
             {% endfor %}
-        </select>
+        </div>
 
         <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
             <input type="text" id="custom_dest_path" class="ltr-input" style="margin-bottom: 0; flex-grow: 1;" placeholder="/storage/XXXX-XXXX/..." oninput="checkDiskSpace(this.value)">
@@ -1372,6 +1498,11 @@ HTML_TEMPLATE = """
             </button>
             <input type="text" id="currentDestView" class="ltr-input" readonly style="margin: 0; background: var(--bg);">
         </div>
+        <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:4px; min-height:22px;">
+            <span id="pickerStorageBadge" class="pill" style="display:none;"></span>
+            <span id="pickerCounts" style="font-size:11.5px; color:var(--text-muted);"></span>
+        </div>
+        <div class="picker-hint">المجلدات قابلة للاختيار • الملفات للعرض فقط</div>
         <div id="destTree" class="tree" style="flex-grow: 1; max-height: 50vh;"></div>
         <div style="display:flex; justify-content:space-between; margin-top:15px; padding-top: 15px; border-top: 1px solid var(--border);">
             <button class="btn btn-outline btn-sm" onclick="createNewFolder()">+ مجلد جديد</button>
@@ -1690,11 +1821,12 @@ HTML_TEMPLATE = """
     }
 
     window.onload = function() {
-        document.getElementById('source_select').value = currentSourceRoot;
         document.getElementById('custom_source_path').value = currentSourceRoot;
+        syncStorageCards('source', currentSourceRoot);
         let savedDest = localStorage.getItem('joc_last_dest');
         if (savedDest) {
             document.getElementById('custom_dest_path').value = savedDest;
+            syncStorageCards('dest', savedDest);
             checkDiskSpace(savedDest);
         }
         loadSubFolders(currentSourceRoot, document.getElementById('treeContainer'));
@@ -1708,8 +1840,47 @@ HTML_TEMPLATE = """
         currentSourceRoot = path;
         localStorage.setItem('joc_source_root', path);
         document.getElementById('custom_source_path').value = path;
+        syncStorageCards('source', path);
         loadSubFolders(path, document.getElementById('treeContainer'));
         checkCacheStatus(path);
+    }
+
+    // ---- storage cards (internal / SD card / USB OTG) -------------------
+    // STORAGE_ROOTS comes from the server (name, path, kind, icon) so the
+    // browser shows the same labels + icons as the selection cards.
+    const STORAGE_ROOTS = {{ storages|tojson }};
+
+    function chooseStorage(mode, btn) {
+        let path = btn.dataset.path;
+        if (mode === 'source') updateSourceRoot(path);
+        else updateDestPath(path);
+    }
+
+    function syncStorageCards(mode, path) {
+        let wrap = document.getElementById(mode === 'source' ? 'source_storage_cards' : 'dest_storage_cards');
+        if (!wrap) return;
+        let current = String(path || '').replace(/\\/+$/, '');
+        wrap.querySelectorAll('.storage-card').forEach(function(card) {
+            let root = String(card.dataset.path || '').replace(/\\/+$/, '');
+            // A subfolder of the card still counts as being on that storage.
+            let active = !!root && (current === root || current.startsWith(root + '/'));
+            card.classList.toggle('active', active);
+        });
+    }
+
+    function storageForPath(path) {
+        // Longest matching root wins, so a card inside a mount never gets
+        // mistaken for its parent storage.
+        let target = String(path || '').replace(/\\/+$/, '');
+        let best = null, bestLen = -1;
+        STORAGE_ROOTS.forEach(function(st) {
+            let root = String(st.path || '').replace(/\\/+$/, '');
+            if (!root) return;
+            if (target === root || target.startsWith(root + '/')) {
+                if (root.length > bestLen) { best = st; bestLen = root.length; }
+            }
+        });
+        return best;
     }
 
     function renderCacheStatus(data) {
@@ -1767,25 +1938,28 @@ HTML_TEMPLATE = """
     }
 
     function generateRandomSpoofDate() {
-        let start = new Date(2019, 0, 1).getTime();
-        let end = new Date(2023, 11, 31).getTime();
+        // Default spoof year is 2023 (random day + time inside that year).
+        let start = new Date(2023, 0, 1).getTime();
+        let end = new Date(2023, 11, 31, 23, 59).getTime();
         let randDate = new Date(start + Math.random() * (end - start));
         let tzoffset = randDate.getTimezoneOffset() * 60000;
         let localISOTime = (new Date(randDate - tzoffset)).toISOString().slice(0, 16);
         document.getElementById('spoofDateInput').value = localISOTime;
     }
 
-    function updateDestPath(select) {
-        if(select.value !== "") {
-            document.getElementById('custom_dest_path').value = select.value;
-            localStorage.setItem('joc_last_dest', select.value);
-            checkDiskSpace(select.value);
+    function updateDestPath(path) {
+        if (path) {
+            document.getElementById('custom_dest_path').value = path;
+            localStorage.setItem('joc_last_dest', path);
+            syncStorageCards('dest', path);
+            checkDiskSpace(path);
         }
     }
 
     function checkDiskSpace(path) {
         if(!path) return;
         localStorage.setItem('joc_last_dest', path);
+        syncStorageCards('dest', path);
         fetch('/api/disk_usage?path=' + encodeURIComponent(path))
             .then(r => r.json())
             .then(data => {
@@ -1810,27 +1984,93 @@ HTML_TEMPLATE = """
         document.getElementById('destBrowserModal').style.display = 'flex';
     }
 
+    // Files shown per "page" in the picker; big folders stay instant to open.
+    const PICKER_FILES_STEP = 300;
+    let pickerFiles = [];
+    let pickerShown = PICKER_FILES_STEP;
+
+    function formatBytes(n) {
+        n = Number(n) || 0;
+        if (n < 1024) return n + ' B';
+        if (n < 1048576) return (n / 1024).toFixed(0) + ' KB';
+        if (n < 1073741824) return (n / 1048576).toFixed(1) + ' MB';
+        return (n / 1073741824).toFixed(2) + ' GB';
+    }
+
     function loadDestBrowser(path) {
         document.getElementById('currentDestView').value = path;
         let tree = document.getElementById('destTree');
         tree.dataset.dirPath = path;
         tree.innerHTML = '<div style="padding:10px;">جاري التحميل...</div>';
+
+        // Which storage are we inside? (internal / SD card / USB OTG)
+        let storage = storageForPath(path);
+        let badge = document.getElementById('pickerStorageBadge');
+        if (storage) {
+            badge.textContent = storage.name;
+            badge.className = 'pill' + (storage.kind === 'usb' ? ' pill-ok' : '');
+            badge.style.display = 'inline-block';
+        } else {
+            badge.style.display = 'none';
+        }
+
         fetch('/api/items?path=' + encodeURIComponent(path))
             .then(res => res.json())
             .then(data => {
                 tree.innerHTML = '';
-                let dirsOnly = data.items.filter(i => i.is_dir);
-                if (dirsOnly.length === 0) { tree.innerHTML = '<div style="padding:10px; color:var(--text-muted);">لا توجد مجلدات فرعية</div>'; }
-                dirsOnly.forEach(item => {
+                let dirs = data.items.filter(i => i.is_dir);
+                pickerFiles = data.items.filter(i => !i.is_dir);
+                pickerShown = PICKER_FILES_STEP;
+                document.getElementById('pickerCounts').textContent =
+                    dirs.length + ' مجلد • ' + pickerFiles.length + ' ملف';
+
+                if (data.items.length === 0) {
+                    tree.innerHTML = '<div style="padding:10px; color:var(--text-muted);">مجلد فارغ</div>';
+                    return;
+                }
+                dirs.forEach(item => {
                     let div = document.createElement('div');
                     div.className = 'item-row';
-                    div.innerHTML = `<div class="item-name" style="cursor:pointer;">${iconDir} <span>${item.name}</span></div>${rowActionsHtml(item.path, item.name, true)}`;
+                    div.innerHTML = `<div class="item-name" style="cursor:pointer;">${iconDir} <span></span></div>${rowActionsHtml(item.path, item.name, true)}`;
+                    div.querySelector('.item-name span').textContent = item.name;
                     div.querySelector('.item-name').onclick = () => loadDestBrowser(item.path);
                     tree.appendChild(div);
                 });
+                renderPickerFiles(tree);
+            })
+            .catch(() => {
+                pickerFiles = [];
+                document.getElementById('pickerCounts').textContent = '';
+                tree.innerHTML = '<div style="padding:10px; color:var(--warning);">تعذر قراءة هذا المجلد — تحقق من صلاحية الوصول</div>';
             });
     }
-    
+
+    // Files are read-only context here: the picker selects a *folder* (the source
+    // tree is where individual files get ticked). Long folders are paged.
+    function renderPickerFiles(tree) {
+        tree.querySelectorAll('.picker-file-row, .picker-more').forEach(el => el.remove());
+        pickerFiles.slice(0, pickerShown).forEach(item => {
+            let div = document.createElement('div');
+            div.className = 'item-row picker-file-row';
+            div.innerHTML = `<div class="item-name">${iconFile} <span></span></div><span class="file-size"></span>`;
+            div.querySelector('.item-name span').textContent = item.name;
+            div.querySelector('.file-size').textContent = formatBytes(item.size);
+            tree.appendChild(div);
+        });
+        if (pickerFiles.length > pickerShown) {
+            let more = document.createElement('button');
+            more.type = 'button';
+            more.className = 'btn btn-outline btn-sm picker-more';
+            more.style.cssText = 'display:block; margin:8px auto 0;';
+            more.textContent = 'عرض المزيد (' + (pickerFiles.length - pickerShown) + ')';
+            more.onclick = function() {
+                pickerShown += PICKER_FILES_STEP;
+                renderPickerFiles(tree);
+            };
+            tree.appendChild(more);
+        }
+    }
+
     function goUpDest() {
         let parts = document.getElementById('currentDestView').value.split('/').filter(p=>p);
         parts.pop();
@@ -1841,8 +2081,7 @@ HTML_TEMPLATE = """
         if (pickerMode === 'source') {
             updateSourceRoot(p);
         } else {
-            document.getElementById('custom_dest_path').value = p;
-            checkDiskSpace(p);
+            updateDestPath(p);
         }
         document.getElementById('destBrowserModal').style.display = 'none';
     }
@@ -1876,6 +2115,7 @@ HTML_TEMPLATE = """
                         <div class="item-name" onclick="${item.is_dir ? `toggleFolder(this.previousElementSibling.previousElementSibling, '${safePath}')` : `this.previousElementSibling.click()`}">
                             ${item.is_dir ? iconDir : iconFile} <span>${item.name}</span>${excludedMark}
                         </div>
+                        ${item.is_dir ? '' : `<span class="file-size">${formatBytes(item.size)}</span>`}
                         ${rowActionsHtml(item.path, item.name, item.is_dir)}
                     </div>
                     ${item.is_dir ? '<div class="children"></div>' : ''}
@@ -2274,8 +2514,10 @@ HTML_TEMPLATE = """
                 var sd = d.sd || {};
                 var sdEl = document.getElementById('sdWritePill');
                 if (sdEl) {
-                    if (sd.writable === true) { sdEl.textContent = 'كتابة الكارت: نعم'; sdEl.className = 'pill pill-ok'; }
-                    else if (sd.writable === false) { sdEl.textContent = 'كتابة الكارت: لا'; sdEl.className = 'pill pill-warn'; }
+                    // Say *which* volume it is (SD card / USB OTG), not just "الكارت".
+                    var kindLabel = {sdcard: 'كارت SD', usb: 'USB OTG', card: 'كارت', internal: 'ذاكرة'}[sd.kind] || 'الكارت';
+                    if (sd.writable === true) { sdEl.textContent = 'كتابة ' + kindLabel + ': نعم'; sdEl.className = 'pill pill-ok'; }
+                    else if (sd.writable === false) { sdEl.textContent = 'كتابة ' + kindLabel + ': لا'; sdEl.className = 'pill pill-warn'; }
                     else { sdEl.textContent = 'كتابة الكارت: لا يوجد كارت'; sdEl.className = 'pill'; }
                     // Hovering explains *why* the card is not writable (EIO, lock, ...).
                     sdEl.title = sd.error || (sd.path ? sd.path : '');
@@ -2740,10 +2982,20 @@ def get_items():
     items = []
     if os.path.exists(req_path) and os.path.isdir(req_path):
         try:
-            for item in sorted(os.listdir(req_path), key=str.lower):
-                full_p = os.path.join(req_path, item)
-                items.append({'name': item, 'path': full_p, 'is_dir': os.path.isdir(full_p)})
-        except: pass
+            # One scandir pass gives name + type + size without extra stats.
+            with os.scandir(req_path) as it:
+                entries = list(it)
+            for entry in entries:
+                try:
+                    is_dir = entry.is_dir()
+                    size = 0 if is_dir else entry.stat().st_size
+                except OSError:
+                    continue
+                items.append({'name': entry.name, 'path': entry.path,
+                              'is_dir': is_dir, 'size': size})
+            items.sort(key=lambda i: (not i['is_dir'], i['name'].lower()))
+        except OSError:
+            items = []
     return jsonify({'items': items})
 
 @app.route('/api/mkdir', methods=['POST'])

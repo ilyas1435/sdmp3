@@ -9,10 +9,10 @@
 ## ✨ Features
 
 ### 🗂️ File Transfer & Organizing
-- 📁 **Multi-storage support** — internal storage (`/sdcard`) and external SD cards (`/storage/XXXX-XXXX`) auto-detected.
-- 📦 **Stable chunked copying** — resilient, crash-safe file copy with periodic `fsync`, so interrupted transfers are recoverable.
+- 📁 **Multi-storage support** — internal storage, **SD card** and **USB OTG** are detected separately and each gets its own icon + label (MMC vs USB is read from the block device, since Android shows both as `/storage/XXXX-XXXX`).
+- 📦 **Fast sequential copying** — 4 MB buffers, one write pass per file, and a single flush every 64 MB; playback order comes from writing files in order, not from per-file `fsync`.
 - 🧭 **JOC physical-order sequencing** — files are copied in a natural, physical order (DFS traversal + natural sort) so hardware MP3 players play them reliably in sequence.
-- 🖥️ **Built-in file browser** — expandable tree view to browse, select, and exclude folders/files.
+- 🖥️ **Built-in file browser** — expandable tree view to browse, select, and exclude folders/files; the destination picker lists files too (with sizes), so you can confirm what a folder holds before choosing it.
 - 🛒 **Selection cart** — view total size of selections and copy everything with one tap.
 - ⏱️ **Instant folder indexing** — cache a folder's contents once for lightning-fast subsequent lookups.
 
@@ -45,7 +45,7 @@
 
 ### 🕓 Timestamp Spoofing
 - 🗓️ **This spoof mode** — obfuscate last-modified/last-accessed dates of all files & folders (whole destination, or the entire storage if destination is empty).
-- 🎲 **Randomised start date** — auto-generates a random timestamp (2019–2023).
+- 🎲 **Randomised start date** — auto-generates a random timestamp inside **2023**.
 - 🛡️ **Bottom-up traversal** — children are processed before parents so parents' timestamps aren't reset by their own edits.
 
 ### 🚫 Delete Support

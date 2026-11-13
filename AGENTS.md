@@ -93,7 +93,21 @@ byte-identical (DFS pre-order + `natural_sort_key`) and stay single-threaded.
   create/close, not by the buffer size.
 
 ## Storage detection (server-side, not JS)
-Options in the source/destination `<select>` are rendered at route `/` via Jinja `{% for st in storages %}`, backed by `get_available_storages()` (~line 122): always `/sdcard` (internal), plus external SD cards found from `df -h` `/storage/...` mounts (emulated mounts are skipped). If the select is empty, check this Python function — not the JS.
+Options are rendered at route `/` via Jinja `{% for st in storages %}`, backed by `get_available_storages()`: always `/sdcard` (internal), plus external SD cards found from `df -h` `/storage/...` mounts (emulated mounts are skipped). If the list is empty, check this Python function — not the JS.
+
+Each storage dict carries `kind` + `icon` so the UI can label it honestly:
+
+| kind | How it is detected | Icon / label |
+|---|---|---|
+| `internal` | `/sdcard` | `ico-internal` — الذاكرة الداخلية |
+| `sdcard` | `/proc/mounts` device major **179** (MMC) | `ico-sd` — كارت SD (UUID) |
+| `usb` | device major **8** (SCSI/USB OTG) | `ico-usb` — USB OTG (UUID) |
+| `card` | anything unrecognised (dm-*, unknown fs) | `ico-card` — كارت ذاكرة (UUID) |
+
+`storage_kind()` looks the volume up in `/proc/mounts` as `/mnt/media_rw/<UUID>` and passes the device to `classify_volume_device()`. `df -h` alone cannot tell an SD card from a USB stick — both are `/storage/XXXX-XXXX`. The icons are one SVG sprite (`<symbol id="ico-*">` right after `<body>`) referenced with `<use href="#ico-...">`; the select-based pickers were replaced by `.storage-card` buttons (`chooseStorage()` / `syncStorageCards()`), and the same icons appear in the path picker badge.
+
+## Path picker (تحديد / تصفح)
+`/api/items` returns `{name, path, is_dir, size}` in one `scandir` pass (folders first, then files, name-sorted). The picker renders folders (navigable, with rename/delete actions) and **files as read-only rows** with a formatted size — a destination must be a folder, and single files are ticked in the source tree instead. Long folders are paged: `PICKER_FILES_STEP` (300) files per page with «عرض المزيد», so a 4 000-file folder opens instantly.
 
 ## TTS prerequisites
 - `edge-tts` is **optional** (import check sets `EDGE_TTS_AVAILABLE`; TTS-only features). Copy/JOC/spoof work without it.
