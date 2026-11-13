@@ -9,6 +9,7 @@ Usage:
   sdmp3 update [--force] [--restart]
                                  pull the latest version from GitHub
   sdmp3 doctor                   check python / ffmpeg / edge-tts / storage / port
+  sdmp3 check-card [path]        find folders Android can no longer read (FAT damage)
   sdmp3 unlock [--revert]        grant Termux all-files access via Shizuku (optional)
   sdmp3 version                  print version and git commit
   sdmp3 open                     open the UI in the Android browser
@@ -197,18 +198,27 @@ def format_duration(seconds):
 def external_storage():
     """SD card names, detected the same way the app does (df -h /storage/...)."""
     cards = []
-    try:
-        out = subprocess.run(["df", "-h"], capture_output=True, text=True, timeout=10).stdout
-    except (OSError, subprocess.TimeoutExpired):
-        return cards
-    for line in out.splitlines():
-        if "/storage/" not in line or "emulated" in line:
-            continue
-        mount = line.split()[-1]
+    for mount in external_mounts():
         name = os.path.basename(mount)
         if name and name not in cards:
             cards.append(name)
     return cards
+
+
+def external_mounts():
+    """Full mount paths of the external SD cards (/storage/XXXX-XXXX)."""
+    mounts = []
+    try:
+        out = subprocess.run(["df", "-h"], capture_output=True, text=True, timeout=10).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return mounts
+    for line in out.splitlines():
+        if "/storage/" not in line or "emulated" in line:
+            continue
+        mount = line.split()[-1]
+        if mount and mount not in mounts:
+            mounts.append(mount)
+    return mounts
 
 
 def rish(command, timeout=10):
@@ -475,6 +485,82 @@ def cmd_update(force=False, restart=False):
     return 0
 
 
+def scan_card(root):
+    """Walk a card and return (damaged, restricted, dirs, files).
+
+    damaged    = folders that exist but cannot be read (EIO / EACCES outside the
+                 Android private area) - the FAT entry is broken.
+    restricted = Android/data + Android/obb, which every app is denied by design.
+    """
+    damaged, restricted = [], []
+    dirs = files = 0
+    stack = [root]
+    while stack:
+        current = stack.pop()
+        try:
+            with os.scandir(current) as it:
+                entries = list(it)
+        except OSError as exc:
+            code = getattr(exc, "errno", None)
+            private = "/Android/data/" in current or "/Android/obb/" in current
+            if private or code in (2, 13):
+                restricted.append((current, code, exc.strerror))
+            else:
+                damaged.append((current, code, exc.strerror))
+            continue
+        dirs += 1
+        for entry in entries:
+            try:
+                if entry.is_dir(follow_symlinks=False):
+                    stack.append(entry.path)
+                else:
+                    files += 1
+            except OSError:
+                pass
+    return damaged, restricted, dirs, files
+
+
+def cmd_check_card(argv):
+    """Scan the SD cards for folders Android can no longer read (FAT damage)."""
+    targets = [a for a in argv if not a.startswith("-")]
+    if not targets:
+        targets = external_mounts()
+    if not targets:
+        fail("no external sd card found")
+        return 1
+
+    total_damaged = 0
+    for root in targets:
+        info("scanning {} ...".format(root))
+        damaged, restricted, dirs, files = scan_card(root)
+        print(
+            "     {} folders, {} files readable".format(dirs, files), flush=True
+        )
+        if restricted:
+            print(
+                "     {} Android/data or Android/obb folders skipped "
+                "(protected by Android on purpose)".format(len(restricted)),
+                flush=True,
+            )
+        if not damaged:
+            ok("no damaged folder found on {}".format(root))
+            continue
+        total_damaged += len(damaged)
+        fail("{} damaged folder(s) on {}".format(len(damaged), root))
+        for path, code, message in damaged:
+            print("       errno {} {} -> {}".format(code, message, path), flush=True)
+        print(
+            "     these cannot be read or deleted on the phone, not even with\n"
+            "     all-files access. repair the card on a computer:\n"
+            "       windows : chkdsk X: /f\n"
+            "       linux   : sudo fsck.vfat -a /dev/sdX\n"
+            "     then delete the folders normally.",
+            flush=True,
+        )
+
+    return 1 if total_damaged else 0
+
+
 def cmd_doctor():
     failures = []
     warnings = []
@@ -647,6 +733,8 @@ def main(argv=None):
         return cmd_update(force="--force" in rest, restart="--restart" in rest)
     if cmd == "doctor":
         return cmd_doctor()
+    if cmd in ("check-card", "checkcard", "fsck"):
+        return cmd_check_card(rest)
     if cmd == "unlock":
         return cmd_unlock(rest)
     if cmd == "open":

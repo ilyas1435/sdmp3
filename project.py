@@ -333,6 +333,22 @@ def apply_spoof_time(path, timestamp):
         except Exception:
             return False
 
+CARD_DAMAGE_HINT = (
+    'هذا المجلد تالف على مستوى الكارت (نظام ملفات FAT): أندرويد يرفض حذفه '
+    'بأنه «غير فارغ» لكنه لا يستطيع قراءة محتوياته (خطأ إدخال/إخراج). '
+    'ليست مشكلة صلاحيات — أصلح الكارت من الكمبيوتر: chkdsk /f في ويندوز أو '
+    'fsck.vfat -a في لينكس، ثم احذف المجلد عادةً'
+)
+
+
+def looks_like_card_damage(failures, deleted):
+    """EIO + 'not empty' with nothing deleted = broken FAT directory entry."""
+    if deleted or not failures:
+        return False
+    text = ' '.join(str(reason) for _, reason in failures)
+    return 'إدخال/إخراج' in text or 'غير فارغ' in text
+
+
 def log_event(message):
     """Write a support line to the server log (sdmp3.log). Never raises."""
     try:
@@ -1102,7 +1118,7 @@ HTML_TEMPLATE = """
 <div class="modal" id="deleteErrorModal">
     <div class="modal-content" style="max-width: 460px;">
         <h3 style="margin-top:0; font-size: 16px; border-bottom: 1px solid var(--border); padding-bottom: 15px;">تعذر إكمال الحذف</h3>
-        <p id="deleteErrorSummary" style="color: var(--text); font-size: 13.5px; line-height: 1.6; margin: 4px 0 10px;"></p>
+        <p id="deleteErrorSummary" style="color: var(--text); font-size: 13.5px; line-height: 1.6; margin: 4px 0 10px; white-space: pre-line;"></p>
         <div id="deleteErrorList" style="display:flex; flex-direction:column; gap:6px; overflow-y:auto; max-height: 36vh;"></div>
         <div style="display:flex; gap:10px; margin-top:14px;">
             <button class="btn btn-outline" style="flex:1;" onclick="document.getElementById('deleteErrorModal').style.display='none'">إغلاق</button>
@@ -1665,7 +1681,8 @@ HTML_TEMPLATE = """
         let failures = res.failures || [];
         let summary = document.getElementById('deleteErrorSummary');
         let list = document.getElementById('deleteErrorList');
-        summary.textContent = res.error || 'فشل الحذف';
+        summary.textContent = (res.error || 'فشل الحذف')
+            + (res.card_damage ? '\\n\\nلفحص الكارت بالكامل: sdmp3 check-card' : '');
         list.innerHTML = '';
         failures.forEach(function(f) {
             let row = document.createElement('div');
@@ -2660,6 +2677,13 @@ def delete_item():
                     path, deleted,
                     '; '.join('{} => {}'.format(p, r) for p, r in failures[:10]),
                     'still exists'))
+                if looks_like_card_damage(failures, deleted):
+                    return jsonify({
+                        'success': False,
+                        'error': CARD_DAMAGE_HINT,
+                        'card_damage': True,
+                        'failures': [{'path': p, 'reason': r} for p, r in failures[:10]],
+                    })
                 return jsonify({
                     'success': False,
                     'error': 'تعذر حذف {} عنصر من أصل {}{}{}'.format(

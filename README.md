@@ -114,6 +114,7 @@ bash ~/.local/share/sdmp3/install.sh --uninstall --purge  # also delete the sour
 | `update`           | `git pull` from GitHub (refuses if you edited the source) |
 | `version`          | Print version + git commit                                |
 | `doctor`           | Environment check                                         |
+| `check-card`       | Find folders Android can no longer read (FAT damage)      |
 | `unlock`           | Grant SD-card all-files access via Shizuku (optional)      |
 | `open`             | Open the UI in the Android browser                        |
 
@@ -147,6 +148,22 @@ A failed delete opens a dialog that names every blocked item with its reason
   The app now refuses them up front with a clear message instead of a partial
   delete.
 - `الكارت للقراءة فقط` → the card's lock switch is on, or the card is failing.
+
+#### Damaged folder (FAT): "خطأ إدخال/إخراج" + "مجلد غير فارغ"
+
+If a delete reports `خطأ إدخال/إخراج في الكارت` together with `مجلد غير فارغ`
+and nothing was deleted, that folder's **FAT directory entry is broken** (usually
+written years ago by a Windows PC or an old MP3 player). Android hides the
+contents, so no app can read or delete it — not even with all-files access,
+Shizuku, or a card remount (all verified). It is *not* a permission problem.
+
+Repair it on a computer (`chkdsk X: /f` on Windows, `sudo fsck.vfat -a /dev/sdX`
+on Linux), then delete the folder normally. To find every damaged folder on your
+cards:
+
+```bash
+sdmp3 check-card
+```
 
 Every delete attempt (path, deleted count, blocked items and reasons) is written
 to the log, so it can be inspected later:
