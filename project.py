@@ -9,6 +9,7 @@ import re
 import atexit
 import tempfile
 import asyncio
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import deque
 from werkzeug.exceptions import HTTPException
 from flask import Flask, render_template_string, request, jsonify, send_file
@@ -24,7 +25,7 @@ app = Flask(__name__)
 
 # Version is kept in the VERSION file next to this script so that the `sdmp3`
 # CLI can read it without importing the app.
-APP_VERSION_FALLBACK = "1.5.1"
+APP_VERSION_FALLBACK = "1.5.2"
 
 # Toggled by --no-wakelock (see main() at the bottom).
 WAKELOCK_ENABLED = True
@@ -49,7 +50,10 @@ COPY_BUFFER_SIZE = 4 * 1024 * 1024
 # tracks painfully slow. Ordering is guaranteed by writing the files one at a
 # time in DFS order - never by fsync - so dropping the per-file flush changes
 # speed only, not the on-disk playback order.
-SYNC_THRESHOLD = 64 * 1024 * 1024
+# os.sync() flushes *every* filesystem on the device, not just this copy, so a
+# small threshold turns a big transfer into hundreds of short stalls. Ordering
+# comes from the sequential writes themselves, never from syncing.
+SYNC_THRESHOLD = 256 * 1024 * 1024
 
 # A transfer that has moved no bytes for this long is reported as stalled.
 # A pulled or dying SD card blocks the worker *inside* write() forever, so the
@@ -106,6 +110,10 @@ def reset_state(**overrides):
     with transfer_lock:
         transfer_state.clear()
         transfer_state.update(DEFAULT_STATE)
+        # Start the stall clock at "now". Without this a fresh run keeps
+        # last_progress_ts=0 and falls back to start_time, so the first 25s of
+        # any slow phase looked like a hang.
+        transfer_state['last_progress_ts'] = time.time()
         transfer_state.update(overrides)
 
 def set_state(**kwargs):
@@ -121,7 +129,11 @@ def get_state_snapshot():
     # Stall detection is computed on read: while a card hangs, the worker is
     # blocked in a syscall and cannot update its own state. Reporting the stall
     # is what turns a silent freeze into a message the user can act on.
-    if snap.get('status') == 'copying':
+    #
+    # Only copy/spoof can hang on a volume. TTS is network-bound (Edge TTS) and
+    # never writes to the card, so applying the card wording to it produced the
+    # false "pull the SD card out" warning while the audio was being generated.
+    if snap.get('status') == 'copying' and snap.get('action') in ('copy', 'spoof'):
         last = snap.get('last_progress_ts') or snap.get('start_time') or 0
         idle = (time.time() - last) if last else 0
         if idle >= STALL_SECONDS:
@@ -389,14 +401,18 @@ def get_available_storages():
         pass
     return storages
 
-def count_files(paths, cancel_check=None, count_dirs=False):
+def count_files(paths, cancel_check=None, count_dirs=False, on_progress=None):
     total = 0
     stack = list(paths)
     counter = 0
     while stack:
-        if cancel_check is not None:
-            counter += 1
-            if counter % 300 == 0 and cancel_check():
+        counter += 1
+        if counter % 300 == 0:
+            # Counting a big folder is a pure read pass that can take minutes;
+            # without a heartbeat the UI reported the card as dead.
+            if on_progress is not None:
+                on_progress()
+            if cancel_check is not None and cancel_check():
                 return total
         p = stack.pop()
         try:
@@ -423,6 +439,8 @@ def format_size(size_bytes):
     while size_bytes >= 1024 and i < len(size_name) - 1:
         size_bytes /= 1024.0
         i += 1
+    if i == 0:
+        return "{} B".format(int(round(size_bytes)))
     return f"{size_bytes:.2f} {size_name[i]}"
 
 def has_enough_space(dest, needed_bytes, margin_bytes=20 * 1024 * 1024):
@@ -485,6 +503,39 @@ def _is_storage_root(path):
         return True
     parts = [x for x in p.split('/') if x]
     return len(parts) == 2 and parts[0] == 'storage'
+
+
+def is_inside_storage(path):
+    """True when `path` lives on a user volume (/sdcard or /storage/<vol>/...).
+
+    Guards destructive routes: the whole point of this app is the shared
+    storage, so a delete outside it is always a mistake, not a feature.
+    """
+    try:
+        real = os.path.realpath(path)
+    except OSError:
+        return False
+    roots = set()
+    for candidate in ('/sdcard', '/storage/emulated/0'):
+        try:
+            if os.path.exists(candidate):
+                roots.add(os.path.realpath(candidate))
+        except OSError:
+            pass
+    try:
+        for name in os.listdir('/storage'):
+            full = os.path.join('/storage', name)
+            if os.path.isdir(full):
+                try:
+                    roots.add(os.path.realpath(full))
+                except OSError:
+                    pass
+    except OSError:
+        pass
+    for root in roots:
+        if real == root or real.startswith(root + os.sep):
+            return True
+    return False
 
 
 def android_private_reason(path):
@@ -818,6 +869,32 @@ def plan_transfer(paths, dest, excludes=None, cancel_check=None, on_progress=Non
     return tasks, total_files, total_bytes, skipped
 
 
+def copy_targets_source(paths, dest):
+    """True when the planned copy would write a source *onto itself*.
+
+    dest_inside_source catches "destination inside the source". This catches the
+    mirror case, which is just as destructive and much easier to hit by accident:
+    choosing the parent of a source folder as the destination, e.g.
+    source /sdcard/A with dest /sdcard. The planned target is then
+    /sdcard/A/<file> — the source file itself. copy_file_sequential opens the
+    target with O_TRUNC, so the file is emptied and the error path deletes it:
+    silent data loss reported as a normal copy.
+    """
+    try:
+        dest_real = os.path.realpath(dest)
+    except OSError:
+        return False
+    for path in paths:
+        try:
+            src_real = os.path.realpath(path)
+        except OSError:
+            continue
+        name = os.path.basename(src_real.rstrip(os.sep))
+        if name and os.path.join(dest_real, name) == src_real:
+            return True
+    return False
+
+
 def dest_inside_source(paths, dest):
     """True when the destination lives inside one of the sources.
 
@@ -856,6 +933,8 @@ def copy_thread_task(paths, dest, excludes=None):
         # be able to duplicate a tree into itself either.
         if dest_inside_source(paths, dest):
             raise RuntimeError('لا يمكن النسخ إلى مجلد داخل المصدر: {}'.format(dest))
+        if copy_targets_source(paths, dest):
+            raise RuntimeError('الوجهة هي مجلد المصدر نفسه — اختر مجلداً جديداً داخلها')
 
         set_state(file='جاري فحص الملفات وترتيبها بتسلسل JOC...')
         touch_progress()
@@ -993,7 +1072,8 @@ def spoof_only_thread(dest_path, start_timestamp):
     copied = 0
     try:
         set_state(file='جاري فحص المسار (قد تستغرق العملية وقتاً)...')
-        total_items = count_files([dest_path], cancel_check=is_cancelled, count_dirs=True)
+        total_items = count_files([dest_path], cancel_check=is_cancelled, count_dirs=True,
+                                 on_progress=touch_progress)
         if is_cancelled(): raise TransferCancelled()
         set_state(total=total_items)
         
@@ -1001,6 +1081,7 @@ def spoof_only_thread(dest_path, start_timestamp):
 
         # topdown=False is REQUIRED here. Modifying a file inherently updates the directory it sits in.
         for root, dirs, files in os.walk(dest_path, topdown=False):
+            touch_progress()
             if is_cancelled(): raise TransferCancelled()
             
             # 1. Spoof files in this level
@@ -1066,6 +1147,9 @@ TTS_VOICES = {
     "en-US-AndrewMultilingualNeural": "متعدد اللغات – أندرو (رجل)",
 }
 TTS_DEFAULT_VOICE = "ar-AE-HamdanNeural"
+# Edge TTS is network-bound. Chunks are independent and are written to numbered
+# files, so synthesising several at once cannot change the merge order.
+TTS_PARALLEL_CHUNKS = 4
 
 def _cut_at_word_boundary(text, limit):
     """Split text at limit, ending on a complete word.
@@ -1124,6 +1208,43 @@ def synthesize_chunk_mp3(text, voice, rate, out_path):
         await communicate.save(out_path)
     asyncio.run(_run())
 
+def _run_ffmpeg(cmd, cancel_check=None, max_seconds=1800):
+    """Run ffmpeg while keeping the progress heartbeat alive.
+
+    Merging a long index can take minutes. subprocess.run() left the state
+    untouched for that whole time, so the UI announced a dead SD card during a
+    merge that never touches a card. Polling also makes Cancel effective while
+    ffmpeg is running instead of only between chunks.
+    """
+    started = time.time()
+    with tempfile.TemporaryFile() as errf:
+        proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=errf)
+        try:
+            while True:
+                try:
+                    proc.wait(timeout=1)
+                    break
+                except subprocess.TimeoutExpired:
+                    touch_progress()
+                    if cancel_check is not None and cancel_check():
+                        proc.kill()
+                        proc.wait()
+                        raise TransferCancelled()
+                    if time.time() - started > max_seconds:
+                        proc.kill()
+                        proc.wait()
+                        raise RuntimeError('ffmpeg تجاوز الوقت المسموح')
+        finally:
+            if proc.poll() is None:
+                try: proc.kill()
+                except OSError: pass
+                proc.wait()
+        if proc.returncode != 0:
+            errf.seek(0)
+            tail = errf.read().decode('utf-8', 'replace').strip().splitlines()
+            raise RuntimeError('ffmpeg: ' + (tail[-1] if tail else 'فشل بلا رسالة'))
+
+
 def generate_static_noise(out_path, seconds=120, bitrate="64k"):
     """Generate 'seconds' of subtle, low, non-intrusive noise (MP3, mono).
 
@@ -1138,7 +1259,7 @@ def generate_static_noise(out_path, seconds=120, bitrate="64k"):
         "-c:a", "libmp3lame", "-b:a", bitrate, "-ar", "44100", "-ac", "1",
         out_path
     ]
-    subprocess.run(cmd, check=True, capture_output=True)
+    _run_ffmpeg(cmd)
 
 def combine_mp3_chunks(chunk_files, final_path, bitrate="64k", obfuscate=False, static_seconds=120, custom_audio_path=None):
     """Concatenate chunk MP3s into one MP3 at the requested bitrate (mono 44.1kHz).
@@ -1165,7 +1286,16 @@ def combine_mp3_chunks(chunk_files, final_path, bitrate="64k", obfuscate=False, 
         "-c:a", "libmp3lame", "-b:a", bitrate, "-ar", "44100", "-ac", "1",
         final_path
     ]
-    subprocess.run(cmd, check=True, capture_output=True)
+    try:
+        _run_ffmpeg(cmd, cancel_check=is_cancelled)
+    except BaseException:
+        # A partial MP3 would be offered as a finished index.
+        try:
+            if os.path.exists(final_path):
+                os.remove(final_path)
+        except OSError:
+            pass
+        raise
 
 # ------------------ HTML & JS Template ---------------------
 HTML_TEMPLATE = """
@@ -1175,8 +1305,7 @@ HTML_TEMPLATE = """
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>SD Card Coffee</title>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=IBM+Plex+Sans+Arabic:wght@400;500;600&display=swap" rel="stylesheet">
-    <meta name="theme-color" content="#0a0f0d">
+    <meta name="theme-color" content="#151e28">
     <style>
         :root {
             /* "Coffee Blues" palette — https://www.color-hex.com/color-palette/102595
@@ -1203,12 +1332,19 @@ HTML_TEMPLATE = """
             --accent-fill-hover: #276a66;
             --accent-ink: #151e28;   /* label on warning/success/danger fills */
             --accent-soft: rgba(57, 145, 140, 0.18);
+            --accent-line: rgba(57, 145, 140, 0.42);
+            /* Teal readable at 11px on the dark card (accent itself is 3.6:1). */
+            --accent-text: #7fc4bf;
             --accent-glow: rgba(57, 145, 140, 0.40);
             --success: #22c55e;
             --danger: #f43f5e;
             --danger-ink: #fc8b9b;   /* danger *text* (6.0:1 card, 5.2:1 raised) */
             --danger-soft: rgba(244, 63, 94, 0.12);
             --warning: #f59e0b;
+            --warning-soft: rgba(245, 158, 11, 0.10);
+            --warning-line: rgba(245, 158, 11, 0.38);
+            /* Focus ring: teal at low alpha so it reads on every surface. */
+            --focus: rgba(57, 145, 140, 0.45);
 
             /* One hue per volume type, all from the same palette. Clay is too
                dark for 11px pill text, so the kinds carry an -ink variant. */
@@ -1224,40 +1360,52 @@ HTML_TEMPLATE = """
             --kind-card: #be9078;
             --kind-card-ink: #be9078;
             --kind-card-soft: rgba(190, 144, 120, 0.16);
+            /* Border tints derived from each kind's *ink* so a pill's outline
+               matches its text instead of borrowing another theme's hue. */
+            --kind-internal-line: rgba(208, 180, 159, 0.42);
+            --kind-sdcard-line: rgba(221, 168, 140, 0.50);
+            --kind-usb-line: rgba(168, 191, 214, 0.42);
+            --kind-card-line: rgba(190, 144, 120, 0.42);
             --radius: 14px;
         }
-        * { box-sizing: border-box; font-family: 'IBM Plex Sans Arabic', 'Inter', sans-serif; -webkit-tap-highlight-color: transparent; }
-        body { background-color: var(--bg); color: var(--text); margin: 0; padding: 14px; font-size: 14px; padding-bottom: 110px; }
+        * { box-sizing: border-box; font-family: system-ui, -apple-system, 'Segoe UI', Roboto, 'Noto Sans Arabic', 'IBM Plex Sans Arabic', sans-serif; -webkit-tap-highlight-color: transparent; }
+        body { background-color: var(--bg); color: var(--text); margin: 0; padding: 16px 14px 110px; font-size: 14px; line-height: 1.55; -webkit-font-smoothing: antialiased; }
         .container { max-width: 900px; margin: 0 auto; }
 
-        .app-header { display:flex; align-items:center; gap:12px; padding-bottom: 18px; margin-top: 6px; margin-bottom: 6px; border-bottom: 1px solid var(--border); }
-        .app-header .badge { width:42px; height:42px; border-radius:12px; background:var(--accent-soft); display:flex; align-items:center; justify-content:center; flex-shrink:0; }
+        .app-header { display:flex; align-items:center; gap:13px; padding-bottom: 16px; margin-top: 4px; margin-bottom: 14px; border-bottom: 1px solid var(--border); }
+        .app-header .badge { width:44px; height:44px; border-radius:13px; background:var(--accent-soft); border:1px solid var(--accent-line); display:flex; align-items:center; justify-content:center; flex-shrink:0; }
         .app-header .badge svg { stroke: var(--accent); width:22px; height:22px; }
-        .app-header h1 { font-size: 18px; color: var(--text); margin:0; font-weight: 700; letter-spacing: -0.2px; }
-        .app-header p { margin: 2px 0 0; font-size: 12.5px; color: var(--text-muted); }
-        .pill-row { display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; }
-        .pill { font-size: 11px; line-height: 1; padding: 5px 9px; border-radius: 999px; border: 1px solid var(--border); color: var(--text-muted); background: rgba(236,226,216,0.04); white-space: nowrap; }
+        .app-header h1 { font-size: 19px; color: var(--text); margin:0; font-weight: 700; letter-spacing: -0.2px; }
+        .app-header p { margin: 3px 0 0; font-size: 12.5px; color: var(--text-muted); }
+        .pill-row { display:flex; flex-wrap:wrap; gap:6px; margin-top:9px; }
+        .pill { font-size: 11px; line-height: 1; padding: 6px 10px; border-radius: 999px; border: 1px solid var(--border); color: var(--text-muted); background: rgba(236,226,216,0.04); white-space: nowrap; }
+        /* The version is the app's signature, so it wears the accent. */
+        #appVersionPill { color: var(--accent-text); border-color: var(--accent-line); background: var(--accent-soft); font-weight: 600; }
         .pill-ok { color: var(--success); border-color: rgba(34,197,94,0.35); background: rgba(34,197,94,0.08); }
-        .pill-warn { color: var(--warning); border-color: rgba(245,185,66,0.35); background: rgba(245,185,66,0.08); }
+        .pill-warn { color: var(--warning); border-color: var(--warning-line); background: var(--warning-soft); }
         /* Pills tinted by volume type: SD card / USB OTG / internal / unknown.
            Text uses the -ink variant so 11px labels stay legible (4.5:1+). */
-        .pill-kind-internal { color: var(--kind-internal-ink); border-color: rgba(196,203,202,0.45); background: var(--kind-internal-soft); }
-        .pill-kind-sdcard { color: var(--kind-sdcard-ink); border-color: rgba(60,187,177,0.45); background: var(--kind-sdcard-soft); }
-        .pill-kind-usb { color: var(--kind-usb-ink); border-color: rgba(176,160,240,0.45); background: var(--kind-usb-soft); }
-        .pill-kind-card { color: var(--kind-card-ink); border-color: rgba(127,145,142,0.55); background: var(--kind-card-soft); }
+        .pill-kind-internal { color: var(--kind-internal-ink); border-color: var(--kind-internal-line); background: var(--kind-internal-soft); }
+        .pill-kind-sdcard { color: var(--kind-sdcard-ink); border-color: var(--kind-sdcard-line); background: var(--kind-sdcard-soft); }
+        .pill-kind-usb { color: var(--kind-usb-ink); border-color: var(--kind-usb-line); background: var(--kind-usb-soft); }
+        .pill-kind-card { color: var(--kind-card-ink); border-color: var(--kind-card-line); background: var(--kind-card-soft); }
 
         .card { background: var(--card); padding: 18px; border-radius: var(--radius); border: 1px solid var(--border); margin-bottom: 16px; }
-        .card-title { display:flex; align-items:center; gap:8px; font-size: 14px; font-weight:600; color: var(--text); margin: 0 0 14px; }
+        @media (max-width: 480px) { .card { padding: 15px; } body { padding: 12px 10px 110px; } }
+        .card-title { display:flex; align-items:center; gap:9px; font-size: 14.5px; font-weight:600; color: var(--text); margin: 0 0 15px; }
         .card-title svg { width:17px; height:17px; stroke: var(--accent); }
 
         label { font-weight: 500; margin-bottom: 8px; display: block; color: var(--text-muted); font-size: 13px; }
         select, input[type="text"], input[type="number"], input[type="datetime-local"] { width: 100%; padding: 12px 14px; border: 1px solid var(--border); border-radius: 10px; font-size: 14px; background-color: var(--field); color: var(--text); outline: none; margin-bottom: 12px; transition: border-color 0.15s, box-shadow 0.15s; min-height: 46px; }
         select:focus, input[type="text"]:focus, input[type="number"]:focus, input[type="datetime-local"]:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
-        textarea { width: 100%; padding: 12px 14px; box-sizing: border-box; border: 1px solid var(--border); border-radius: 10px; font-family: 'Inter', monospace; font-size: 14px; line-height: 1.7; background-color: var(--field); color: var(--text); outline: none; resize: none; }
+        textarea { width: 100%; padding: 12px 14px; box-sizing: border-box; border: 1px solid var(--border); border-radius: 10px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; background-color: var(--field); color: var(--text); outline: none; resize: none; }
         textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
 
-        .btn { padding: 11px 16px; min-height: 44px; border: none; border-radius: 10px; cursor: pointer; font-weight: 600; font-size: 13.5px; color: var(--text); transition: transform 0.08s ease, filter 0.15s ease, background 0.15s ease; display: inline-flex; align-items: center; justify-content: center; gap: 7px; }
+        .btn { padding: 11px 16px; min-height: 44px; border: none; border-radius: 10px; cursor: pointer; font-weight: 600; font-size: 13.5px; color: var(--text); transition: transform 0.08s ease, filter 0.15s ease, background-color 0.15s ease, border-color 0.15s ease; display: inline-flex; align-items: center; justify-content: center; gap: 7px; }
         .btn:active { transform: scale(0.97); }
+        .btn:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+        .btn:focus-visible, .icon-btn:focus-visible, .storage-card:focus-visible, .toggle-btn:focus-visible {
+            outline: 2px solid var(--accent); outline-offset: 2px; }
         .btn-primary { background: var(--accent-fill); color: #f7f4f0; }
         .btn-primary:hover { background: var(--accent-fill-hover); }
         .btn-success { background: var(--success); color: var(--accent-ink); }
@@ -1267,15 +1415,18 @@ HTML_TEMPLATE = """
         .btn-warning { background: var(--warning); color: var(--accent-ink); }
         .btn-warning:hover { filter: brightness(1.08); }
         .btn-outline { background: var(--card-2); border: 1px solid var(--border); color: var(--text); }
-        .btn-outline:hover { border-color: var(--accent); color: var(--accent); }
+        .btn-outline:hover { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent-soft); }
         .btn-sm { padding: 8px 12px; min-height: 38px; font-size: 12.5px; }
 
-        .tree { max-height: 65vh; overflow: auto; background: var(--field); border: 1px solid var(--border); border-radius: 10px; padding: 8px; }
-        .item-row { display: flex; align-items: center; padding: 9px 6px; border-radius: 8px; border-bottom: 1px solid var(--border); min-width: max-content; transition: background 0.15s; }
+        .tree { max-height: 62vh; overflow: auto; background: var(--field); border: 1px solid var(--border); border-radius: 10px; padding: 8px; scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
+        .tree::-webkit-scrollbar, .modal-content .modal-body::-webkit-scrollbar { width: 8px; height: 8px; }
+        .tree::-webkit-scrollbar-thumb, .modal-content .modal-body::-webkit-scrollbar-thumb { background: var(--border); border-radius: 999px; }
+        .tree::-webkit-scrollbar-track, .modal-content .modal-body::-webkit-scrollbar-track { background: transparent; }
+        .item-row { display: flex; align-items: center; padding: 9px 8px; border-radius: 8px; border-bottom: 1px solid var(--border); min-width: max-content; transition: background-color 0.15s; }
         .item-row:last-child { border-bottom: none; }
         .item-row:hover { background: var(--card-2); }
         .toggle-btn { background: none; border: none; color: var(--text-muted); cursor: pointer; font-size: 12px; width: 26px; height: 26px; padding: 0; flex-shrink:0; }
-        .excluded-badge { color: var(--warning); font-size: 11px; margin-right: 8px; background: rgba(245, 185, 66, 0.12); padding: 2px 6px; border-radius: 4px;}
+        .excluded-badge { color: var(--warning); font-size: 11px; margin-right: 8px; background: var(--warning-soft); border: 1px solid var(--warning-line); padding: 2px 6px; border-radius: 6px;}
         .checkbox { accent-color: var(--accent); width: 18px; height: 18px; margin: 0 10px; flex-shrink: 0; cursor: pointer;}
         .item-name { cursor: pointer; display: flex; align-items: center; gap: 8px; white-space: nowrap; padding-right: 6px; color: var(--text); font-size:14px;}
         .children { margin-right: 24px; display: none; border-right: 1px solid var(--border); padding-right: 12px; }
@@ -1297,13 +1448,14 @@ HTML_TEMPLATE = """
             font-family: inherit; appearance: none; -webkit-appearance: none; }
         .storage-card:hover { border-color: var(--kind, var(--accent)); }
         .storage-card.active { border-color: var(--kind, var(--accent)); background: var(--kind-soft, var(--accent-soft)); }
-        .storage-card .storage-ico { width: 22px; height: 22px; flex-shrink: 0; color: var(--kind, var(--text-muted)); }
+        .storage-card .storage-ico { width: 36px; height: 36px; padding: 7px; flex-shrink: 0; box-sizing: border-box;
+            border-radius: 10px; background: var(--kind-soft, var(--accent-soft)); color: var(--kind, var(--text-muted)); }
         .storage-card.kind-internal { --kind: var(--kind-internal); --kind-ink: var(--kind-internal-ink); --kind-soft: var(--kind-internal-soft); }
         .storage-card.kind-sdcard { --kind: var(--kind-sdcard); --kind-ink: var(--kind-sdcard-ink); --kind-soft: var(--kind-sdcard-soft); }
         .storage-card.kind-usb { --kind: var(--kind-usb); --kind-ink: var(--kind-usb-ink); --kind-soft: var(--kind-usb-soft); }
         .storage-card.kind-card { --kind: var(--kind-card); --kind-ink: var(--kind-card-ink); --kind-soft: var(--kind-card-soft); }
         .storage-meta { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex-grow: 1; }
-        .storage-name { font-size: 13.5px; font-weight: 600; }
+        .storage-name { font-size: 14px; font-weight: 600; }
         .storage-path { font-size: 11px; color: var(--text-muted); direction: ltr; text-align: right;
             overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .storage-card.active .storage-name { color: var(--kind-ink, var(--accent)); }
@@ -1333,9 +1485,9 @@ HTML_TEMPLATE = """
             .modal-content { padding: 16px; max-height: 92vh; border-radius: 14px; }
         }
 
-        .progress-bar { width: 100%; height: 8px; background: var(--field); border-radius: 4px; overflow: hidden; margin: 15px 0; border: 1px solid var(--border);}
-        .progress-fill { height: 100%; background: var(--accent); width: 0%; transition: width 0.3s ease; }
-        .ltr-input { direction: ltr; text-align: left; font-family: 'Inter', monospace; font-size: 12px; }
+        .progress-bar { width: 100%; height: 10px; background: var(--field); border-radius: 999px; overflow: hidden; margin: 15px 0; border: 1px solid var(--border);}
+        .progress-fill { height: 100%; background: var(--accent); width: 0%; border-radius: 999px; transition: width 0.3s ease; }
+        .ltr-input { direction: ltr; text-align: left; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
 
         .disk-space-container { margin-bottom: 10px; font-size: 13px; color: var(--text-muted); display: none;}
         .disk-bar { width: 100%; height: 6px; background: var(--field); border-radius: 3px; overflow: hidden; margin-top: 6px; border: 1px solid var(--border);}
@@ -1360,6 +1512,10 @@ HTML_TEMPLATE = """
         .seg.option:hover:not(.active) { color: var(--accent); border-radius:7px; }
 
         svg.icon { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+
+        @media (prefers-reduced-motion: reduce) {
+            *, *::before, *::after { transition: none !important; animation: none !important; }
+        }
     </style>
 </head>
 <body>
@@ -1858,14 +2014,46 @@ HTML_TEMPLATE = """
     const iconEdit = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path></svg>`;
     const iconTrash = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"></path><path d="M10 11v6"></path><path d="M14 11v6"></path><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"></path></svg>`;
 
+    // Row buttons carry no data of their own: one delegated listener reads the
+    // path from the row. Embedding a filename into an inline onclick breaks the
+    // row as soon as the name contains a quote.
     function rowActionsHtml(path, name, isDir) {
-        let safePath = path.replace(/'/g, "\\'");
-        let safeName = name.replace(/'/g, "\\'");
-        return `<div class="row-actions">
-            <button type="button" class="icon-btn" title="إعادة تسمية" onclick="event.stopPropagation(); handleRenameClick('${safePath}', '${safeName}', this)">${iconEdit}</button>
-            <button type="button" class="icon-btn danger" title="حذف" onclick="event.stopPropagation(); handleDeleteClick('${safePath}', ${isDir}, this)">${iconTrash}</button>
+        return `<div class="row-actions" data-isdir="${isDir ? 1 : 0}">
+            <button type="button" class="icon-btn" data-act="rename" title="إعادة تسمية">${iconEdit}</button>
+            <button type="button" class="icon-btn danger" data-act="delete" title="حذف">${iconTrash}</button>
         </div>`;
     }
+
+    function rowPath(row) {
+        let cb = row.querySelector('input.checkbox');
+        if (cb && cb.value) return cb.value;
+        return row.dataset.path || '';
+    }
+
+    document.addEventListener('click', function (e) {
+        if (!e.target.closest) return;
+        let act = e.target.closest('[data-act]');
+        if (act) {
+            let row = act.closest('.item-row');
+            if (!row) return;
+            e.stopPropagation();
+            let path = rowPath(row);
+            if (!path) return;
+            let name = path.split('/').filter(Boolean).pop() || path;
+            let wrap = act.closest('.row-actions');
+            let isDir = wrap ? wrap.dataset.isdir === '1' : false;
+            if (act.dataset.act === 'rename') handleRenameClick(path, name, act);
+            else if (act.dataset.act === 'delete') handleDeleteClick(path, isDir, act);
+            return;
+        }
+        let toggle = e.target.closest('[data-toggle]');
+        if (toggle) {
+            let row = toggle.closest('.item-row');
+            if (!row) return;
+            let path = rowPath(row);
+            if (path) { e.stopPropagation(); toggleFolder(toggle, path); }
+        }
+    });
 
     window.onload = function() {
         document.getElementById('custom_source_path').value = currentSourceRoot;
@@ -2092,6 +2280,7 @@ HTML_TEMPLATE = """
                 dirs.forEach(item => {
                     let div = document.createElement('div');
                     div.className = 'item-row';
+                    div.dataset.path = item.path;
                     div.innerHTML = `<div class="item-name" style="cursor:pointer;">${iconDir} <span></span></div>${rowActionsHtml(item.path, item.name, true)}`;
                     div.querySelector('.item-name span').textContent = item.name;
                     div.querySelector('.item-name').onclick = () => loadDestBrowser(item.path);
@@ -2167,14 +2356,13 @@ HTML_TEMPLATE = """
             data.items.forEach(item => {
                 let isChecked = isPathSelected(item.path) ? 'checked' : '';
                 let excludedMark = isPathExplicitlyExcluded(item.path) ? '<span class="excluded-badge">مستثنى</span>' : '';
-                let safePath = item.path.replace(/'/g, "\\'");
                 let div = document.createElement('div');
                 div.innerHTML = `
                     <div class="item-row">
-                        ${item.is_dir ? `<button class="toggle-btn" onclick="toggleFolder(this, '${safePath}')">▶</button>` : `<span style="width:26px;display:inline-block;"></span>`}
-                        <input type="checkbox" class="checkbox" value="${item.path}" ${isChecked} onchange="toggleSelect(this, ${item.is_dir})">
-                        <div class="item-name" onclick="${item.is_dir ? `toggleFolder(this.previousElementSibling.previousElementSibling, '${safePath}')` : `this.previousElementSibling.click()`}">
-                            ${item.is_dir ? iconDir : iconFile} <span>${item.name}</span>${excludedMark}
+                        ${item.is_dir ? `<button class="toggle-btn" data-toggle="1" aria-label="فتح المجلد">▶</button>` : `<span style="width:26px;display:inline-block;"></span>`}
+                        <input type="checkbox" class="checkbox" value="${esc(item.path)}" ${isChecked} onchange="toggleSelect(this, ${item.is_dir})">
+                        <div class="item-name" ${item.is_dir ? 'data-toggle="1"' : `onclick="this.previousElementSibling.click()"`}>
+                            ${item.is_dir ? iconDir : iconFile} <span>${esc(item.name)}</span>${excludedMark}
                         </div>
                         ${item.is_dir ? '' : `<span class="file-size">${formatBytes(item.size)}</span>`}
                         ${rowActionsHtml(item.path, item.name, item.is_dir)}
@@ -2332,9 +2520,19 @@ HTML_TEMPLATE = """
     }
     
     function toggleFolder(btn, path) {
-        let children = btn.closest('.item-row').nextElementSibling;
-        if(children.classList.contains('open')){ children.classList.remove('open'); btn.innerText='▶';}
-        else { if(!children.innerHTML) loadSubFolders(path, children); children.classList.add('open'); btn.innerText='▼';}
+        let row = btn.closest('.item-row');
+        if (!row) return;
+        let children = row.nextElementSibling;
+        if (!children || !children.classList.contains('children')) return;
+        let arrow = row.querySelector('.toggle-btn');
+        if (children.classList.contains('open')) {
+            children.classList.remove('open');
+            if (arrow) arrow.innerText = '▶';
+        } else {
+            if (!children.innerHTML) loadSubFolders(path, children);
+            children.classList.add('open');
+            if (arrow) arrow.innerText = '▼';
+        }
     }
 
     function toggleSelect(cb, isDir) {
@@ -2361,7 +2559,11 @@ HTML_TEMPLATE = """
             if(data.results.length === 0) { resBox.innerHTML = '<div style="padding:10px;color:var(--text-muted);">لم يتم العثور على نتائج.</div>'; return; }
             data.results.forEach(item => {
                 let isChecked = isPathSelected(item.path) ? 'checked' : '';
-                resBox.innerHTML += `<div class="item-row"><input type="checkbox" class="checkbox" value="${item.path}" ${isChecked} onchange="toggleSelect(this, ${item.is_dir})"><div class="item-name" style="flex-direction:column;align-items:start;gap:4px;" onclick="this.previousElementSibling.click()"><div style="display:flex;gap:6px;">${item.is_dir?iconDir:iconFile}${item.name}</div><div class="ltr-input truncate-text" style="font-size:11px;color:var(--text-muted); width: 100%;">${item.path}</div></div>${rowActionsHtml(item.path, item.name, item.is_dir)}</div>`;
+                resBox.innerHTML += `<div class="item-row"><input type="checkbox" class="checkbox" value="${esc(item.path)}" ${isChecked} onchange="toggleSelect(this, ${item.is_dir})">
+                    <div class="item-name" style="flex-direction:column;align-items:start;gap:4px;" onclick="this.previousElementSibling.click()">
+                        <div style="display:flex;gap:6px;">${item.is_dir?iconDir:iconFile}${esc(item.name)}</div>
+                        <div class="ltr-input truncate-text" style="font-size:11px;color:var(--text-muted); width: 100%;">${esc(item.path)}</div>
+                    </div>${rowActionsHtml(item.path, item.name, item.is_dir)}</div>`;
             });
         }).catch(() => { if (myToken === searchRequestToken) resBox.innerHTML = '<div style="padding:10px;color:var(--danger-ink);">تعذر إتمام البحث.</div>'; });
     }
@@ -2407,55 +2609,95 @@ HTML_TEMPLATE = """
         } else {
             let idx = 0;
             let pathsArray = Array.from(selectedPaths.keys());
-            pathsArray.forEach(path => {
+            // Built with DOM nodes: a track named `01 "live".mp3` must not be able
+            // to break out of an attribute or inject markup.
+            pathsArray.forEach(function(path) {
                 let isDir = selectedPaths.get(path);
                 let itemName = path.split('/').filter(Boolean).pop() || path;
-                list.innerHTML += `
-                    <div class="item-row" style="justify-content: space-between; margin-bottom: 8px; background: var(--field); padding: 12px; border: 1px solid var(--border); border-radius: 6px;">
-                        <div style="display:flex; align-items:center; gap:10px; overflow:hidden; width:65%;" title="${path}">
-                            ${isDir ? iconDir : iconFile}
-                            <div class="truncate-text" style="font-size:13px; color:#e2e8f0; width:100%; font-weight:500;">${itemName}</div>
-                        </div>
-                        <div style="display:flex; align-items:center; gap:12px; flex-shrink: 0;">
-                            <span id="size_label_${idx}" style="font-size:11px; color:var(--text-muted); min-width: 50px; text-align: right;">يحسب..</span>
-                            <button class="btn btn-outline" style="padding: 6px 10px; font-size: 12px; color:var(--danger-ink); border-color:var(--danger-ink);" onclick="unselectFromModal('${path.replace(/'/g, "\\'")}')">إزالة</button>
-                        </div>
-                    </div>
-                `;
+
+                let row = document.createElement('div');
+                row.className = 'item-row';
+                row.style.cssText = 'justify-content: space-between; margin-bottom: 8px; background: var(--field); padding: 12px; border: 1px solid var(--border); border-radius: 8px;';
+
+                let left = document.createElement('div');
+                left.style.cssText = 'display:flex; align-items:center; gap:10px; overflow:hidden; width:65%;';
+                left.title = path;
+                left.innerHTML = isDir ? iconDir : iconFile;
+                let nameEl = document.createElement('div');
+                nameEl.className = 'truncate-text';
+                nameEl.style.cssText = 'font-size:13px; color:var(--text); width:100%; font-weight:500;';
+                nameEl.textContent = itemName;
+                left.appendChild(nameEl);
+
+                let right = document.createElement('div');
+                right.style.cssText = 'display:flex; align-items:center; gap:12px; flex-shrink: 0;';
+                let sizeEl = document.createElement('span');
+                sizeEl.id = 'size_label_' + idx;
+                sizeEl.style.cssText = 'font-size:11px; color:var(--text-muted); min-width: 52px; text-align: right; direction:ltr;';
+                sizeEl.textContent = '...';
+                let removeBtn = document.createElement('button');
+                removeBtn.className = 'btn btn-outline';
+                removeBtn.style.cssText = 'padding: 6px 10px; font-size: 12px; color:var(--danger-ink); border-color:var(--danger-ink);';
+                removeBtn.textContent = 'إزالة';
+                removeBtn.onclick = function () { unselectFromModal(path); };
+                right.appendChild(sizeEl);
+                right.appendChild(removeBtn);
+
+                row.appendChild(left);
+                row.appendChild(right);
+                list.appendChild(row);
                 idx++;
             });
             if (excludedPaths.size > 0) {
-                list.innerHTML += `<div style="margin:20px 0 10px; font-size:13px; color:var(--warning); font-weight:500;">عناصر مستثناة (${excludedPaths.size}):</div>`;
-                Array.from(excludedPaths).forEach(path => {
-                    let safePath = path.replace(/'/g, "\\'");
+                let head = document.createElement('div');
+                head.style.cssText = 'margin:20px 0 10px; font-size:13px; color:var(--warning); font-weight:500;';
+                head.textContent = 'عناصر مستثناة (' + excludedPaths.size + '):';
+                list.appendChild(head);
+                Array.from(excludedPaths).forEach(function(path) {
                     let itemName = path.split('/').filter(Boolean).pop() || path;
-                    list.innerHTML += `
-                        <div class="item-row" style="justify-content: space-between; margin-bottom: 8px; background: rgba(245, 185, 66, 0.06); padding: 12px; border: 1px dashed rgba(245, 185, 66, 0.35); border-radius: 6px;">
-                            <div class="truncate-text" style="font-size:13px; color:#fca5a5; width:70%;" title="${path}">${itemName}</div>
-                            <button class="btn btn-outline" style="padding: 6px 10px; font-size: 12px; flex-shrink: 0;" onclick="reincludeFromModal('${safePath}', false)">إرجاع</button>
-                        </div>
-                    `;
+                    let row = document.createElement('div');
+                    row.className = 'item-row';
+                    row.style.cssText = 'justify-content: space-between; margin-bottom: 8px; background: var(--warning-soft); padding: 12px; border: 1px dashed var(--warning-line); border-radius: 8px;';
+                    let nameEl = document.createElement('div');
+                    nameEl.className = 'truncate-text';
+                    nameEl.style.cssText = 'font-size:13px; color:var(--danger-ink); width:70%;';
+                    nameEl.title = path;
+                    nameEl.textContent = itemName;
+                    let addBtn = document.createElement('button');
+                    addBtn.className = 'btn btn-outline';
+                    addBtn.style.cssText = 'padding: 6px 10px; font-size: 12px; flex-shrink: 0;';
+                    addBtn.textContent = 'إرجاع';
+                    addBtn.onclick = function () { reincludeFromModal(path, false); };
+                    row.appendChild(nameEl);
+                    row.appendChild(addBtn);
+                    list.appendChild(row);
                 });
             }
             document.getElementById('selectedModal').style.display = 'flex';
             
             let totalBytes = 0;
             updateSizeDisplay(totalBytes);
-            for(let i=0; i<pathsArray.length; i++) {
-                try {
-                    let res = await fetch('/api/size', {
-                        method: 'POST', headers: {'Content-Type': 'application/json'},
-                        body: JSON.stringify({path: pathsArray[i], excludes: Array.from(excludedPaths)})
-                    });
-                    let data = await res.json();
-                    document.getElementById('size_label_' + i).innerText = data.formatted;
-                    totalBytes += data.bytes;
-                    updateSizeDisplay(totalBytes);
-                } catch(e) {}
-            }
+            // One request for the whole selection; the server walks each tree once
+            // and drops nested duplicates (a child is already inside its parent).
+            fetch('/api/sizes', {
+                method: 'POST', headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({paths: pathsArray, excludes: Array.from(excludedPaths)})
+            }).then(function(r){ return r.json(); }).then(function(data) {
+                let sizes = data.sizes || {};
+                let counted = {};
+                pathsArray.forEach(function(path, i) {
+                    let info = sizes[path] || {bytes: 0, formatted: '0 B', owner: path};
+                    let el = document.getElementById('size_label_' + i);
+                    if (el) el.innerText = info.formatted;
+                    if (!counted[info.owner]) { counted[info.owner] = true; totalBytes += info.bytes || 0; }
+                });
+                updateSizeDisplay(totalBytes);
+            }).catch(function(){
+                document.getElementById('totalSizeSelected').innerText = 'تعذر حساب الحجم — تحقق من الاتصال.';
+            });
         }
     }
-    
+
     function unselectFromModal(path) { excludePath(path); refreshCheckboxStates(); openSelectedModal(); }
     function reincludeFromModal(path, isDir) { includePath(path, isDir); refreshCheckboxStates(); openSelectedModal(); }
     function closeSelectedModal(e) { if(e.target.id === 'selectedModal') e.target.style.display = 'none'; }
@@ -2666,7 +2908,7 @@ HTML_TEMPLATE = """
     }
 
     function copyJocIndex() {
-        copyTextToClipboard(currentJocIndexText, 'تم نسخ الفهرس بنجاح <b>' + (document.getElementById('jocFileName').value || '') + '.txt</b> — الصقه في أي مكان.');
+        copyTextToClipboard(currentJocIndexText, 'تم نسخ الفهرس بنجاح <b>' + esc((document.getElementById('jocFileName').value || '') + '.txt') + '</b> — الصقه في أي مكان.');
     }
 
     function copyEditTxt() {
@@ -2779,7 +3021,7 @@ HTML_TEMPLATE = """
     }
 
     function showJocSuccessNotify(txtName) {
-        showInlineNotify('<span>✔</span> تم إنشاء الفهرس النصي <b>' + txtName + '</b> بنجاح.'
+        showInlineNotify('<span>✔</span> تم إنشاء الفهرس النصي <b>' + esc(txtName) + '</b> بنجاح.'
             + '<div style="display:flex; flex-wrap:wrap; gap:8px; margin-top:8px;">'
             + '<button class="btn btn-primary btn-sm" style="flex:1;" onclick="copyJocIndex()">'
             + '<svg class="icon" viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>'
@@ -2821,7 +3063,7 @@ HTML_TEMPLATE = """
                     voice: a.voice,
                     rate: a.rate,
                     filename: a.mp3Name,
-                    chunk_size: 1800,
+                    chunk_size: 3000,
                     obfuscate: a.obfuscate
                 })
             }).then(r=>r.json()).then(r2=>{
@@ -2839,7 +3081,7 @@ HTML_TEMPLATE = """
         d.click();
         document.body.removeChild(d);
         let txtName = currentTtsFileName.replace(/\\.mp3$/i, '') + '.txt';
-        showInlineNotify('<span>✔</span> تم إنشاء وتحميل MP3 الصوتي <b>' + currentTtsFileName + '</b>، وكذا الفهرس النصي <b>' + txtName + '</b>.'
+        showInlineNotify('<span>✔</span> تم إنشاء وتحميل MP3 الصوتي <b>' + esc(currentTtsFileName) + '</b>، وكذا الفهرس النصي <b>' + esc(txtName) + '</b>.'
             + '<div style="display:flex; flex-wrap:wrap; gap:8px; margin-top:8px;">'
             + '<button class="btn btn-primary btn-sm" style="flex:1;" onclick="copyJocIndex()">'
             + '<svg class="icon" viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>'
@@ -2862,10 +3104,12 @@ HTML_TEMPLATE = """
         document.getElementById('currentFile').style.color = 'var(--text-muted)';
     }
 
-    // Escape server text before it goes into innerHTML (paths can contain < > &).
+    // Escape server text before it goes into innerHTML. Quotes matter as much as
+    // angle brackets: a track called `01 "live".mp3` used to break the whole row.
     function esc(s) {
         return String(s === undefined || s === null ? '' : s)
-            .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+            .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
     }
 
     function showInlineNotify(html, type) {
@@ -2916,7 +3160,9 @@ HTML_TEMPLATE = """
                 document.getElementById('progressFill').style.width = data.progress + '%';
                 if(data.total > 0) document.getElementById('countText').innerText = data.copied + ' / ' + data.total;
                 // A stalled card must say so instead of pretending to work.
-                if (data.stalled) {
+                // TTS never touches a card: it is network-bound, so it can be
+                // slow without any volume being in trouble.
+                if (data.stalled && data.action !== 'tts') {
                     document.getElementById('currentFile').innerText =
                         'الكارت لا يستجيب — لم يتم نقل أي بيانات منذ ' + data.stall_seconds + ' ثانية. ' +
                         'أخرج الكارت وأدخله جيداً. إذا لم تعُد العملية، أعد تشغيل التطبيق: sdmp3 restart';
@@ -3265,6 +3511,32 @@ def get_dir_size(path, excludes):
     except: pass
     return total
 
+@app.route('/api/sizes', methods=['POST'])
+def get_items_sizes():
+    """Sizes for a whole selection in one request.
+
+    The modal used to fire one /api/size per selected item, sequentially, so a
+    dozen folders meant a dozen full walks and a long row of "يحسب..".
+    """
+    body = request.json or {}
+    paths = [p for p in body.get('paths', []) if p]
+    excludes = set(p for p in body.get('excludes', []) if p)
+    # A child's bytes are already inside its parent: walk each tree once.
+    roots = []
+    for path in sorted(paths, key=len):
+        if not any(path == r or path.startswith(r.rstrip('/') + '/') for r in roots):
+            roots.append(path)
+    root_bytes = {}
+    for root in roots:
+        root_bytes[root] = get_dir_size(root, excludes) if os.path.exists(root) else 0
+    sizes = {}
+    for path in paths:
+        owner = next(r for r in roots if path == r or path.startswith(r.rstrip('/') + '/'))
+        total = root_bytes[owner]
+        sizes[path] = {'bytes': total, 'formatted': format_size(total), 'owner': owner}
+    return jsonify({'sizes': sizes})
+
+
 @app.route('/api/size', methods=['POST'])
 def get_item_size():
     body = request.json or {}
@@ -3341,6 +3613,12 @@ def delete_item():
     data = request.json or {}
     path = data.get('path', '')
     log_event('delete request: {!r}'.format(path))
+    if path and _is_storage_root(path):
+        log_event('delete refused (storage root): {!r}'.format(path))
+        return jsonify({'success': False, 'error': 'لا يمكن حذف جذر التخزين نفسه'})
+    if path and not is_inside_storage(path):
+        log_event('delete refused (outside storage): {!r}'.format(path))
+        return jsonify({'success': False, 'error': 'الحذف مسموح داخل الذاكرة الداخلية والكارت فقط'})
     private_reason = android_private_reason(path)
     if private_reason:
         log_event('delete refused (android private dir): {!r}'.format(path))
@@ -3418,49 +3696,66 @@ def generate_joc_index():
         elif template == 3: return f"{name} من رقم {num} ."
         else: return f"{name} : {num} ."
 
+    # One scan of the tree builds everything the index needs: the play order
+    # (readdir/FAT order, deliberately not sorted) and which folders hold MP3s.
+    # The old version walked the tree with os.walk and then walked it again with
+    # scandir, doubling every FUSE round-trip on the card.
+    tree = {}      # dir -> (mp3 names, child dirs), both in readdir order
     has_mp3 = set()
-    for root, _, files in os.walk(target_dir):
-        if any(f.lower().endswith('.mp3') for f in files):
-            has_mp3.add(root)
-            parent = os.path.dirname(root)
+    skipped = []
+    stack = [target_dir]
+    while stack:
+        current = stack.pop()
+        try:
+            with os.scandir(current) as it:
+                children = [e for e in it if not e.name.startswith('.')]
+        except OSError as exc:
+            skipped.append('{} — {}'.format(current, describe_os_error(exc)))
+            log_event('joc index: cannot read {!r} ({})'.format(current, describe_os_error(exc)))
+            continue
+        mp3_names, child_dirs = [], []
+        for entry in children:
+            try:
+                if entry.is_dir(follow_symlinks=False):
+                    child_dirs.append(entry.path)
+                elif entry.is_file(follow_symlinks=False) and entry.name.lower().endswith('.mp3'):
+                    mp3_names.append(entry.name)
+            except OSError:
+                continue
+        tree[current] = (mp3_names, child_dirs)
+        if mp3_names:
+            has_mp3.add(current)
+            parent = os.path.dirname(current)
             while parent and parent != '/' and parent not in has_mp3:
                 has_mp3.add(parent)
                 parent = os.path.dirname(parent)
+        stack.extend(child_dirs)
 
     def process_dir(current_path, indent_level):
         nonlocal current_x
-        if current_path not in has_mp3: return
-
-        try:
-            with os.scandir(current_path) as it:
-                # ترتيب حقيقي كما هو مخزّن على الفلاشة (FAT) بدل الترتيب الأبجدي:
-                # os.scandir بدون sorted() يعيد العناصر بنفس ترتيب readdir()
-                # النظامي، وهو نفس ترتيب "ls -1U" المستخدم في سكربت الفهرسة.
-                children = [e for e in it if not e.name.startswith('.')]
-        except: return
-
-        mp3_files = [f for f in children if f.is_file() and f.name.lower().endswith('.mp3')]
-        dirs = [d for d in children if d.is_dir()]
+        if current_path not in has_mp3:
+            return
+        mp3_files, dirs = tree.get(current_path, ([], []))
 
         dir_name = clean_and_cut(os.path.basename(current_path), char_limit, strip_symbols)
 
-        if mode == 1: 
+        if mode == 1:
             if current_path != target_dir:
                 if mp3_files:
                     output_lines.append(f"{'  ' * indent_level}{format_entry(dir_name, current_x)}")
                 else:
                     output_lines.append(f"{'  ' * indent_level}{dir_name}")
             current_x += len(mp3_files)
-            for d in dirs: process_dir(d.path, indent_level + 1)
+            for d in dirs: process_dir(d, indent_level + 1)
 
-        elif mode == 2: 
+        elif mode == 2:
             if current_path != target_dir:
                 output_lines.append(f"\n{'  ' * indent_level}[{dir_name}]")
             for f in mp3_files:
-                f_name = clean_and_cut(os.path.splitext(f.name)[0], char_limit, strip_symbols)
+                f_name = clean_and_cut(os.path.splitext(f)[0], char_limit, strip_symbols)
                 output_lines.append(f"{'  ' * (indent_level + 1) if current_path != target_dir else ''}{format_entry(f_name, current_x)}")
                 current_x += 1
-            for d in dirs: process_dir(d.path, indent_level + 1)
+            for d in dirs: process_dir(d, indent_level + 1)
 
     if mode in [1, 2]:
         process_dir(target_dir, 0)
@@ -3476,7 +3771,7 @@ def generate_joc_index():
                         current_x += 1
         except: pass
 
-    return jsonify({'success': True, 'output': '\n'.join(output_lines)})
+    return jsonify({'success': True, 'output': '\n'.join(output_lines), 'skipped': skipped[:10]})
 
 # ------------- TTS (Edge) Routes -------------
 @app.route('/api/tts/voices')
@@ -3502,20 +3797,35 @@ def tts_thread_task(index_text, voice, rate, out_name, chunk_size, obfuscate=Fal
         set_state(total=total, file=f'الصوت: {voice_label} — تم تقسيم النص إلى {total} جزء')
         set_state(progress=2)
 
-        chunk_files = []
         final_path = os.path.join(TTS_CACHE_DIR, out_name)
-        for i, chunk in enumerate(chunks, 1):
-            if is_cancelled(): raise TransferCancelled()
-            cpath = os.path.join(TTS_CACHE_DIR, f"chunk_{i:03d}.mp3")
-            set_state(copied=i, file=f'الصوت: {voice_label} | توليد الجزء {i} من {total}...')
-            progress = 5 + int(((i - 1) / total) * 82)
-            set_state(progress=min(progress, 88))
-            try:
-                synthesize_chunk_mp3(chunk, voice, rate, cpath)
-                chunk_files.append(cpath)
-            except Exception as e:
-                raise RuntimeError(f"فشل توليد الجزء {i}: {e}")
-            if is_cancelled(): raise TransferCancelled()
+        chunk_files = [os.path.join(TTS_CACHE_DIR, f"chunk_{i:03d}.mp3")
+                       for i in range(1, total + 1)]
+        workers = max(1, min(TTS_PARALLEL_CHUNKS, total))
+        set_state(file=f'الصوت: {voice_label} | توليد {total} جزء ({workers} بالتوازي)...')
+        touch_progress()
+        finished = 0
+        pool = ThreadPoolExecutor(max_workers=workers)
+        try:
+            futures = {
+                pool.submit(synthesize_chunk_mp3, chunk, voice, rate, path): i
+                for i, (chunk, path) in enumerate(zip(chunks, chunk_files), 1)
+            }
+            for fut in as_completed(futures):
+                index = futures[fut]
+                try:
+                    fut.result()
+                except Exception as e:
+                    raise RuntimeError(f"فشل توليد الجزء {index}: {e}")
+                finished += 1
+                touch_progress()
+                set_state(copied=finished,
+                          progress=min(5 + int((finished / max(total, 1)) * 82), 88),
+                          file=f'الصوت: {voice_label} | تم {finished} من {total} جزء')
+                if is_cancelled():
+                    raise TransferCancelled()
+        finally:
+            # Never wait for the remaining chunks after a cancel or an error.
+            pool.shutdown(wait=False, cancel_futures=True)
 
         if obfuscate == 'file':
             set_state(file='جاري إضافة الملف الصوتي المخصص في البداية...')
@@ -3538,6 +3848,15 @@ def tts_thread_task(index_text, voice, rate, out_name, chunk_size, obfuscate=Fal
         set_state(status='error', log=str(e))
     finally:
         release_wakelock()
+        # Chunks are inputs only. Leaving them behind filled /data with a copy
+        # of every index ever generated.
+        try:
+            for name in os.listdir(TTS_CACHE_DIR):
+                if name.startswith('chunk_') and name.endswith('.mp3'):
+                    try: os.remove(os.path.join(TTS_CACHE_DIR, name))
+                    except OSError: pass
+        except OSError:
+            pass
 
 @app.route('/api/tts_index', methods=['POST'])
 def tts_index():
@@ -3549,7 +3868,7 @@ def tts_index():
     if not out_name.lower().endswith('.mp3'):
         out_name += '.mp3'
     out_name = os.path.basename(out_name)
-    chunk_size = int(data.get('chunk_size', 1800))
+    chunk_size = int(data.get('chunk_size', 3000))
     obf = data.get('obfuscate', False)
     if obf is True or obf is False:
         obfuscate = bool(obf)
@@ -3611,6 +3930,8 @@ def start_transfer():
     if problem: return jsonify({'error': problem})
     if dest_inside_source(paths, dest):
         return jsonify({'error': 'لا يمكن النسخ إلى مجلد داخل المصدر: ' + dest})
+    if copy_targets_source(paths, dest):
+        return jsonify({'error': 'الوجهة هي مجلد المصدر نفسه — اختر مجلداً جديداً داخلها بدل اختيارها هي'})
 
     global ACTIVE_THREAD
     with transfer_lock:

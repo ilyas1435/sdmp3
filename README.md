@@ -10,7 +10,7 @@
 
 ### 🗂️ File Transfer & Organizing
 - 📁 **Multi-storage support** — internal storage, **SD card** and **USB OTG** are detected separately and each gets its own icon, label and colour (MMC vs USB is read from the block device, since Android shows both as `/storage/XXXX-XXXX`).
-- 📦 **Fast sequential copying** — 4 MB buffers, one write pass per file, and a single flush every 64 MB; playback order comes from writing files in order, not from per-file `fsync`.
+- 📦 **Fast sequential copying** — 4 MB buffers, one write pass per file, and one global flush every 256 MB; playback order comes from writing files in order, not from per-file `fsync`.
 - 🧭 **JOC physical-order sequencing** — files are copied in a natural, physical order (DFS traversal + natural sort) so hardware MP3 players play them reliably in sequence.
 - 🖥️ **Built-in file browser** — expandable tree view to browse, select, and exclude folders/files; the destination picker lists files too (with sizes), so you can confirm what a folder holds before choosing it.
 - 🛒 **Selection cart** — view total size of selections and copy everything with one tap.
@@ -34,7 +34,7 @@
 ### 🔊 Audio Index — Text-to-Speech (Edge TTS)
 - 🗣️ **Microsoft Edge neural voices** (free, no API key) with multiple Arabic dialects plus a **multilingual male** voice.
 - 🎚️ **Speed control** — normal, ±10%, ±20%.
-- 🔢 **Chunked synthesis** — long indexes are split into safe chunks, synthesized, then combined into one MP3.
+- 🔢 **Chunked synthesis** — long indexes are split into safe chunks and synthesized **four at a time**, then merged in order into one MP3.
 - 🎵 **64 kbps mono output** — small, hardware-player-friendly MP3s.
 - 🔇 **Masking / obfuscation** — hide what the audio actually is by prepending a segment:
   - 🌊 **Subtle noise** — 2 minutes of low, non-intrusive soft hum (brown noise, gently filtered).

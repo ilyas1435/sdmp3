@@ -68,9 +68,11 @@ byte-identical (DFS pre-order + `natural_sort_key`) and stay single-threaded.
   error it deletes the half-written destination file so playback order can't be
   polluted.
 - **No `fsync` per file.** The transfer calls `os.sync()` every `SYNC_THRESHOLD`
-  (64 MB) and once at the end. Ordering comes from *sequential writes*, never from
-  fsync — the per-file fsync was removed because it cost tens of ms per MP3 (the
-  main cause of "copy is very slow"). Do not add it back.
+  (256 MB) and once at the end. Ordering comes from *sequential writes*, never
+  from fsync — the per-file fsync was removed because it cost tens of ms per MP3
+  (the main cause of "copy is very slow"). Do not add it back, and keep the
+  threshold large: `os.sync()` flushes *every* filesystem on the device, so a
+  small value turns one big copy into hundreds of short stalls.
 - **`check_destination()`** writes a 5-byte probe with an 8s timeout before every
   copy / spoof / benchmark. A card that is mounted but dead would otherwise block
   the worker inside `write()` forever. Timed-out destinations are cached in
@@ -80,7 +82,20 @@ byte-identical (DFS pre-order + `natural_sort_key`) and stay single-threaded.
   folder during planning; `get_state_snapshot()` reports `stalled`/`stall_seconds`
   after `STALL_SECONDS` (25s) with no bytes. The UI turns that into
   «الكارت لا يستجيب». The worker itself cannot report a hang — it is blocked in a
-  syscall.
+  syscall. The card wording applies only to `action in ('copy','spoof')`; TTS is
+  network-bound and never writes a volume, and reporting it as a dead card was a
+  false alarm that told users to pull the card out mid-generation. Every slow
+  phase must keep the heartbeat alive: `count_files(on_progress=...)` while
+  counting for spoof, `touch_progress()` per TTS chunk, and `_run_ffmpeg()` (which
+  polls ffmpeg every second) instead of `subprocess.run`.
+- **Never copy onto itself.** `dest_inside_source()` rejects a destination inside
+  the source; `copy_targets_source()` rejects the mirror case (destination is the
+  *parent* of the source, e.g. `/sdcard/A` → `/sdcard`), where the planned target
+  is the source file itself — `O_TRUNC` empties it and the error path deletes it.
+  Both are checked in the route *and* in the worker.
+- **Destructive routes are guarded.** `/api/delete` refuses storage roots and any
+  path outside `/sdcard` + `/storage/*` (`_is_storage_root`, `is_inside_storage`),
+  so one wrong path in a request can't wipe an unrelated tree.
 - **`ACTIVE_THREAD` + `is_thread_alive()`** recover a stale `status='copying'`
   left by a dead worker (otherwise every later copy fails with «هناك عملية قيد
   التشغيل بالفعل»). The start routes `reset_state(...)` **synchronously** before
@@ -112,8 +127,34 @@ Teal is the accent, with a split because the palette teal is light: `--accent #3
 
 Each volume kind owns a hue: `.storage-card.kind-*` sets a local `--kind`/`--kind-ink`/`--kind-soft` used by the card's start border, icon, active fill, active name and "الحالي/الوجهة" badge; `.pill-kind-*` and `.kind-border-*` reuse the same variables for the picker badge, the header `sdWritePill` and the path inputs. Internal = sand `#d0b49f`, SD = clay `#ab6b51` (ink `#dda88c`), USB = `#8fa9c4` (ink `#a8bfd6`), unknown = tan `#be9078`. The three warm hues are deliberately close (ΔE76 10–16, like coffee beans) and are told apart by icon + label; `-ink` exists because clay is too dark for 11px text. Only a writable card gets its kind hue in the header pill; a refusing card stays `pill-warn`.
 
+## UI invariants
+
+- **No remote assets.** The page used to load Google Fonts, which blocked first
+  paint on a phone that is offline or behind a slow DNS; the font stack is the
+  system face (`system-ui, … 'Noto Sans Arabic'`). Keep the page self-contained.
+- Markup built with `innerHTML` must escape names/paths with `esc()` (quotes
+  included). Row buttons carry no data: one delegated listener reads the path
+  from the row, so a filename with `"` or `'` can't break or inject markup.
+- `/` is rendered per request; do not add a cache header to it — it embeds the
+  per-volume storage list.
+- `theme-color` must stay `#151e28` (the page colour) so the Android status bar
+  matches the app.
+
 ## Path picker (تحديد / تصفح)
-`/api/items` returns `{name, path, is_dir, size}` in one `scandir` pass (folders first, then files, name-sorted). The picker renders folders (navigable, with rename/delete actions) and **files as read-only rows** with a formatted size — a destination must be a folder, and single files are ticked in the source tree instead. Long folders are paged: `PICKER_FILES_STEP` (300) files per page with «عرض المزيد», so a 4 000-file folder opens instantly.
+`/api/sizes` returns sizes for a whole selection in one request (parents are
+walked once and nested selections are counted once); use it instead of calling
+`/api/size` in a loop. `/api/items` returns `{name, path, is_dir, size}` in one `scandir` pass (folders first, then files, name-sorted). The picker renders folders (navigable, with rename/delete actions) and **files as read-only rows** with a formatted size — a destination must be a folder, and single files are ticked in the source tree instead. Long folders are paged: `PICKER_FILES_STEP` (300) files per page with «عرض المزيد», so a 4 000-file folder opens instantly.
+
+## TTS specifics
+
+- Chunks are synthesised **in parallel** (`TTS_PARALLEL_CHUNKS = 4`): Edge TTS is
+  network-bound, and chunks land in numbered `chunk_XXX.mp3` files, so the merge
+  order — and therefore playback order — is unchanged. This is the only place
+  concurrency is welcome; the copy engine stays single-threaded.
+- `combine_mp3_chunks()` runs through `_run_ffmpeg()`, which heartbeats and makes
+  Cancel effective mid-merge; a cancelled/failed merge deletes its partial MP3.
+- `chunk_*.mp3` are removed after every run (finally block); a full index used to
+  leave a copy of itself in `/data` until the process exited.
 
 ## TTS prerequisites
 - `edge-tts` is **optional** (import check sets `EDGE_TTS_AVAILABLE`; TTS-only features). Copy/JOC/spoof work without it.

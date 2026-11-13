@@ -35,6 +35,20 @@ REQUIREMENTS = os.path.join(APP_DIR, "requirements.txt")
 STATE_DIR = os.path.join(os.path.expanduser("~"), ".local", "state", "sdmp3")
 STATE_FILE = os.path.join(STATE_DIR, "instance.json")
 LOG_FILE = os.path.join(STATE_DIR, "sdmp3.log")
+# One previous copy is enough for support; the log is append-only per run.
+LOG_MAX_BYTES = 2 * 1024 * 1024
+
+
+def rotate_log(path=LOG_FILE, max_bytes=LOG_MAX_BYTES):
+    """Keep sdmp3.log from growing without bound across restarts."""
+    try:
+        if os.path.getsize(path) > max_bytes:
+            try:
+                os.replace(path, path + ".1")
+            except OSError:
+                pass
+    except OSError:
+        pass
 
 DEFAULT_HOST = "0.0.0.0"
 DEFAULT_PORT = 5050
@@ -314,6 +328,7 @@ def cmd_start(ns, extra):
         die("port {} is already in use by another program (try --port)".format(ns.port))
 
     os.makedirs(STATE_DIR, exist_ok=True)
+    rotate_log()
     with open(LOG_FILE, "ab", buffering=0) as logfile:
         logfile.write(
             "\n=== sdmp3 start {} ===\n".format(
