@@ -22,6 +22,23 @@ except ImportError:
 
 app = Flask(__name__)
 
+# Version is kept in the VERSION file next to this script so that the `sdmp3`
+# CLI can read it without importing the app.
+APP_VERSION_FALLBACK = "1.0.0"
+
+# Toggled by --no-wakelock (see main() at the bottom).
+WAKELOCK_ENABLED = True
+
+
+def get_app_version():
+    try:
+        here = os.path.dirname(os.path.abspath(__file__))
+        with open(os.path.join(here, 'VERSION'), encoding='utf-8') as fh:
+            return fh.read().strip() or APP_VERSION_FALLBACK
+    except OSError:
+        return APP_VERSION_FALLBACK
+
+
 # Cache optimization: 512KB to ensure stable flow
 COPY_BUFFER_SIZE = 512 * 1024  
 # Force hardware sync every 16MB to prevent RAM bloat and freezing
@@ -105,6 +122,8 @@ def cleanup_tts_cache():
 atexit.register(cleanup_tts_cache)
 
 def acquire_wakelock():
+    if not WAKELOCK_ENABLED:
+        return
     try:
         subprocess.run(["termux-wake-lock"], timeout=3, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except Exception:
@@ -2566,7 +2585,40 @@ def _signal_exit(signum, frame):
     import signal as _s
     raise SystemExit(0)
 
-if __name__ == '__main__':
+def _lan_ip():
+    """Best-effort LAN address for the startup banner (None if offline)."""
+    import socket as _socket
+    sock = _socket.socket(_socket.AF_INET, _socket.SOCK_DGRAM)
+    try:
+        sock.connect(('8.8.8.8', 80))
+        return sock.getsockname()[0]
+    except OSError:
+        return None
+    finally:
+        sock.close()
+
+
+def main(argv=None):
+    """Entry point: python project.py [--host H] [--port P] [--no-wakelock]."""
+    global WAKELOCK_ENABLED
+
+    import argparse
+    parser = argparse.ArgumentParser(
+        prog='sdmp3',
+        description='SD Copy MP3 Manager - copy, index and timestamp-spoof MP3s on Android SD cards.',
+    )
+    parser.add_argument('--host', default='0.0.0.0',
+                        help='bind address (default: 0.0.0.0, reachable from your network)')
+    parser.add_argument('--port', type=int, default=5050,
+                        help='HTTP port (default: 5050)')
+    parser.add_argument('--no-wakelock', action='store_true',
+                        help='do not keep the CPU awake during transfers')
+    parser.add_argument('--version', action='version',
+                        version=f'sdmp3 {get_app_version()}')
+    args = parser.parse_args(argv)
+
+    WAKELOCK_ENABLED = not args.no_wakelock
+
     import signal as _sig
     for _sname in ('SIGINT', 'SIGTERM'):
         if hasattr(_sig, _sname):
@@ -2574,4 +2626,17 @@ if __name__ == '__main__':
                 _sig.signal(getattr(_sig, _sname), _signal_exit)
             except Exception:
                 pass
-    app.run(host='0.0.0.0', port=5050, debug=False, threaded=True)
+
+    print(f"sdmp3 {get_app_version()} - serving on {args.host}:{args.port}", flush=True)
+    print(f"  local:   http://localhost:{args.port}", flush=True)
+    ip = _lan_ip()
+    if ip and args.host in ('0.0.0.0', '', '::'):
+        print(f"  network: http://{ip}:{args.port}", flush=True)
+    print("  press Ctrl+C to stop", flush=True)
+
+    app.run(host=args.host, port=args.port, debug=False, threaded=True)
+
+
+if __name__ == '__main__':
+    main()
+

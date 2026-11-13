@@ -1,0 +1,4 @@
+# Runtime dependencies for sdmp3 (installed automatically by install.sh).
+# edge-tts is optional: copy / JOC index / timestamp spoofing work without it.
+flask>=3.0
+edge-tts>=6.1

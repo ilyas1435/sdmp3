@@ -60,33 +60,61 @@
 
 ## 🚀 Getting Started (Termux / Android)
 
-### Prerequisites
-- [Termux](https://termux.com/) on Android
-- Python 3.8+
-- `ffmpeg` (required for audio combining) — install with:
-  ```bash
-  pkg install ffmpeg
-  ```
+### One-line install (Termux)
 
-### 1. Install dependencies
 ```bash
-pkg install python ffmpeg
-pip install flask
-pip install edge-tts
+curl -fsSL https://raw.githubusercontent.com/ilyas1435/sdmp3/main/install.sh | bash
 ```
-> 🔑 `edge-tts` is optional: the file-copy/JOC/spoof features work without it, but the 🎧 audio-index (TTS) feature requires it.
 
-### 2. Run the app
+That installs the **`sdmp3`** command into `$PREFIX/bin`, clones the source to
+`~/.local/share/sdmp3`, and installs the Python dependencies. `python`, `ffmpeg`
+and `git` are installed with `pkg` automatically if they are missing.
+
+Prefer to read the script before running it?
+
 ```bash
-python project.py
+git clone https://github.com/ilyas1435/sdmp3.git
+cd sdmp3 && bash install.sh
 ```
 
-### 3. Open the UI
-Open a browser (on the phone or any device on the same Wi‑Fi) and go to:
+### Run it
+
+```bash
+sdmp3                 # foreground server (Ctrl+C to stop)
+sdmp3 start           # run in the background
+sdmp3 status          # pid, port and URLs
+sdmp3 stop            # stop the background server
+sdmp3 --port 8080     # any flag is passed through to the app
 ```
-http://<device-ip>:5050
+
+Then open a browser — `http://localhost:5050` on the phone, or
+`http://<device-ip>:5050` from any device on the same Wi-Fi.
+
+> 🔑 `edge-tts` is optional: file-copy / JOC / spoof features work without it,
+> but the 🎧 audio-index (TTS) feature requires it.
+
+### Update / diagnose / remove
+
+```bash
+sdmp3 update                                # pull the latest version from GitHub
+sdmp3 update --restart                      # ... and restart a running server
+sdmp3 --version
+sdmp3 doctor                                # check python / ffmpeg / edge-tts / storage / port
+
+bash ~/.local/share/sdmp3/install.sh --uninstall          # remove the command
+bash ~/.local/share/sdmp3/install.sh --uninstall --purge  # also delete the source
 ```
-On the phone itself: `http://localhost:5050`
+
+| Command            | What it does                                              |
+|--------------------|-----------------------------------------------------------|
+| `sdmp3` / `run`    | Start the web UI in the foreground                        |
+| `start`            | Start detached, with a pidfile and log                    |
+| `stop` / `restart` | Manage the background instance                            |
+| `status`           | Show version, pid, port, uptime and URLs                  |
+| `update`           | `git pull` from GitHub (refuses if you edited the source) |
+| `version`          | Print version + git commit                                |
+| `doctor`           | Environment check                                         |
+| `open`             | Open the UI in the Android browser                        |
 
 ---
 
@@ -102,12 +130,27 @@ On the phone itself: `http://localhost:5050`
 
 ## 🧑‍💻 Development
 
-Single-file app — everything (Flask server, HTML/CSS/JS UI) lives in **`project.py`**. Runs on **port 5050**:
+The app is still a single file — everything (Flask server, HTML/CSS/JS UI) lives
+in **`project.py`**. The `sdmp3` command is a thin wrapper around it:
+
+| File                | Purpose                                                        |
+|---------------------|----------------------------------------------------------------|
+| `project.py`        | The whole app (routes + inline HTML/CSS/JS in `HTML_TEMPLATE`) |
+| `sdmp3_cli.py`      | `sdmp3` command: run/start/stop/status/update/doctor            |
+| `install.sh`        | Installer/updater; generates `$PREFIX/bin/sdmp3`                |
+| `requirements.txt`  | Python deps (`flask`, `edge-tts`) — used by install/update      |
+| `VERSION`           | Current version, read by both the CLI and the app               |
+
+Run the checkout directly while developing (no install needed):
 
 ```bash
-python project.py
+python project.py            # same as before
+sdmp3 update                 # after committing, to refresh an installed copy
 ```
-Stop cleanly with `Ctrl+C` (cleans the TTS temp cache automatically).
+
+Installed copies live in `~/.local/share/sdmp3`; runtime state (pidfile, log)
+lives in `~/.local/state/sdmp3`. Stop cleanly with `Ctrl+C` /
+`sdmp3 stop` (the TTS temp cache is cleaned automatically).
 
 ---
 
