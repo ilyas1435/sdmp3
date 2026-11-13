@@ -3713,6 +3713,41 @@ def invalidate_cache_for_path(path):
     if stale:
         _schedule_cache_save()
 
+def prune_cache_for_path(path):
+    """Remove one deleted subtree from the cached indexes instead of dropping them.
+
+    Deleting a file used to discard the whole folder index, which is exactly what
+    feels like "the search cache keeps disappearing". The deleted path is known,
+    so its entries can simply be filtered out.
+    """
+    if not path:
+        return
+    p = str(path).rstrip('/')
+    if not p:
+        return
+    changed = False
+    with folder_cache_lock:
+        for root in list(FOLDER_CACHE):
+            info = FOLDER_CACHE[root]
+            r = root.rstrip('/')
+            if p == r or r.startswith(p + '/'):
+                # The cached folder itself (or a parent of it) is gone.
+                del FOLDER_CACHE[root]
+                changed = True
+                continue
+            if p.startswith(r + '/'):
+                items = info.get('items') or []
+                kept = [it for it in items
+                        if not (it.get('path') == p
+                                or str(it.get('path', '')).startswith(p + '/'))]
+                if len(kept) != info.get('count'):
+                    FOLDER_CACHE[root] = {'items': kept, 'count': len(kept),
+                                          'built_at': info.get('built_at', 0)}
+                    changed = True
+    if changed:
+        _schedule_cache_save()
+
+
 @app.route('/api/cache/build', methods=['POST'])
 def cache_build():
     data = request.json or {}
@@ -3918,9 +3953,6 @@ def delete_thread_task(target):
     """
     acquire_wakelock()
     try:
-        # Drop the cached search index first: if the delete stops half-way, the
-        # instant search must not keep pointing at entries that are already gone.
-        invalidate_cache_for_path(target)
         set_state(file='جاري الحذف…')
         touch_progress()
 
@@ -3957,11 +3989,17 @@ def delete_thread_task(target):
                     '; '.join('{} => {}'.format(p, r) for p, r in failures[:10])))
 
         if not os.path.lexists(target):
+            # Prune the deleted subtree out of the instant-search index. A
+            # complete delete is exact; a partial one cannot be, so it falls
+            # back to dropping the affected index.
+            prune_cache_for_path(target)
             set_state(copied=deleted, failed=0, delete_failures=[], card_damage=False)
             finish_transfer('done', 'تم حذف {} نهائياً.'.format(
                 os.path.basename(str(target).rstrip('/')) or target),
                 extra={'progress': 100, 'deleted': deleted})
             return
+
+        invalidate_cache_for_path(target)
 
         # Still there: say exactly what is blocked and why, not a vague failure.
         detail = ''

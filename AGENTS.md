@@ -172,8 +172,9 @@ immediately; the UI follows the normal `/transfer/status` poll with
   result is only accepted when a follow-up `[ -e ]` says it is gone.
 - Failure is reported as data, not prose: `delete_failures=[{path, reason}]` plus
   `card_damage` land in the state and open the detailed list modal.
-- The cached search index is invalidated **before** deleting, so a half-finished
-  delete cannot leave results pointing at removed entries.
+- A completed delete **prunes** its entries out of the instant-search index
+  (`prune_cache_for_path`) instead of discarding the whole folder index; only a
+  partial delete, whose survivors are unknown, falls back to invalidation.
 
 ## Search cache
 The instant-search index (`FOLDER_CACHE`) is mirrored to
