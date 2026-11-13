@@ -24,7 +24,7 @@ app = Flask(__name__)
 
 # Version is kept in the VERSION file next to this script so that the `sdmp3`
 # CLI can read it without importing the app.
-APP_VERSION_FALLBACK = "1.4.0"
+APP_VERSION_FALLBACK = "1.4.1"
 
 # Toggled by --no-wakelock (see main() at the bottom).
 WAKELOCK_ENABLED = True
@@ -1176,33 +1176,43 @@ HTML_TEMPLATE = """
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>SD Card Coffee</title>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=IBM+Plex+Sans+Arabic:wght@400;500;600&display=swap" rel="stylesheet">
-    <meta name="theme-color" content="#0a0f1e">
+    <meta name="theme-color" content="#151e28">
     <style>
         :root {
-            --bg: #0a0f1e;
-            --card: #131b2e;
-            --card-2: #182238;
-            --border: #26314a;
-            --text: #f5f7fb;
-            --text-muted: #8b96ac;
-            --accent: #6366f1;
-            --accent-hover: #4f46e5;
-            --accent-soft: rgba(99, 102, 241, 0.16);
-            --accent-glow: rgba(99, 102, 241, 0.55);
+            /* "Coffee Blues" palette — https://www.color-hex.com/color-palette/102595
+               #39918c teal · #d0b49f sand · #be9078 tan · #ab6b51 clay · #2f435a slate
+               Page/card shades are that slate darkened (×0.45 / ×0.70 / ×0.87) so the
+               UI stays dark and the palette's own slate is used verbatim as the border. */
+            --bg: #151e28;
+            --card: #212f3f;
+            --card-2: #2a3a4c;
+            --border: #2f435a;
+            --text: #ece2d8;
+            --text-muted: #a99c92;
+            --accent: #39918c;
+            --accent-hover: #2e7a75;
+            --accent-soft: rgba(57, 145, 140, 0.18);
+            --accent-glow: rgba(57, 145, 140, 0.45);
             --success: #22c55e;
             --danger: #f43f5e;
+            /* Lighter rose for danger *text* on the dark card (4.5:1+). */
+            --danger-ink: #fb7185;
             --danger-soft: rgba(244, 63, 94, 0.12);
             --warning: #f59e0b;
-            /* One hue per volume type. Green/amber/red stay reserved for
-               success/warning/danger, so USB OTG gets the free pink hue. */
-            --kind-internal: #22d3ee;
-            --kind-internal-soft: rgba(34, 211, 238, 0.14);
-            --kind-sdcard: #60a5fa;
-            --kind-sdcard-soft: rgba(96, 165, 250, 0.14);
-            --kind-usb: #f472b6;
-            --kind-usb-soft: rgba(244, 114, 182, 0.14);
-            --kind-card: #94a3b8;
-            --kind-card-soft: rgba(148, 163, 184, 0.14);
+            /* One hue per volume type, taken from the same palette. Clay is too dark
+               for 11px pill text, so each kind has an -ink variant for text only. */
+            --kind-internal: #d0b49f;
+            --kind-internal-ink: #d0b49f;
+            --kind-internal-soft: rgba(208, 180, 159, 0.16);
+            --kind-sdcard: #ab6b51;
+            --kind-sdcard-ink: #dda88c;
+            --kind-sdcard-soft: rgba(171, 107, 81, 0.20);
+            --kind-usb: #8fa9c4;
+            --kind-usb-ink: #a8bfd6;
+            --kind-usb-soft: rgba(143, 169, 196, 0.16);
+            --kind-card: #be9078;
+            --kind-card-ink: #be9078;
+            --kind-card-soft: rgba(190, 144, 120, 0.16);
             --radius: 14px;
         }
         * { box-sizing: border-box; font-family: 'IBM Plex Sans Arabic', 'Inter', sans-serif; -webkit-tap-highlight-color: transparent; }
@@ -1218,11 +1228,12 @@ HTML_TEMPLATE = """
         .pill { font-size: 11px; line-height: 1; padding: 5px 9px; border-radius: 999px; border: 1px solid var(--border); color: var(--text-muted); background: rgba(255,255,255,0.03); white-space: nowrap; }
         .pill-ok { color: var(--success); border-color: rgba(34,197,94,0.35); background: rgba(34,197,94,0.08); }
         .pill-warn { color: var(--warning); border-color: rgba(245,158,11,0.35); background: rgba(245,158,11,0.08); }
-        /* Pills tinted by volume type: SD card / USB OTG / internal / unknown. */
-        .pill-kind-internal { color: var(--kind-internal); border-color: rgba(34,211,238,0.4); background: var(--kind-internal-soft); }
-        .pill-kind-sdcard { color: var(--kind-sdcard); border-color: rgba(96,165,250,0.4); background: var(--kind-sdcard-soft); }
-        .pill-kind-usb { color: var(--kind-usb); border-color: rgba(244,114,182,0.4); background: var(--kind-usb-soft); }
-        .pill-kind-card { color: var(--kind-card); border-color: rgba(148,163,184,0.4); background: var(--kind-card-soft); }
+        /* Pills tinted by volume type: SD card / USB OTG / internal / unknown.
+           Text uses the -ink variant so 11px labels stay legible (4.5:1+). */
+        .pill-kind-internal { color: var(--kind-internal-ink); border-color: rgba(208,180,159,0.4); background: var(--kind-internal-soft); }
+        .pill-kind-sdcard { color: var(--kind-sdcard-ink); border-color: rgba(171,107,81,0.5); background: var(--kind-sdcard-soft); }
+        .pill-kind-usb { color: var(--kind-usb-ink); border-color: rgba(143,169,196,0.4); background: var(--kind-usb-soft); }
+        .pill-kind-card { color: var(--kind-card-ink); border-color: rgba(190,144,120,0.4); background: var(--kind-card-soft); }
 
         .card { background: var(--card); padding: 18px; border-radius: var(--radius); border: 1px solid var(--border); margin-bottom: 16px; }
         .card-title { display:flex; align-items:center; gap:8px; font-size: 14px; font-weight:600; color:#fff; margin: 0 0 14px; }
@@ -1276,18 +1287,18 @@ HTML_TEMPLATE = """
         .storage-card:hover { border-color: var(--kind, var(--accent)); }
         .storage-card.active { border-color: var(--kind, var(--accent)); background: var(--kind-soft, var(--accent-soft)); }
         .storage-card .storage-ico { width: 22px; height: 22px; flex-shrink: 0; color: var(--kind, var(--text-muted)); }
-        .storage-card.kind-internal { --kind: var(--kind-internal); --kind-soft: var(--kind-internal-soft); }
-        .storage-card.kind-sdcard { --kind: var(--kind-sdcard); --kind-soft: var(--kind-sdcard-soft); }
-        .storage-card.kind-usb { --kind: var(--kind-usb); --kind-soft: var(--kind-usb-soft); }
-        .storage-card.kind-card { --kind: var(--kind-card); --kind-soft: var(--kind-card-soft); }
+        .storage-card.kind-internal { --kind: var(--kind-internal); --kind-ink: var(--kind-internal-ink); --kind-soft: var(--kind-internal-soft); }
+        .storage-card.kind-sdcard { --kind: var(--kind-sdcard); --kind-ink: var(--kind-sdcard-ink); --kind-soft: var(--kind-sdcard-soft); }
+        .storage-card.kind-usb { --kind: var(--kind-usb); --kind-ink: var(--kind-usb-ink); --kind-soft: var(--kind-usb-soft); }
+        .storage-card.kind-card { --kind: var(--kind-card); --kind-ink: var(--kind-card-ink); --kind-soft: var(--kind-card-soft); }
         .storage-meta { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex-grow: 1; }
         .storage-name { font-size: 13.5px; font-weight: 600; }
         .storage-path { font-size: 11px; color: var(--text-muted); direction: ltr; text-align: right;
             overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-        .storage-card.active .storage-name { color: var(--kind, var(--accent)); }
+        .storage-card.active .storage-name { color: var(--kind-ink, var(--accent)); }
         .storage-badge { display: none; margin-inline-start: auto; font-size: 10px; padding: 3px 7px; border-radius: 999px;
             border: 1px solid var(--border); color: var(--text-muted); white-space: nowrap; }
-        .storage-card.active .storage-badge { display: inline-block; color: var(--kind, var(--accent)); border-color: var(--kind, var(--accent)); }
+        .storage-card.active .storage-badge { display: inline-block; color: var(--kind-ink, var(--accent)); border-color: var(--kind, var(--accent)); }
         /* Path box in the picker: border says which volume you are browsing. */
         .kind-border-internal { border-color: var(--kind-internal) !important; }
         .kind-border-sdcard { border-color: var(--kind-sdcard) !important; }
@@ -1754,7 +1765,7 @@ HTML_TEMPLATE = """
             <span id="speedText" style="color:var(--accent); font-weight:500;"></span>
             <span id="failedText"></span>
         </div>
-        <div id="errorsBox" style="display:none; max-height:200px; overflow:auto; background:var(--bg); border:1px solid var(--border); border-radius:6px; padding:10px; margin-top:10px; font-size:12px; color:var(--danger);"></div>
+        <div id="errorsBox" style="display:none; max-height:200px; overflow:auto; background:var(--bg); border:1px solid var(--border); border-radius:6px; padding:10px; margin-top:10px; font-size:12px; color:var(--danger-ink);"></div>
         <div id="timeTakenDiv" style="display:none; color:var(--success); font-weight:500; margin-top:15px; font-size:13px; text-align:center;"></div>
         <div id="inlineNotify" style="display:none; flex-wrap:wrap; margin-top:14px; padding:12px 14px; border-radius:10px; font-size:13.5px; line-height:1.7; text-align:center; font-weight:600; border:1px solid; align-items:center; justify-content:center; gap:8px;"></div>
         <div style="display:flex; gap:12px; margin-top:20px;">
@@ -2265,7 +2276,7 @@ HTML_TEMPLATE = """
             nameEl.style.cssText = 'color:var(--text); font-weight:500;';
             nameEl.textContent = String(f.path || '').split('/').filter(Boolean).pop() || f.path;
             let reasonEl = document.createElement('div');
-            reasonEl.style.cssText = 'color:var(--danger); margin-top:2px;';
+            reasonEl.style.cssText = 'color:var(--danger-ink); margin-top:2px;';
             reasonEl.textContent = f.reason || '';
             let pathEl = document.createElement('div');
             pathEl.style.cssText = 'color:var(--text-muted); margin-top:2px; font-size:11px;';
@@ -2341,7 +2352,7 @@ HTML_TEMPLATE = """
                 let isChecked = isPathSelected(item.path) ? 'checked' : '';
                 resBox.innerHTML += `<div class="item-row"><input type="checkbox" class="checkbox" value="${item.path}" ${isChecked} onchange="toggleSelect(this, ${item.is_dir})"><div class="item-name" style="flex-direction:column;align-items:start;gap:4px;" onclick="this.previousElementSibling.click()"><div style="display:flex;gap:6px;">${item.is_dir?iconDir:iconFile}${item.name}</div><div class="ltr-input truncate-text" style="font-size:11px;color:var(--text-muted); width: 100%;">${item.path}</div></div>${rowActionsHtml(item.path, item.name, item.is_dir)}</div>`;
             });
-        }).catch(() => { if (myToken === searchRequestToken) resBox.innerHTML = '<div style="padding:10px;color:var(--danger);">تعذر إتمام البحث.</div>'; });
+        }).catch(() => { if (myToken === searchRequestToken) resBox.innerHTML = '<div style="padding:10px;color:var(--danger-ink);">تعذر إتمام البحث.</div>'; });
     }
 
     document.getElementById('searchInput').addEventListener('input', function() {
@@ -2368,7 +2379,7 @@ HTML_TEMPLATE = """
             } else {
                 let absDiff = Math.abs(diff);
                 let diffFmt = absDiff >= mbThreshold ? (absDiff/(1024*1024*1024)).toFixed(2) + ' GB' : (absDiff/(1024*1024)).toFixed(2) + ' MB';
-                sizeHtml += `<br><span style="color:var(--danger); font-size:12px; margin-top:4px; display:block;">المساحة لا تكفي (عجز: -${diffFmt})</span>`;
+                sizeHtml += `<br><span style="color:var(--danger-ink); font-size:12px; margin-top:4px; display:block;">المساحة لا تكفي (عجز: -${diffFmt})</span>`;
             }
         } else { sizeHtml += `<br><span style="color:var(--text-muted); font-size:12px; margin-top:4px; display:block;">يرجى تحديد الوجهة لمعرفة المساحة.</span>`; }
         document.getElementById('totalSizeSelected').innerHTML = sizeHtml;
@@ -2396,7 +2407,7 @@ HTML_TEMPLATE = """
                         </div>
                         <div style="display:flex; align-items:center; gap:12px; flex-shrink: 0;">
                             <span id="size_label_${idx}" style="font-size:11px; color:var(--text-muted); min-width: 50px; text-align: right;">يحسب..</span>
-                            <button class="btn btn-outline" style="padding: 6px 10px; font-size: 12px; color:var(--danger); border-color:var(--danger);" onclick="unselectFromModal('${path.replace(/'/g, "\\'")}')">إزالة</button>
+                            <button class="btn btn-outline" style="padding: 6px 10px; font-size: 12px; color:var(--danger-ink); border-color:var(--danger-ink);" onclick="unselectFromModal('${path.replace(/'/g, "\\'")}')">إزالة</button>
                         </div>
                     </div>
                 `;
@@ -2598,7 +2609,7 @@ HTML_TEMPLATE = """
             });
             if(!data.available) {
                 sel.disabled = true;
-                document.getElementById('ttsOptions').innerHTML = '<small style="color:var(--danger);">حزمة edge-tts غير مثبتة (يرجى تشغيل: pip install edge-tts)</small>';
+                document.getElementById('ttsOptions').innerHTML = '<small style="color:var(--danger-ink);">حزمة edge-tts غير مثبتة (يرجى تشغيل: pip install edge-tts)</small>';
             }
         }).catch(()=>{});
     }
