@@ -264,8 +264,19 @@ def shizuku_refresher():
         time.sleep(SHIZUKU_TTL)
 
 
+# Cached answer for the header pill: probing a card on every page load would be
+# wasteful (and would hammer a dying card).
+_SD_STATUS_TTL = 60
+_sd_status_cache = {'path': None, 'ts': 0.0, 'value': None}
+
+
 def removable_sd():
-    """First external (non-emulated) /storage mount + whether we may write to it."""
+    """First external (non-emulated) /storage mount + whether we can really write.
+
+    `os.access(W_OK)` lies on Android: it says yes for a card whose every write
+    fails with EIO. So the pill is driven by the same 5-byte probe the copy path
+    uses, cached for a minute.
+    """
     path = None
     try:
         df_output = subprocess.check_output("df -h", shell=True, text=True, timeout=5)
@@ -277,10 +288,18 @@ def removable_sd():
         return {'path': None, 'writable': None}
     if not path:
         return {'path': None, 'writable': None}
-    try:
-        return {'path': path, 'writable': bool(os.access(path, os.W_OK))}
-    except Exception:
-        return {'path': path, 'writable': None}
+
+    now = time.time()
+    cached = _sd_status_cache
+    if cached['path'] == path and (now - cached['ts']) < _SD_STATUS_TTL:
+        return dict(cached['value'])
+
+    problem = check_destination(path, timeout=5)
+    value = {'path': path, 'writable': problem is None}
+    if problem:
+        value['error'] = problem
+    _sd_status_cache.update({'path': path, 'ts': now, 'value': value})
+    return dict(value)
 
 
 def natural_sort_key(text):
@@ -2258,6 +2277,8 @@ HTML_TEMPLATE = """
                     if (sd.writable === true) { sdEl.textContent = 'كتابة الكارت: نعم'; sdEl.className = 'pill pill-ok'; }
                     else if (sd.writable === false) { sdEl.textContent = 'كتابة الكارت: لا'; sdEl.className = 'pill pill-warn'; }
                     else { sdEl.textContent = 'كتابة الكارت: لا يوجد كارت'; sdEl.className = 'pill'; }
+                    // Hovering explains *why* the card is not writable (EIO, lock, ...).
+                    sdEl.title = sd.error || (sd.path ? sd.path : '');
                 }
 
                 if (s.checked === false && !isRetry) {
