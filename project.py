@@ -24,7 +24,7 @@ app = Flask(__name__)
 
 # Version is kept in the VERSION file next to this script so that the `sdmp3`
 # CLI can read it without importing the app.
-APP_VERSION_FALLBACK = "1.4.2"
+APP_VERSION_FALLBACK = "1.4.3"
 
 # Toggled by --no-wakelock (see main() at the bottom).
 WAKELOCK_ENABLED = True
@@ -1176,51 +1176,53 @@ HTML_TEMPLATE = """
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>SD Card Coffee</title>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=IBM+Plex+Sans+Arabic:wght@400;500;600&display=swap" rel="stylesheet">
-    <meta name="theme-color" content="#0a1f29">
+    <meta name="theme-color" content="#0a0f0d">
     <style>
         :root {
-            /* Color Hunt palette — https://colorhunt.co/palette/0f3040464858a56f63d99b7f
-               #0F3040 deep teal · #464858 slate violet · #A56F63 terracotta · #D99B7F peach
-               Comfort-first distribution: the two dark colours carry every large
-               surface (bg is #0F3040 darkened, cards are #0F3040 verbatim, raised
-               surfaces are one lift of it), and the warm colours are kept for
-               accents only, so nothing glares. */
-            --bg: #0a1f29;
-            --card: #0f3040;
-            --card-2: #163a4a;
-            --border: #234c5e;
-            --text: #f2e9e4;
-            --text-muted: #93a7b2;
-            --accent: #d99b7f;
-            --accent-hover: #c98a6b;
-            --accent-ink: #10262f;   /* label colour on top of the accent */
-            --accent-soft: rgba(217, 155, 127, 0.16);
-            --accent-glow: rgba(217, 155, 127, 0.30);
+            /* Coolors palette — https://coolors.co/ee4266-2a1e5c-0a0f0d-c4cbca-3cbbb1
+               #ee4266 rose · #2a1e5c deep indigo · #0a0f0d near-black · #c4cbca cool grey · #3cbbb1 teal
+               Distribution: the near-black is the page and the indigo is every card
+               (both verbatim), so the two vivid colours never fill a large area —
+               teal marks the primary action, rose marks errors. Saturated colour on
+               big surfaces is what makes a 5-colour palette tiring; this way it
+               stays calm and each hue still means one thing. */
+            --bg: #0a0f0d;
+            --card: #2a1e5c;
+            --card-2: #372a75;
+            --border: #4b3a8f;
+            --text: #dfe3e2;
+            --text-muted: #a7b2b0;
+            --accent: #3cbbb1;
+            --accent-hover: #32a89f;
+            --accent-ink: #0a0f0d;   /* label colour on ANY bright fill */
+            --accent-soft: rgba(60, 187, 177, 0.16);
+            --accent-glow: rgba(60, 187, 177, 0.32);
             --success: #22c55e;
-            /* Danger needs two shades: the solid one is a *fill* (white label must
-               stay >= 4.5:1, so #e11d48), the -ink one is danger *text* on the
-               dark card (the solid fill is only 2.9:1 there). */
-            --danger: #e11d48;
-            --danger-ink: #fc8296;
-            --danger-soft: rgba(225, 29, 72, 0.14);
-            --warning: #f59e0b;
-            /* One hue per volume type, spread across the palette so no two read
-               alike: terracotta for the built-in storage, the palette's teal
-               lifted for SD cards (the main target, so it gets the brightest
-               hue), its violet lifted for USB OTG, and a neutral grey for
-               volumes we could not identify. None reuses the peach accent. */
-            --kind-internal: #a56f63;
-            --kind-internal-ink: #c99083;
-            --kind-internal-soft: rgba(165, 111, 99, 0.20);
-            --kind-sdcard: #7fc0d2;
-            --kind-sdcard-ink: #7fc0d2;
-            --kind-sdcard-soft: rgba(127, 192, 210, 0.16);
-            --kind-usb: #b0b2d4;
-            --kind-usb-ink: #b0b2d4;
-            --kind-usb-soft: rgba(176, 178, 212, 0.16);
-            --kind-card: #7d8b93;
-            --kind-card-ink: #a3b3bc;
-            --kind-card-soft: rgba(125, 139, 147, 0.18);
+            /* Rose is the palette's own warning colour, so it *is* the danger hue:
+               #ee4266 fills (dark label 5.2:1; white would only be 3.75) and
+               --danger-ink is its readable text shade on the indigo card. */
+            --danger: #ee4266;
+            --danger-ink: #f78ca0;
+            --danger-soft: rgba(238, 66, 102, 0.14);
+            --warning: #f5b942;
+            /* One hue per volume type. The SD card wears the app's own teal: it is
+               the volume this tool exists for, so it gets the signature colour and
+               the brightest mark on screen. The built-in storage stays neutral grey,
+               USB takes the palette indigo lifted to violet, and volumes we could
+               not identify get a deliberately dull sage. All four are far apart
+               (worst pair ΔE76 22.9) so colour alone already tells them apart. */
+            --kind-internal: #c4cbca;
+            --kind-internal-ink: #c4cbca;
+            --kind-internal-soft: rgba(196, 203, 202, 0.14);
+            --kind-sdcard: #3cbbb1;
+            --kind-sdcard-ink: #3cbbb1;
+            --kind-sdcard-soft: rgba(60, 187, 177, 0.16);
+            --kind-usb: #b0a0f0;
+            --kind-usb-ink: #b0a0f0;
+            --kind-usb-soft: rgba(176, 160, 240, 0.16);
+            --kind-card: #7f918e;
+            --kind-card-ink: #9fb0ad;
+            --kind-card-soft: rgba(127, 145, 142, 0.18);
             --radius: 14px;
         }
         * { box-sizing: border-box; font-family: 'IBM Plex Sans Arabic', 'Inter', sans-serif; -webkit-tap-highlight-color: transparent; }
@@ -1235,13 +1237,13 @@ HTML_TEMPLATE = """
         .pill-row { display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; }
         .pill { font-size: 11px; line-height: 1; padding: 5px 9px; border-radius: 999px; border: 1px solid var(--border); color: var(--text-muted); background: rgba(255,255,255,0.03); white-space: nowrap; }
         .pill-ok { color: var(--success); border-color: rgba(34,197,94,0.35); background: rgba(34,197,94,0.08); }
-        .pill-warn { color: var(--warning); border-color: rgba(245,158,11,0.35); background: rgba(245,158,11,0.08); }
+        .pill-warn { color: var(--warning); border-color: rgba(245,185,66,0.35); background: rgba(245,185,66,0.08); }
         /* Pills tinted by volume type: SD card / USB OTG / internal / unknown.
            Text uses the -ink variant so 11px labels stay legible (4.5:1+). */
-        .pill-kind-internal { color: var(--kind-internal-ink); border-color: rgba(165,111,99,0.55); background: var(--kind-internal-soft); }
-        .pill-kind-sdcard { color: var(--kind-sdcard-ink); border-color: rgba(127,192,210,0.45); background: var(--kind-sdcard-soft); }
-        .pill-kind-usb { color: var(--kind-usb-ink); border-color: rgba(176,178,212,0.45); background: var(--kind-usb-soft); }
-        .pill-kind-card { color: var(--kind-card-ink); border-color: rgba(125,139,147,0.5); background: var(--kind-card-soft); }
+        .pill-kind-internal { color: var(--kind-internal-ink); border-color: rgba(196,203,202,0.45); background: var(--kind-internal-soft); }
+        .pill-kind-sdcard { color: var(--kind-sdcard-ink); border-color: rgba(60,187,177,0.45); background: var(--kind-sdcard-soft); }
+        .pill-kind-usb { color: var(--kind-usb-ink); border-color: rgba(176,160,240,0.45); background: var(--kind-usb-soft); }
+        .pill-kind-card { color: var(--kind-card-ink); border-color: rgba(127,145,142,0.55); background: var(--kind-card-soft); }
 
         .card { background: var(--card); padding: 18px; border-radius: var(--radius); border: 1px solid var(--border); margin-bottom: 16px; }
         .card-title { display:flex; align-items:center; gap:8px; font-size: 14px; font-weight:600; color: var(--text); margin: 0 0 14px; }
@@ -1253,15 +1255,15 @@ HTML_TEMPLATE = """
         textarea { width: 100%; padding: 12px 14px; box-sizing: border-box; border: 1px solid var(--border); border-radius: 10px; font-family: 'Inter', monospace; font-size: 14px; line-height: 1.7; background-color: var(--bg); color: var(--text); outline: none; resize: none; }
         textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
 
-        .btn { padding: 11px 16px; min-height: 44px; border: none; border-radius: 10px; cursor: pointer; font-weight: 600; font-size: 13.5px; color: #fff; transition: transform 0.08s ease, filter 0.15s ease, background 0.15s ease; display: inline-flex; align-items: center; justify-content: center; gap: 7px; }
+        .btn { padding: 11px 16px; min-height: 44px; border: none; border-radius: 10px; cursor: pointer; font-weight: 600; font-size: 13.5px; color: var(--text); transition: transform 0.08s ease, filter 0.15s ease, background 0.15s ease; display: inline-flex; align-items: center; justify-content: center; gap: 7px; }
         .btn:active { transform: scale(0.97); }
         .btn-primary { background: linear-gradient(135deg, var(--accent), var(--accent-hover)); color: var(--accent-ink); box-shadow: 0 6px 16px -6px var(--accent-glow); }
         .btn-primary:hover { filter: brightness(1.08); }
-        .btn-success { background: var(--success); }
+        .btn-success { background: var(--success); color: var(--accent-ink); }
         .btn-success:hover { filter: brightness(1.08); }
-        .btn-danger { background: var(--danger); }
+        .btn-danger { background: var(--danger); color: var(--accent-ink); }
         .btn-danger:hover { filter: brightness(1.08); }
-        .btn-warning { background: var(--warning); color: #1a1200; }
+        .btn-warning { background: var(--warning); color: var(--accent-ink); }
         .btn-warning:hover { filter: brightness(1.08); }
         .btn-outline { background: var(--card-2); border: 1px solid var(--border); color: var(--text); }
         .btn-outline:hover { border-color: var(--accent); color: var(--accent); }
@@ -1272,7 +1274,7 @@ HTML_TEMPLATE = """
         .item-row:last-child { border-bottom: none; }
         .item-row:hover { background: var(--card-2); }
         .toggle-btn { background: none; border: none; color: var(--text-muted); cursor: pointer; font-size: 12px; width: 26px; height: 26px; padding: 0; flex-shrink:0; }
-        .excluded-badge { color: var(--warning); font-size: 11px; margin-right: 8px; background: rgba(245, 158, 11, 0.1); padding: 2px 6px; border-radius: 4px;}
+        .excluded-badge { color: var(--warning); font-size: 11px; margin-right: 8px; background: rgba(245, 185, 66, 0.12); padding: 2px 6px; border-radius: 4px;}
         .checkbox { accent-color: var(--accent); width: 18px; height: 18px; margin: 0 10px; flex-shrink: 0; cursor: pointer;}
         .item-name { cursor: pointer; display: flex; align-items: center; gap: 8px; white-space: nowrap; padding-right: 6px; color: #e7ebf3; font-size:14px;}
         .children { margin-right: 24px; display: none; border-right: 1px solid var(--border); padding-right: 12px; }
@@ -1318,10 +1320,10 @@ HTML_TEMPLATE = """
         .icon-btn:hover { color: var(--accent); border-color: var(--accent); }
         .icon-btn.danger:hover { color: var(--danger-ink); border-color: var(--danger); }
 
-        .cart { position: fixed; bottom: 0; left: 0; width: 100%; background: rgba(19, 27, 46, 0.98); backdrop-filter: blur(6px); border-top: 1px solid var(--border); padding: 14px 18px calc(14px + env(safe-area-inset-bottom)); display: flex; justify-content: space-between; align-items: center; z-index: 50; box-shadow: 0 -8px 24px -8px rgba(0,0,0,0.5); }
+        .cart { position: fixed; bottom: 0; left: 0; width: 100%; background: rgba(23, 17, 52, 0.97); backdrop-filter: blur(6px); border-top: 1px solid var(--border); padding: 14px 18px calc(14px + env(safe-area-inset-bottom)); display: flex; justify-content: space-between; align-items: center; z-index: 50; box-shadow: 0 -8px 24px -8px rgba(0,0,0,0.5); }
         .cart-buttons { display: flex; gap: 12px; }
 
-        .modal { display: none; position: fixed; inset: 0; width: 100%; height: 100%; background: rgba(6, 9, 18, 0.85); z-index: 1000; justify-content: center; align-items: safe center; padding: 16px; overflow: auto; -webkit-overflow-scrolling: touch; }
+        .modal { display: none; position: fixed; inset: 0; width: 100%; height: 100%; background: rgba(5, 7, 6, 0.86); z-index: 1000; justify-content: center; align-items: safe center; padding: 16px; overflow: auto; -webkit-overflow-scrolling: touch; }
         .modal-content { background: var(--card); padding: 20px; border-radius: 18px; width: 100%; max-width: 600px; border: 1px solid var(--border); max-height: max(70vh, 480px); display: flex; flex-direction: column; box-shadow: 0 24px 48px -12px rgba(0,0,0,0.6); margin: auto; }
         .modal-content .modal-body { overflow-y: auto; flex: 1 1 auto; min-height: 0; -webkit-overflow-scrolling: touch; }
         .modal-content .modal-footer { display: flex; gap: 12px; margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--border); flex-shrink: 0; }
@@ -2427,7 +2429,7 @@ HTML_TEMPLATE = """
                     let safePath = path.replace(/'/g, "\\'");
                     let itemName = path.split('/').filter(Boolean).pop() || path;
                     list.innerHTML += `
-                        <div class="item-row" style="justify-content: space-between; margin-bottom: 8px; background: rgba(245, 158, 11, 0.05); padding: 12px; border: 1px dashed rgba(245, 158, 11, 0.3); border-radius: 6px;">
+                        <div class="item-row" style="justify-content: space-between; margin-bottom: 8px; background: rgba(245, 185, 66, 0.06); padding: 12px; border: 1px dashed rgba(245, 185, 66, 0.35); border-radius: 6px;">
                             <div class="truncate-text" style="font-size:13px; color:#fca5a5; width:70%;" title="${path}">${itemName}</div>
                             <button class="btn btn-outline" style="padding: 6px 10px; font-size: 12px; flex-shrink: 0;" onclick="reincludeFromModal('${safePath}', false)">إرجاع</button>
                         </div>
