@@ -24,7 +24,7 @@ app = Flask(__name__)
 
 # Version is kept in the VERSION file next to this script so that the `sdmp3`
 # CLI can read it without importing the app.
-APP_VERSION_FALLBACK = "1.4.3"
+APP_VERSION_FALLBACK = "1.4.4"
 
 # Toggled by --no-wakelock (see main() at the bottom).
 WAKELOCK_ENABLED = True
@@ -1180,49 +1180,56 @@ HTML_TEMPLATE = """
     <style>
         :root {
             /* Coolors palette — https://coolors.co/ee4266-2a1e5c-0a0f0d-c4cbca-3cbbb1
-               #ee4266 rose · #2a1e5c deep indigo · #0a0f0d near-black · #c4cbca cool grey · #3cbbb1 teal
-               Distribution: the near-black is the page and the indigo is every card
-               (both verbatim), so the two vivid colours never fill a large area —
-               teal marks the primary action, rose marks errors. Saturated colour on
-               big surfaces is what makes a 5-colour palette tiring; this way it
-               stays calm and each hue still means one thing. */
+               #0a0f0d near-black · #2a1e5c deep indigo · #3cbbb1 teal
+               #ee4266 rose        · #c4cbca cool grey
+
+               The five hues do not all get the same job size. The near-black is
+               the page (verbatim). The indigo is the card colour, but *darkened
+               to about a third of its lightness* (--card): at full strength it
+               is a saturated purple that fills most of the screen and fights
+               every label on it; as a plum-black it reads as "surface" while
+               still carrying the palette's hue. Hairlines are the grey at low
+               alpha, so the same line works on the page and on a card. The two
+               vivid hues are marks only: teal = action/current, rose = error.
+               Grey owns all text. That distribution is what keeps five colours
+               restful instead of loud. */
             --bg: #0a0f0d;
-            --card: #2a1e5c;
-            --card-2: #372a75;
-            --border: #4b3a8f;
-            --text: #dfe3e2;
-            --text-muted: #a7b2b0;
+            --card: #1e1842;         /* indigo #2a1e5c, dark enough to sit under text */
+            --card-2: #2b2358;       /* one lift: hovered rows, outline buttons, chips */
+            --border: rgba(196, 203, 202, 0.15);   /* neutral hairline, any surface */
+            --text: #e8ebe9;
+            --text-muted: #a6b1ae;
             --accent: #3cbbb1;
             --accent-hover: #32a89f;
             --accent-ink: #0a0f0d;   /* label colour on ANY bright fill */
-            --accent-soft: rgba(60, 187, 177, 0.16);
-            --accent-glow: rgba(60, 187, 177, 0.32);
-            --success: #22c55e;
-            /* Rose is the palette's own warning colour, so it *is* the danger hue:
-               #ee4266 fills (dark label 5.2:1; white would only be 3.75) and
-               --danger-ink is its readable text shade on the indigo card. */
+            --accent-soft: rgba(60, 187, 177, 0.14);
+            --accent-glow: rgba(60, 187, 177, 0.26);
+            --success: #4ade80;
+            /* Rose is the palette's own alert hue: #ee4266 fills (dark label is
+               5.2:1, white would be 3.75:1) and --danger-ink is its readable
+               text shade on the indigo card (7.4:1). */
             --danger: #ee4266;
             --danger-ink: #f78ca0;
-            --danger-soft: rgba(238, 66, 102, 0.14);
+            --danger-soft: rgba(238, 66, 102, 0.12);
             --warning: #f5b942;
-            /* One hue per volume type. The SD card wears the app's own teal: it is
-               the volume this tool exists for, so it gets the signature colour and
-               the brightest mark on screen. The built-in storage stays neutral grey,
-               USB takes the palette indigo lifted to violet, and volumes we could
-               not identify get a deliberately dull sage. All four are far apart
-               (worst pair ΔE76 22.9) so colour alone already tells them apart. */
+            /* One hue per volume type. The SD card wears the app's own teal: it
+               is the volume this tool exists for, so it gets the signature
+               colour. Internal storage stays neutral grey, USB takes the palette
+               indigo lifted to violet, and volumes we could not identify get a
+               deliberately dull sage. Worst pair ΔE76 22.9, so colour alone
+               already separates them (on top of icon and label). */
             --kind-internal: #c4cbca;
             --kind-internal-ink: #c4cbca;
-            --kind-internal-soft: rgba(196, 203, 202, 0.14);
+            --kind-internal-soft: rgba(196, 203, 202, 0.12);
             --kind-sdcard: #3cbbb1;
             --kind-sdcard-ink: #3cbbb1;
-            --kind-sdcard-soft: rgba(60, 187, 177, 0.16);
+            --kind-sdcard-soft: rgba(60, 187, 177, 0.14);
             --kind-usb: #b0a0f0;
             --kind-usb-ink: #b0a0f0;
-            --kind-usb-soft: rgba(176, 160, 240, 0.16);
+            --kind-usb-soft: rgba(176, 160, 240, 0.14);
             --kind-card: #7f918e;
             --kind-card-ink: #9fb0ad;
-            --kind-card-soft: rgba(127, 145, 142, 0.18);
+            --kind-card-soft: rgba(127, 145, 142, 0.16);
             --radius: 14px;
         }
         * { box-sizing: border-box; font-family: 'IBM Plex Sans Arabic', 'Inter', sans-serif; -webkit-tap-highlight-color: transparent; }
@@ -1235,7 +1242,7 @@ HTML_TEMPLATE = """
         .app-header h1 { font-size: 18px; color: var(--text); margin:0; font-weight: 700; letter-spacing: -0.2px; }
         .app-header p { margin: 2px 0 0; font-size: 12.5px; color: var(--text-muted); }
         .pill-row { display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; }
-        .pill { font-size: 11px; line-height: 1; padding: 5px 9px; border-radius: 999px; border: 1px solid var(--border); color: var(--text-muted); background: rgba(255,255,255,0.03); white-space: nowrap; }
+        .pill { font-size: 11px; line-height: 1; padding: 5px 9px; border-radius: 999px; border: 1px solid var(--border); color: var(--text-muted); background: rgba(196,203,202,0.04); white-space: nowrap; }
         .pill-ok { color: var(--success); border-color: rgba(34,197,94,0.35); background: rgba(34,197,94,0.08); }
         .pill-warn { color: var(--warning); border-color: rgba(245,185,66,0.35); background: rgba(245,185,66,0.08); }
         /* Pills tinted by volume type: SD card / USB OTG / internal / unknown.
@@ -1245,7 +1252,7 @@ HTML_TEMPLATE = """
         .pill-kind-usb { color: var(--kind-usb-ink); border-color: rgba(176,160,240,0.45); background: var(--kind-usb-soft); }
         .pill-kind-card { color: var(--kind-card-ink); border-color: rgba(127,145,142,0.55); background: var(--kind-card-soft); }
 
-        .card { background: var(--card); padding: 18px; border-radius: var(--radius); border: 1px solid var(--border); margin-bottom: 16px; }
+        .card { background: var(--card); padding: 18px; border-radius: var(--radius); border: 1px solid var(--border); margin-bottom: 16px; box-shadow: inset 0 1px 0 rgba(232,235,233,0.04); }
         .card-title { display:flex; align-items:center; gap:8px; font-size: 14px; font-weight:600; color: var(--text); margin: 0 0 14px; }
         .card-title svg { width:17px; height:17px; stroke: var(--accent); }
 
@@ -1276,7 +1283,7 @@ HTML_TEMPLATE = """
         .toggle-btn { background: none; border: none; color: var(--text-muted); cursor: pointer; font-size: 12px; width: 26px; height: 26px; padding: 0; flex-shrink:0; }
         .excluded-badge { color: var(--warning); font-size: 11px; margin-right: 8px; background: rgba(245, 185, 66, 0.12); padding: 2px 6px; border-radius: 4px;}
         .checkbox { accent-color: var(--accent); width: 18px; height: 18px; margin: 0 10px; flex-shrink: 0; cursor: pointer;}
-        .item-name { cursor: pointer; display: flex; align-items: center; gap: 8px; white-space: nowrap; padding-right: 6px; color: #e7ebf3; font-size:14px;}
+        .item-name { cursor: pointer; display: flex; align-items: center; gap: 8px; white-space: nowrap; padding-right: 6px; color: var(--text); font-size:14px;}
         .children { margin-right: 24px; display: none; border-right: 1px solid var(--border); padding-right: 12px; }
         .children.open { display: block; }
 
@@ -1320,10 +1327,10 @@ HTML_TEMPLATE = """
         .icon-btn:hover { color: var(--accent); border-color: var(--accent); }
         .icon-btn.danger:hover { color: var(--danger-ink); border-color: var(--danger); }
 
-        .cart { position: fixed; bottom: 0; left: 0; width: 100%; background: rgba(23, 17, 52, 0.97); backdrop-filter: blur(6px); border-top: 1px solid var(--border); padding: 14px 18px calc(14px + env(safe-area-inset-bottom)); display: flex; justify-content: space-between; align-items: center; z-index: 50; box-shadow: 0 -8px 24px -8px rgba(0,0,0,0.5); }
+        .cart { position: fixed; bottom: 0; left: 0; width: 100%; background: rgba(26, 21, 50, 0.97); backdrop-filter: blur(6px); border-top: 1px solid var(--border); padding: 14px 18px calc(14px + env(safe-area-inset-bottom)); display: flex; justify-content: space-between; align-items: center; z-index: 50; box-shadow: 0 -8px 24px -8px rgba(0,0,0,0.5); }
         .cart-buttons { display: flex; gap: 12px; }
 
-        .modal { display: none; position: fixed; inset: 0; width: 100%; height: 100%; background: rgba(5, 7, 6, 0.86); z-index: 1000; justify-content: center; align-items: safe center; padding: 16px; overflow: auto; -webkit-overflow-scrolling: touch; }
+        .modal { display: none; position: fixed; inset: 0; width: 100%; height: 100%; background: rgba(5, 7, 6, 0.88); z-index: 1000; justify-content: center; align-items: safe center; padding: 16px; overflow: auto; -webkit-overflow-scrolling: touch; }
         .modal-content { background: var(--card); padding: 20px; border-radius: 18px; width: 100%; max-width: 600px; border: 1px solid var(--border); max-height: max(70vh, 480px); display: flex; flex-direction: column; box-shadow: 0 24px 48px -12px rgba(0,0,0,0.6); margin: auto; }
         .modal-content .modal-body { overflow-y: auto; flex: 1 1 auto; min-height: 0; -webkit-overflow-scrolling: touch; }
         .modal-content .modal-footer { display: flex; gap: 12px; margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--border); flex-shrink: 0; }
@@ -1333,7 +1340,7 @@ HTML_TEMPLATE = """
         }
 
         .progress-bar { width: 100%; height: 8px; background: var(--bg); border-radius: 4px; overflow: hidden; margin: 15px 0; border: 1px solid var(--border);}
-        .progress-fill { height: 100%; background: var(--success); width: 0%; transition: width 0.3s ease; }
+        .progress-fill { height: 100%; background: linear-gradient(90deg, var(--accent), var(--accent-hover)); width: 0%; transition: width 0.3s ease; }
         .ltr-input { direction: ltr; text-align: left; font-family: 'Inter', monospace; font-size: 12px; }
 
         .disk-space-container { margin-bottom: 10px; font-size: 13px; color: var(--text-muted); display: none;}
@@ -1428,7 +1435,7 @@ HTML_TEMPLATE = """
             </button>
         </div>
         <div style="display:flex; gap:10px; align-items:center; margin-top:10px; flex-wrap:wrap;">
-            <button class="btn btn-outline btn-sm" id="cacheFolderBtn" style="white-space: nowrap; color: var(--accent); border-color: var(--accent);" onclick="cacheCurrentFolder()">
+            <button class="btn btn-outline btn-sm" id="cacheFolderBtn" style="white-space: nowrap;" onclick="cacheCurrentFolder()">
                 <svg class="icon" viewBox="0 0 24 24"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg>
                 تخزين الفهرس (بحث فوري)
             </button>
@@ -1460,7 +1467,7 @@ HTML_TEMPLATE = """
                 <svg class="icon" viewBox="0 0 24 24"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>
                 تحديد
             </button>
-            <button class="btn btn-outline btn-sm" style="white-space: nowrap; color: var(--accent); border-color: var(--accent);" onclick="runDiagnostic()">
+            <button class="btn btn-outline btn-sm" style="white-space: nowrap;" onclick="runDiagnostic()">
                 <svg class="icon" viewBox="0 0 24 24"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline></svg>
                 فحص السرعة
             </button>
@@ -1475,7 +1482,7 @@ HTML_TEMPLATE = """
         </div>
 
         <div class="grid-2" style="margin-top: 14px;">
-            <button class="btn btn-outline" style="color: var(--accent); border-color: var(--accent);" onclick="openJocModal()">
+            <button class="btn btn-outline" onclick="openJocModal()">
                 <svg class="icon" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path></svg>
                 إنشاء فهرس JOC
             </button>
