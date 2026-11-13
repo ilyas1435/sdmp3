@@ -333,7 +333,35 @@ def apply_spoof_time(path, timestamp):
         except Exception:
             return False
 
+def describe_os_error(exc):
+    """Human (Arabic) reason for a failed filesystem operation."""
+    if exc is None:
+        return 'تعذر الحذف'
+    if isinstance(exc, PermissionError):
+        return 'صلاحية مرفوضة (محمي من أندرويد)'
+    if isinstance(exc, FileNotFoundError):
+        return 'غير موجود'
+    if isinstance(exc, IsADirectoryError):
+        return 'مجلد وليس ملفاً'
+    if isinstance(exc, OSError):
+        code = getattr(exc, 'errno', None)
+        reasons = {
+            1: 'عملية غير مسموحة',
+            5: 'خطأ إدخال/إخراج في الكارت',
+            13: 'صلاحية مرفوضة (محمي من أندرويد)',
+            16: 'مشغول (قيد الاستخدام)',
+            22: 'مسار غير صالح',
+            28: 'المساحة ممتلئة',
+            30: 'الكارت للقراءة فقط',
+            39: 'مجلد غير فارغ',
+        }
+        if code in reasons:
+            return reasons[code]
+    text = str(exc).strip()
+    return text or 'خطأ غير معروف'
+
 def try_remove_entry(path):
+    """Remove one file/link/dir. Returns (ok, reason)."""
     try:
         is_dir = os.path.isdir(path) and not os.path.islink(path)
     except Exception:
@@ -341,41 +369,73 @@ def try_remove_entry(path):
     try:
         if is_dir: os.rmdir(path)
         else: os.remove(path)
-        return True
-    except Exception:
+        return True, None
+    except Exception as first_error:
+        # Fallback for "protected" entries: loosen permissions and retry once.
         try: os.chmod(path, 0o777)
         except Exception: pass
         try:
+            try:
+                is_dir = os.path.isdir(path) and not os.path.islink(path)
+            except Exception:
+                is_dir = False
             if is_dir: os.rmdir(path)
             else: os.remove(path)
-            return True
+            return True, None
         except Exception:
-            return False
+            return False, describe_os_error(first_error)
 
 def force_delete_tree(target, cancel_check=None, progress_cb=None):
+    """Delete a tree bottom-up. Returns (deleted, failures) where failures is a
+    list of (path, reason) for every entry that is still there afterwards, so the
+    UI can say exactly what is protected instead of a generic message."""
     deleted = 0
-    failed = 0
+    failures = []
+
+    def note(path, reason):
+        if len(failures) < 25:
+            failures.append((path or target, reason or 'تعذر الحذف'))
+
     if not os.path.lexists(target):
-        return deleted, failed
+        return deleted, failures
+
+    if os.path.isfile(target) or os.path.islink(target):
+        ok, reason = try_remove_entry(target)
+        if ok:
+            return 1, failures
+        note(target, reason)
+        return 0, failures
+
+    def on_walk_error(exc):
+        # os.walk could not list this folder: report it instead of skipping silently
+        note(getattr(exc, 'filename', None), describe_os_error(exc))
+
     try:
-        if os.path.isfile(target) or os.path.islink(target):
-            if try_remove_entry(target): return 1, 0
-            return 0, 1
-        for root, dirs, files in os.walk(target, topdown=False):
+        for root, dirs, files in os.walk(target, topdown=False, onerror=on_walk_error):
             if cancel_check is not None and cancel_check():
-                return deleted, failed
+                return deleted, failures
             for name in files:
                 fp = os.path.join(root, name)
-                if try_remove_entry(fp): deleted += 1
-                else: failed += 1
-                if progress_cb and (deleted + failed) % 20 == 0:
-                    progress_cb(deleted, failed)
+                ok, reason = try_remove_entry(fp)
+                if ok: deleted += 1
+                else: note(fp, reason)
+                if progress_cb and (deleted + len(failures)) % 20 == 0:
+                    progress_cb(deleted, len(failures))
             for name in dirs:
-                try_remove_entry(os.path.join(root, name))
-        try_remove_entry(target)
-    except Exception: pass
-    if progress_cb: progress_cb(deleted, failed)
-    return deleted, failed
+                dp = os.path.join(root, name)
+                ok, reason = try_remove_entry(dp)
+                if ok: deleted += 1
+                else: note(dp, reason)
+    except Exception as exc:
+        note(target, describe_os_error(exc))
+
+    if os.path.lexists(target):
+        ok, reason = try_remove_entry(target)
+        if ok: deleted += 1
+        else: note(target, reason)
+
+    if progress_cb: progress_cb(deleted, len(failures))
+    return deleted, failures
 
 def stable_chunked_copy(src, dst, cancel_check=None):
     if cancel_check is not None and cancel_check():
@@ -2465,16 +2525,34 @@ def delete_item():
 
     try:
         if os.path.isdir(path) and not os.path.islink(path):
-            deleted, failed = force_delete_tree(path)
+            deleted, failures = force_delete_tree(path)
             invalidate_cache_for_path(path)
             if os.path.lexists(path):
-                return jsonify({'success': False, 'error': f'تعذر حذف بعض العناصر المحمية ({failed}), تم حذف {deleted} فقط'})
-            return jsonify({'success': True})
+                detail = ''
+                if failures:
+                    shown = failures[:4]
+                    detail = ' — ' + '، '.join(
+                        '{}: {}'.format(os.path.basename(str(p).rstrip('/')) or p, reason)
+                        for p, reason in shown
+                    )
+                    if len(failures) > len(shown):
+                        detail += ' (+{})'.format(len(failures) - len(shown))
+                hint = ''
+                if any('صلاحية' in str(reason) for _, reason in failures):
+                    hint = ' — جرّب: sdmp3 unlock لمنح الوصول الكامل للكارت'
+                return jsonify({
+                    'success': False,
+                    'error': 'تعذر حذف {} عنصر من أصل {}{}{}'.format(
+                        len(failures), deleted + len(failures), detail, hint),
+                    'failures': [{'path': p, 'reason': r} for p, r in failures[:10]],
+                })
+            return jsonify({'success': True, 'deleted': deleted})
         else:
-            if try_remove_entry(path):
+            ok, reason = try_remove_entry(path)
+            if ok:
                 invalidate_cache_for_path(path)
                 return jsonify({'success': True})
-            return jsonify({'success': False, 'error': 'تعذر الحذف (قد يكون الملف محمياً)'})
+            return jsonify({'success': False, 'error': 'تعذر الحذف: {}'.format(reason)})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)})
 

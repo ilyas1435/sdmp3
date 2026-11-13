@@ -135,6 +135,16 @@ Shizuku is **never required**: if `rish`/Shizuku is missing the app runs exactly
 as before, and the UI badge shows `Shizuku: غير مثبت`. The header also shows the
 app version and whether the card is writable.
 
+### 🧯 Troubleshooting: "تعذر حذف بعض العناصر المحمية"
+
+The delete dialog now names the exact items that could not be removed, with the
+reason (`صلاحية مرفوضة`, `الكارت للقراءة فقط`, `مشغول`, `مجلد غير فارغ`...).
+
+- `صلاحية مرفوضة` → run `sdmp3 unlock` (or grant All files access in settings).
+- Folders under `Android/data` and `Android/obb` belong to other apps and stay
+  protected even with All files access — Android does not allow removing them.
+- `الكارت للقراءة فقط` → the card's lock switch is on, or the card is failing.
+
 ---
 
 ## 📦 Dependencies
