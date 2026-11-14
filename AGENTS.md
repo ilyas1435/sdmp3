@@ -63,31 +63,27 @@ byte-identical (DFS pre-order + `natural_sort_key`) and stay single-threaded.
   doubled the FUSE round-trips. It returns `(tasks, total_files, total_bytes,
   skipped)`; `skipped` reports unreadable source folders instead of dropping them
   silently (`except Exception: pass`).
-- **`copy_file_sequential()`** opens src/dst with `os.open`, uses a 4 MB buffer,
-  `posix_fadvise(POSIX_FADV_SEQUENTIAL)` hints and a partial-write loop. On any
-  error it deletes the half-written destination file so playback order can't be
-  polluted.
-- **No `fsync` per file.** The transfer calls `os.sync()` every `SYNC_THRESHOLD`
-  (256 MB) and once at the end. Ordering comes from *sequential writes*, never
-  from fsync — the per-file fsync was removed because it cost tens of ms per MP3
-  (the main cause of "copy is very slow"). Do not add it back, and keep the
-  threshold large: `os.sync()` flushes *every* filesystem on the device, so a
-  small value turns one big copy into hundreds of short stalls.
+- **Copy group** (`group` on `/transfer/start`): a single FAT-legal folder name,
+  created inside the destination *first* (a dir task inserted at the front of the
+  queue), then every selected root is copied inside it. `plan_transfer` receives
+  `dest/group`; the source tree is never modified. An existing group is a merge,
+  so the route returns `needs_group_confirm` until the request carries
+  `confirm_merge: true`; the UI asks once, before anything is written.
+- **Post-copy verification** (`verify: true` by default): after the final
+  `sync_with_heartbeat()`, `verify_copied_files()` makes **one metadata-only walk**
+  over the destination roots and compares each planned file's size with the bytes
+  the copy loop actually wrote. Pre-existing extras in a merge are ignored, so a
+  normal merge cannot produce a false mismatch. It reports
+  `verified`/`verify_total`/`verify_failed`, never reads file contents, and never
+  changes the playback order. `verify: false` from the UI skips the pass.
+- **`copy_file_sequential()`** opens src/dst with `os.open`, `posix_fadvise(POSIX_FADV_SEQUENTIAL)` hints, then uses `os.sendfile` (4 MB chunks) when the kernel/filesystem supports it; on `EINVAL`/`ENOSYS`/`EXDEV`/`EOPNOTSUPP`/`EAGAIN` it continues with the 4 MB buffered loop from the same offset. sendfile measured ~2× faster on Android FUSE. Both paths write front-to-back, and on any error the half-written destination file is deleted so playback order can't be polluted.
+- **No `fsync` per file.** The transfer calls `sync_with_heartbeat()` every `SYNC_THRESHOLD` (1 GB) and once at the end. Ordering comes from *sequential writes*, never from fsync — the per-file fsync was removed because it cost tens of ms per MP3 (the main cause of "copy is very slow"). Do not add it back, and keep the threshold large: `os.sync()` flushes *every* filesystem on the device, so a small value turns one big copy into hundreds of short stalls.
 - **`check_destination()`** writes a 5-byte probe with an 8s timeout before every
   copy / spoof / benchmark. A card that is mounted but dead would otherwise block
   the worker inside `write()` forever. Timed-out destinations are cached in
   `_UNHEALTHY_DESTS` for 120s so retries fail fast instead of spawning more stuck
   threads.
-- **Stall detection**: the worker calls `touch_progress()` per 4 MB chunk and per
-  folder during planning; `get_state_snapshot()` reports `stalled`/`stall_seconds`
-  after `STALL_SECONDS` (25s) with no bytes. The UI turns that into
-  «الكارت لا يستجيب». The worker itself cannot report a hang — it is blocked in a
-  syscall. The card wording applies only to `action in ('copy','spoof')`; TTS is
-  network-bound and never writes a volume, and reporting it as a dead card was a
-  false alarm that told users to pull the card out mid-generation. Every slow
-  phase must keep the heartbeat alive: `count_files(on_progress=...)` while
-  counting for spoof, `touch_progress()` per TTS chunk, and `_run_ffmpeg()` (which
-  polls ffmpeg every second) instead of `subprocess.run`.
+- **Stall detection**: the worker calls `touch_progress()` per 4 MB chunk, per file/dir entry, and while counting for spoof; `get_state_snapshot()` reports `slow` after `SLOW_SECONDS` (15s, amber “الكارت بطيء” with no removal instruction) and `stalled`/`stall_seconds` after `STALL_SECONDS` (60s, red). **`sync_with_heartbeat()`** is mandatory around every `os.sync()`: the flush is one blocking syscall, and a normal 30–60s flush on a slow card used to trip the old 25s alarm while the copy was perfectly fine. It starts a small heartbeat thread (3s, capped at 180s so a genuinely hung flush is still reported) and sets `syncing`/`sync_seconds`. The worker itself cannot report a hang — it is blocked in a syscall. The card wording applies only to `action in ('copy','spoof','delete')`; TTS is network-bound and never writes a volume. Every slow phase must keep the heartbeat alive: `count_files(on_progress=...)` while counting for spoof, `touch_progress()` per TTS chunk, and `_run_ffmpeg()` (which polls ffmpeg every second) instead of `subprocess.run`.
 - **Never copy onto itself.** `dest_inside_source()` rejects a destination inside
   the source; `copy_targets_source()` rejects the mirror case (destination is the
   *parent* of the source, e.g. `/sdcard/A` → `/sdcard`), where the planned target
@@ -129,9 +125,9 @@ Each storage dict carries `kind` + `icon` so the UI can label it honestly:
 
 `storage_kind()` looks the volume up in `/proc/mounts` as `/mnt/media_rw/<UUID>` and passes the device to `classify_volume_device()`. `df -h` alone cannot tell an SD card from a USB stick — both are `/storage/XXXX-XXXX`. The icons are one SVG sprite (`<symbol id="ico-*">` right after `<body>`) referenced with `<use href="#ico-...">`; the select-based pickers were replaced by `.storage-card` buttons (`chooseStorage()` / `syncStorageCards()`), and the same icons appear in the path picker badge.
 
-Theme = **Coffee Blues** (https://www.color-hex.com/color-palette/102595): teal `#39918c`, sand `#d0b49f`, tan `#be9078`, clay `#ab6b51`, slate `#2f435a`. The darks are that slate darkened — page `--bg #151e28` (×0.45), card `--card #212f3f` (×0.70), one lift `--card-2 #2a3a4c` (×0.87) — and the slate verbatim is `--border #2f435a`. `--field #151e28` (same as the page) is the recessed surface for inputs, the tree, storage rows and progress tracks. The character is **warm sand on cool slate** (`--text #ece2d8` 10.7:1 on a card, muted `#b0a59b` 5.6:1): do not neutralise either side, or the theme dies.
+Theme = **Coffee Blues** (https://www.color-hex.com/color-palette/102595): teal `#39918c`, sand `#d0b49f`, tan `#be9078`, clay `#ab6b51`, slate `#2f435a`. The darks are that slate warmed and softened — page `--bg #17222e`, card `--card #1f2c3a`, one lift `--card-2 #293847` — and the slate's coolness stays in `--border #2b3e52`. `--field #141d27` (a touch deeper than the page) is the recessed surface for inputs, the tree, storage rows and progress tracks. The character is **warm sand on cool slate** (`--text #ebe1d6` 11.0:1 on a card, muted `#aca19a` 5.6:1): do not neutralise either side, or the theme dies. `--radius` is 16px.
 
-Teal is the accent, with a split because the palette teal is light: `--accent #39918c` marks (icons, focus, checkbox, disk bar — 3.6:1, fine for marks but not for 11px text), while filled buttons use the darker palette teal `--accent-fill #2e7a75` with a white label (4.6:1; hover `--accent-fill-hover #276a66` 5.7:1). `--accent-ink #151e28` labels the warning/success/danger fills (7.8 / 7.4 / 4.6:1). Danger: `--danger #f43f5e` fill and `--danger-ink #fc8b9b` text (6.0:1 on a card, 5.2:1 raised). Nothing glows — no gradient, no coloured button shadow, no inset card sheen; secondary buttons stay neutral `btn-outline` so only the primary action wears teal.
+Teal is the accent, with a split because the palette teal is light: `--accent #39918c` marks (icons, focus, checkbox, disk bar — 3.6:1, fine for marks but not for 11px text), while filled buttons use the darker palette teal `--accent-fill #2e7a75` with a white label (4.6:1; hover `--accent-fill-hover #276a66` 5.7:1). `--accent-ink #151e28` labels the warning/success/danger fills (7.8 / 7.4 / 4.6:1). Danger: `--danger #f43f5e` fill and `--danger-ink #fc8b9b` text (6.0:1 on a card, 5.2:1 raised). Success is the calm sage `--success #7fbf93` (6.6:1 as text on a card), not the old neon green. Nothing glows — no gradient, no coloured button shadow, no inset card sheen; secondary buttons stay neutral `btn-outline` so only the primary action wears teal.
 
 Each volume kind owns a hue: `.storage-card.kind-*` sets a local `--kind`/`--kind-ink`/`--kind-soft`/`--kind-tile` used by the card's start border, icon tile, active fill, active name and "الحالي/الوجهة" badge; `.pill-kind-*` and `.kind-border-*` reuse the same variables for the picker badge, the header `sdWritePill` and the path inputs. Internal = sand `#d0b49f`, SD = bright clay `#d98b63` (ink `#dda88c`), USB = blue `#8fa9c4` (ink `#a8bfd6`), unknown = olive `#a3b18a` (ink `#b7c39f`). The four are told apart by icon + label as well as hue — the palette only has so many warm earths — and `-ink` exists because the fill colours are too dark for 11px text. Only a writable card gets its kind hue in the header pill; a refusing card stays `pill-warn`.
 
@@ -147,7 +143,7 @@ The spoofing button is `btn-sand` (`--sand-fill #d0b49f` on `--accent-ink`), not
   from the row, so a filename with `"` or `'` can't break or inject markup.
 - `/` is rendered per request; do not add a cache header to it — it embeds the
   per-volume storage list.
-- `theme-color` must stay `#151e28` (the page colour) so the Android status bar
+- `theme-color` must stay `#17222e` (the page colour) so the Android status bar
   matches the app.
 
 ## Path picker (تحديد / تصفح)

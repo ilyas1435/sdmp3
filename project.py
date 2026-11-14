@@ -11,6 +11,7 @@ import shlex
 import atexit
 import tempfile
 import asyncio
+import errno
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import deque
 from werkzeug.exceptions import HTTPException
@@ -27,7 +28,7 @@ app = Flask(__name__)
 
 # Version is kept in the VERSION file next to this script so that the `sdmp3`
 # CLI can read it without importing the app.
-APP_VERSION_FALLBACK = "1.5.3"
+APP_VERSION_FALLBACK = "1.5.4"
 
 # Toggled by --no-wakelock (see main() at the bottom).
 WAKELOCK_ENABLED = True
@@ -42,10 +43,18 @@ def get_app_version():
         return APP_VERSION_FALLBACK
 
 
-# Read/write block size. 4MB keeps copies sequential (order is the whole point of
-# this app) while cutting the number of FUSE round-trips to a minimum.
+# Copied in 4MB units. A single sequential write per unit is what protects the
+# FAT directory-entry order that old players follow.
 COPY_BUFFER_SIZE = 4 * 1024 * 1024
-# Flush the whole transfer to the card every 64MB.
+SENDFILE_CHUNK = 4 * 1024 * 1024
+# Errors that mean "this kernel/filesystem cannot splice", not "the card failed".
+# On Android FUSE sendfile is roughly twice as fast as read()+write(); when it is
+# not available we continue with the normal buffered loop from the same offset.
+SENDFILE_UNSUPPORTED = {
+    errno.EINVAL, errno.ENOSYS, errno.EXDEV, errno.EOPNOTSUPP,
+    getattr(errno, 'ENOTSUP', errno.EOPNOTSUPP), errno.EAGAIN,
+}
+# Flush the whole transfer to the card every 1GB.
 #
 # This is a *coarse* flush on purpose: it used to be an fsync after every single
 # file, which cost tens of milliseconds per MP3 and made folders full of small
@@ -55,14 +64,25 @@ COPY_BUFFER_SIZE = 4 * 1024 * 1024
 # os.sync() flushes *every* filesystem on the device, not just this copy, so a
 # small threshold turns a big transfer into hundreds of short stalls. Ordering
 # comes from the sequential writes themselves, never from syncing.
-SYNC_THRESHOLD = 256 * 1024 * 1024
+SYNC_THRESHOLD = 1024 * 1024 * 1024
+
+# os.sync() is one long syscall that cannot report progress. Without a heartbeat
+# the UI used to mistake a normal 30-60s flush for a dead card and tell the user
+# to pull it out while the copy was actually fine. A tiny companion thread keeps
+# the stall clock alive while the kernel flushes (up to SYNC_HEARTBEAT_LIMIT, so
+# a genuinely hung sync is still reported eventually).
+SYNC_HEARTBEAT_SECONDS = 3
+SYNC_HEARTBEAT_LIMIT = 180
 
 # A transfer that has moved no bytes for this long is reported as stalled.
 # A pulled or dying SD card blocks the worker *inside* write() forever, so the
 # worker cannot report anything itself - the clock is watched from the request
-# side instead. 25s is well above the worst case for one 4MB chunk on a slow
-# (Class 4) card.
-STALL_SECONDS = 25
+# side instead. 60s is well above the worst case for one 4MB chunk on a slow
+# (Class 4) card, and above a normal global flush.
+STALL_SECONDS = 60
+# Before the hard stall warning, say calmly that the card is slow. This is a
+# status, not an instruction to remove the card.
+SLOW_SECONDS = 15
 # How long to refuse a destination after a probe timed out, instead of spawning
 # another worker that would hang in exactly the same place.
 UNHEALTHY_DEST_TTL = 120
@@ -87,8 +107,20 @@ DEFAULT_STATE = {
     'total_bytes': 0,
     'speed_mbps': 0,
     'eta_seconds': 0,
+    'phase': '',            # planning | copying | syncing | verifying | done
+    'syncing': False,
+    'sync_started': 0,
+    'sync_seconds': 0,
+    'slow': False,
+    'slow_seconds': 0,
     'stalled': False,
     'stall_seconds': 0,
+    'verified': 0,
+    'verify_total': 0,
+    'verify_done': 0,
+    'verify_progress': 0,
+    'verify_failed': [],
+    'verify_cancelled': False,
     'last_progress_ts': 0,
     'cancel': False,
     'start_time': 0,
@@ -144,9 +176,20 @@ def get_state_snapshot():
         if idle >= STALL_SECONDS:
             snap['stalled'] = True
             snap['stall_seconds'] = int(idle)
+        elif idle >= SLOW_SECONDS:
+            # Working, just slow (a busy card, a long global flush). Do not turn
+            # this into the red "pull the card out" message.
+            snap['slow'] = True
+            snap['slow_seconds'] = int(idle)
+        if snap.get('syncing') and snap.get('sync_started'):
+            snap['sync_seconds'] = int(max(time.time() - snap['sync_started'], 0))
     else:
         snap['stalled'] = False
         snap['stall_seconds'] = 0
+        snap['slow'] = False
+        snap['slow_seconds'] = 0
+        snap['syncing'] = False
+        snap['sync_seconds'] = 0
     return snap
 
 
@@ -157,6 +200,42 @@ def touch_progress():
             transfer_state['last_progress_ts'] = time.time()
     except Exception:
         pass
+
+def sync_with_heartbeat(phase_after='copying'):
+    """Flush every filesystem while keeping the stall clock alive.
+
+    os.sync() is a single blocking syscall: it cannot report progress, and on a
+    slow card it can easily take longer than the old 25s stall threshold. That
+    is what produced the false "pull the card out" warning while the copy was
+    perfectly healthy. A companion thread touches the heartbeat every few
+    seconds; it stops after SYNC_HEARTBEAT_LIMIT so a truly hung flush is still
+    visible instead of being hidden forever.
+    """
+    set_state(syncing=True, sync_started=time.time(), phase='syncing',
+              file='جاري تثبيت البيانات على الكارت...')
+    # Mark the start of the flush as progress too: the last chunk may have been
+    # written a while ago (a long folder scan, a slow file close).
+    touch_progress()
+    stop = threading.Event()
+
+    def beat():
+        deadline = time.time() + SYNC_HEARTBEAT_LIMIT
+        while not stop.wait(SYNC_HEARTBEAT_SECONDS):
+            if time.time() >= deadline:
+                break
+            touch_progress()
+
+    worker = threading.Thread(target=beat, daemon=True)
+    worker.start()
+    try:
+        try:
+            os.sync()
+        except OSError:
+            pass
+    finally:
+        stop.set()
+        worker.join(timeout=2)
+        set_state(syncing=False, sync_started=0, phase=phase_after)
 
 def is_busy():
     with transfer_lock:
@@ -856,11 +935,15 @@ def _advise_sequential(fd):
 
 
 def copy_file_sequential(src, dst, cancel_check=None, on_bytes=None):
-    """Copy one file from start to finish, in order, with a large buffer.
+    """Copy one file from start to finish, in order.
 
     Deliberately single-file and single-threaded: the FAT directory-entry order
     is what old MP3 players use to play a folder in sequence, so this must never
     be parallelised. Returns the number of bytes copied.
+
+    Uses sendfile when the kernel/filesystem supports it (about twice as fast on
+    Android FUSE) and falls back to a 4MB buffered loop otherwise. Both paths
+    write front-to-back, so the on-card order is identical.
 
     There is no fsync per file any more - the caller flushes every SYNC_THRESHOLD
     bytes and once at the end with os.sync().
@@ -871,6 +954,7 @@ def copy_file_sequential(src, dst, cancel_check=None, on_bytes=None):
     written_total = 0
     src_fd = None
     dst_fd = None
+    use_sendfile = hasattr(os, 'sendfile')
     try:
         src_fd = os.open(src, os.O_RDONLY)
         dst_fd = os.open(dst, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o666)
@@ -879,6 +963,24 @@ def copy_file_sequential(src, dst, cancel_check=None, on_bytes=None):
         while True:
             if cancel_check is not None and cancel_check():
                 raise TransferCancelled()
+            if use_sendfile:
+                try:
+                    sent = os.sendfile(dst_fd, src_fd, None, SENDFILE_CHUNK)
+                except OSError as exc:
+                    if exc.errno in SENDFILE_UNSUPPORTED:
+                        # The source position may already have advanced by the
+                        # bytes sendfile managed to move; buffered reading simply
+                        # continues from there, so no byte is duplicated.
+                        use_sendfile = False
+                        continue
+                    raise
+                if sent == 0:
+                    break
+                written_total += sent
+                if on_bytes is not None:
+                    on_bytes(sent)
+                continue
+
             chunk = os.read(src_fd, COPY_BUFFER_SIZE)
             if not chunk:
                 break
@@ -979,6 +1081,123 @@ def plan_transfer(paths, dest, excludes=None, cancel_check=None, on_progress=Non
     return tasks, total_files, total_bytes, skipped
 
 
+# A copy group is one folder *name*, never a path: it is created inside the
+# chosen destination at copy time. The source tree is never modified.
+GROUP_NAME_MAX = 80
+_FAT_BAD_CHARS = set('/\\:*?"<>|')
+
+
+def validate_group_name(name):
+    """Return (clean_name, error) for the optional copy-group folder."""
+    if not isinstance(name, str):
+        return '', 'اسم المجلد غير صالح'
+    name = (name or '').strip()
+    if not name:
+        return '', None
+    if len(name) > GROUP_NAME_MAX:
+        return '', 'اسم المجلد طويل جداً (الحد {} حرفاً)'.format(GROUP_NAME_MAX)
+    if name in ('.', '..'):
+        return '', 'اسم المجلد غير صالح'
+    if any(c in _FAT_BAD_CHARS or ord(c) < 32 for c in name):
+        return '', 'اسم المجلد يحتوي رموزاً غير مسموحة: / \\ : * ? " < > |'
+    if name.endswith(' ') or name.endswith('.'):
+        return '', 'لا يمكن أن ينتهي اسم المجلد بمسافة أو نقطة'
+    return name, None
+
+
+def verify_copied_files(planned, roots, on_progress=None, cancel_check=None):
+    """Check the copied files in ONE metadata-only pass.
+
+    `planned` maps an absolute destination path to the bytes the copy loop
+    actually wrote; `roots` are the destination roots created for this copy.
+    The walk ignores anything that was already inside the destination (a merge
+    must not be reported as extra files) and never reads file contents.
+
+    Returns (verified, failures, cancelled).
+    """
+    total = len(planned)
+    done = 0
+    verified = 0
+    failures = []
+    seen = set()
+    cancelled = False
+    last_report = 0.0
+
+    def report(force=False):
+        nonlocal last_report
+        now = time.time()
+        if force or now - last_report >= 0.4:
+            last_report = now
+            if on_progress is not None:
+                try:
+                    on_progress(min(done, total), total)
+                except Exception:
+                    pass
+
+    def check(path, size):
+        nonlocal done, verified
+        if path in seen:
+            return
+        expected = planned.get(path)
+        if expected is None:
+            return
+        seen.add(path)
+        done += 1
+        if size == expected:
+            verified += 1
+        elif len(failures) < 40:
+            failures.append((path, 'الحجم على الوجهة {} بايت والمتوقع {} بايت'.format(
+                size, expected)))
+        report()
+
+    report(force=True)
+    for root in roots:
+        if cancel_check is not None and cancel_check():
+            cancelled = True
+            break
+        try:
+            if os.path.isfile(root) and not os.path.islink(root):
+                check(root, os.path.getsize(root))
+                continue
+            if not os.path.isdir(root) or os.path.islink(root):
+                continue
+        except OSError as exc:
+            failures.append((root, describe_os_error(exc)))
+            continue
+
+        stack = [root]
+        while stack:
+            if cancel_check is not None and cancel_check():
+                cancelled = True
+                break
+            current = stack.pop()
+            touch_progress()
+            try:
+                with os.scandir(current) as it:
+                    for entry in it:
+                        try:
+                            if entry.is_dir(follow_symlinks=False):
+                                stack.append(entry.path)
+                            elif entry.is_file(follow_symlinks=False):
+                                check(entry.path, entry.stat(follow_symlinks=False).st_size)
+                        except OSError as exc:
+                            if len(failures) < 40:
+                                failures.append((entry.path, describe_os_error(exc)))
+            except OSError as exc:
+                if len(failures) < 40:
+                    failures.append((current, describe_os_error(exc)))
+        if cancelled:
+            break
+
+    if not cancelled:
+        for path in planned:
+            if path not in seen and len(failures) < 40:
+                failures.append((path, 'الملف غير موجود على الوجهة'))
+        done = total
+        report(force=True)
+    return verified, failures, cancelled
+
+
 def copy_targets_source(paths, dest):
     """True when the planned copy would write a source *onto itself*.
 
@@ -1025,9 +1244,9 @@ def dest_inside_source(paths, dest):
     return False
 
 
-def copy_thread_task(paths, dest, excludes=None):
+def copy_thread_task(paths, dest, excludes=None, group=None, verify=True):
     acquire_wakelock()
-    reset_state(status='copying', action='copy', start_time=time.time())
+    reset_state(status='copying', action='copy', start_time=time.time(), phase='planning')
     copied = 0
     bytes_done = 0
     bytes_since_sync = 0
@@ -1037,26 +1256,43 @@ def copy_thread_task(paths, dest, excludes=None):
     last_ui_update = time.time()
     UI_UPDATE_INTERVAL = 0.5
     started = time.time()
+    planned_files = {}
+    dest = os.path.normpath(dest)
+    target_dest = dest
+    speed_window = deque()
+    speed_ema = None
 
     try:
+        group, group_error = validate_group_name(group) if group else ('', None)
+        if group_error:
+            raise RuntimeError(group_error)
+        target_dest = os.path.join(dest, group) if group else dest
         # Safety net: the route already refuses this, but the worker must never
         # be able to duplicate a tree into itself either.
-        if dest_inside_source(paths, dest):
-            raise RuntimeError('لا يمكن النسخ إلى مجلد داخل المصدر: {}'.format(dest))
-        if copy_targets_source(paths, dest):
+        if dest_inside_source(paths, target_dest):
+            raise RuntimeError('لا يمكن النسخ إلى مجلد داخل المصدر: {}'.format(target_dest))
+        if copy_targets_source(paths, target_dest):
             raise RuntimeError('الوجهة هي مجلد المصدر نفسه — اختر مجلداً جديداً داخلها')
 
-        set_state(file='جاري فحص الملفات وترتيبها بتسلسل JOC...')
+        set_state(file='جاري فحص الملفات وترتيبها بتسلسل JOC...', phase='planning')
         touch_progress()
         tasks, total, needed_bytes, skipped = plan_transfer(
-            paths, dest, excludes, cancel_check=is_cancelled, on_progress=touch_progress)
+            paths, target_dest, excludes, cancel_check=is_cancelled, on_progress=touch_progress)
         if is_cancelled():
             raise TransferCancelled()
+        # The group folder must be the first directory entry, before its
+        # contents: that is the whole point of "create the parent first".
+        if group:
+            tasks.insert(0, (target_dest, target_dest, 'dir'))
+        verify_roots = []
+        for _src, _dst, _kind in tasks:
+            if os.path.dirname(_dst) == target_dest and _dst not in verify_roots:
+                verify_roots.append(_dst)
         touch_progress()
         set_state(total=total, total_bytes=needed_bytes)
 
-        log_event('copy start: {} file(s), {}, dest={!r}, skipped={}'.format(
-            total, format_size(needed_bytes), dest, len(skipped)))
+        log_event('copy start: {} file(s), {}, dest={!r}, group={!r}, skipped={}'.format(
+            total, format_size(needed_bytes), target_dest, group or '', len(skipped)))
         if skipped:
             set_state(skipped=['{} — {}'.format(p, r) for p, r in skipped[:20]])
             for p, r in skipped[:10]:
@@ -1066,7 +1302,7 @@ def copy_thread_task(paths, dest, excludes=None):
             raise RuntimeError(
                 'المساحة المتوفرة غير كافية. المطلوب تقريباً: {}'.format(format_size(needed_bytes)))
 
-        set_state(file='جاري النقل المستقر المباشر...')
+        set_state(file='جاري النقل المستقر المباشر...', phase='copying')
 
         def on_bytes(count):
             nonlocal bytes_done, bytes_since_sync
@@ -1077,13 +1313,18 @@ def copy_thread_task(paths, dest, excludes=None):
             touch_progress()
 
         for src, dst_path, kind in tasks:
+            # Heartbeat per entry too: a folder full of 0-byte files moves no
+            # bytes at all, and must not look like a dead card.
+            touch_progress()
             if is_cancelled():
                 raise TransferCancelled()
             name = os.path.basename(src)
 
             if kind == 'file':
                 try:
-                    copy_file_sequential(src, dst_path, cancel_check=is_cancelled, on_bytes=on_bytes)
+                    written = copy_file_sequential(
+                        src, dst_path, cancel_check=is_cancelled, on_bytes=on_bytes)
+                    planned_files[dst_path] = written
                     copied += 1
                 except TransferCancelled:
                     raise
@@ -1101,8 +1342,7 @@ def copy_thread_task(paths, dest, excludes=None):
 
                 # Flush the whole transfer to the card occasionally, never per file.
                 if bytes_since_sync >= SYNC_THRESHOLD:
-                    try: os.sync()
-                    except OSError: pass
+                    sync_with_heartbeat('copying')
                     bytes_since_sync = 0
 
             elif kind == 'dir':
@@ -1115,39 +1355,90 @@ def copy_thread_task(paths, dest, excludes=None):
 
             now = time.time()
             if now - last_ui_update >= UI_UPDATE_INTERVAL:
-                elapsed = max(now - started, 0.001)
-                speed = bytes_done / elapsed / (1024 * 1024)
+                # Speed over the last ~6 seconds (EMA-smoothed), not the average
+                # since the first byte: the average made a healthy card look
+                # slow for the whole transfer after one flush.
+                speed_window.append((now, bytes_done))
+                while len(speed_window) > 2 and now - speed_window[0][0] > 6:
+                    speed_window.popleft()
+                t0, b0 = speed_window[0]
+                dt = now - t0
+                if dt >= 1.5:
+                    inst = (bytes_done - b0) / dt / (1024 * 1024)
+                    speed_ema = inst if speed_ema is None else (speed_ema * 0.55 + inst * 0.45)
+                if speed_ema is None:
+                    speed = bytes_done / max(now - started, 0.001) / (1024 * 1024)
+                else:
+                    speed = speed_ema
                 if needed_bytes:
                     progress = int(min(bytes_done / needed_bytes, 1) * 100)
                     remaining = max(needed_bytes - bytes_done, 0)
-                    eta = int(remaining / (speed * 1024 * 1024)) if speed > 0 else 0
+                    eta = int(remaining / (speed * 1024 * 1024)) if speed > 0.05 else 0
                 else:
                     done_count = copied + len(failed_details)
                     progress = int((done_count / total) * 100) if total else 0
                     eta = 0
                 set_state(copied=copied, failed=len(failed_details),
-                          progress=min(progress, 99), file=name,
+                          progress=min(progress, 99), file=name, phase='copying',
                           copied_bytes=bytes_done, speed_mbps=round(speed, 2),
-                          eta_seconds=eta)
+                          eta_seconds=eta, sync_seconds=0)
                 last_ui_update = now
 
-        set_state(file='جاري تأكيد كتابة البيانات النهائية...')
-        try: os.sync()
-        except OSError: pass
+        # A single flush at the end (plus the 1GB checkpoints above). The
+        # heartbeat keeps a slow flush from looking like a hung card.
+        sync_with_heartbeat('verifying' if verify else 'copying')
+
+        verify_cancelled = False
+        verify_failures = []
+        verified = 0
+        if verify and planned_files:
+            set_state(phase='verifying', file='جاري التحقق من الحجم الإجمالي...',
+                      verify_total=len(planned_files), verify_done=0, verify_progress=0,
+                      speed_mbps=0, eta_seconds=0)
+            touch_progress()
+
+            def on_verify(done, total_files):
+                touch_progress()
+                pct = int((done / total_files) * 100) if total_files else 99
+                set_state(verify_done=done, verify_total=total_files,
+                          verify_progress=min(pct, 99),
+                          file='جاري التحقق من الحجم الإجمالي...')
+
+            verified, verify_failures, verify_cancelled = verify_copied_files(
+                planned_files, verify_roots,
+                on_progress=on_verify, cancel_check=is_cancelled)
+            for p, r in verify_failures[:10]:
+                log_event('verify failed: {!r} -> {}'.format(p, r))
+            log_event('verify done: {}/{} ok, {} failed, cancelled={}'.format(
+                verified, len(planned_files), len(verify_failures), verify_cancelled))
 
         elapsed = max(time.time() - started, 0.001)
         avg_speed = bytes_done / elapsed / (1024 * 1024)
+        group_note = ' داخل «{}»'.format(group) if group else ''
         if failed_details:
-            final_msg = 'اكتمل النسخ مع فشل {} عنصر - راجع التفاصيل'.format(len(failed_details))
+            final_msg = 'اكتمل النسخ{} مع فشل {} عنصر - راجع التفاصيل'.format(
+                group_note, len(failed_details))
+        elif verify and planned_files:
+            if verify_cancelled:
+                final_msg = 'اكتمل النسخ{} — تم إيقاف التحقق قبل نهايته.'.format(group_note)
+            elif verify_failures:
+                final_msg = ('اكتمل النسخ{} لكن التحقق وجد {} ملفاً مخالفاً — راجع التفاصيل'
+                             .format(group_note, len(verify_failures)))
+            else:
+                final_msg = 'اكتمل النسخ{} والتحقق بنجاح — {} ملفاً سليماً.'.format(
+                    group_note, verified)
         else:
-            final_msg = 'اكتمل النسخ بنجاح.'
+            final_msg = 'اكتمل النسخ{} بنجاح.'.format(group_note)
 
-        log_event('copy done: copied={} failed={} bytes={} in {:.1f}s ({:.2f} MB/s)'.format(
-            copied, len(failed_details), bytes_done, elapsed, avg_speed))
+        log_event('copy done: copied={} failed={} bytes={} in {:.1f}s ({:.2f} MB/s) '
+                  'verified={} verify_failed={}'.format(
+                      copied, len(failed_details), bytes_done, elapsed, avg_speed,
+                      verified, len(verify_failures)))
 
         invalidate_cache_for_path(dest)
         finish_transfer('done', final_msg, extra={
             'progress': 100,
+            'phase': 'done',
             'copied': copied,
             'failed': len(failed_details),
             'errors': ['{} — {}'.format(os.path.basename(p), r) for p, r in failed_details[:30]],
@@ -1155,17 +1446,21 @@ def copy_thread_task(paths, dest, excludes=None):
             'copied_bytes': bytes_done,
             'speed_mbps': round(avg_speed, 2),
             'eta_seconds': 0,
+            'verified': verified,
+            'verify_total': len(planned_files) if verify else 0,
+            'verify_done': len(planned_files) if verify else 0,
+            'verify_progress': 100 if verify and planned_files else 0,
+            'verify_failed': ['{} — {}'.format(p, r) for p, r in verify_failures[:30]],
+            'verify_cancelled': verify_cancelled,
             'hint': CARD_WRITE_HINT if write_failed else '',
         })
 
     except TransferCancelled:
-        try: os.sync()
-        except OSError: pass
+        sync_with_heartbeat('copying')
         log_event('copy cancelled by user after {}s'.format(int(time.time() - started)))
         finish_transfer('cancelled', 'تم إلغاء النسخ.')
     except Exception as e:
-        try: os.sync()
-        except OSError: pass
+        sync_with_heartbeat('copying')
         log_event('copy ERROR: {}: {}'.format(type(e).__name__, e))
         set_state(status='error', log=str(e))
     finally:
@@ -1196,6 +1491,7 @@ def spoof_only_thread(dest_path, start_timestamp):
             
             # 1. Spoof files in this level
             for name in files:
+                touch_progress()
                 p = os.path.join(root, name)
                 if os.path.islink(p): continue
                 if apply_spoof_time(p, current_time):
@@ -1209,6 +1505,7 @@ def spoof_only_thread(dest_path, start_timestamp):
 
             # 2. Spoof directories in this level 
             for name in dirs:
+                touch_progress()
                 p = os.path.join(root, name)
                 if os.path.islink(p): continue
                 if apply_spoof_time(p, current_time):
@@ -1415,22 +1712,22 @@ HTML_TEMPLATE = """
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>SD Card Coffee</title>
-    <meta name="theme-color" content="#151e28">
+    <meta name="theme-color" content="#17222e">
     <style>
         :root {
             /* "Coffee Blues" palette — https://www.color-hex.com/color-palette/102595
                #39918c teal · #d0b49f sand · #be9078 tan · #ab6b51 clay · #2f435a slate
-               The page/card shades are the palette slate darkened (x0.45 / x0.70 /
-               x0.87) so the UI stays dark; the slate itself is the border. Warm
-               sand light (#ece2d8) on cool slate is the whole character of this
-               theme — do not neutralise either side. */
-            --bg: #151e28;
-            --card: #212f3f;
-            --card-2: #2a3a4c;
-            --field: #151e28;        /* recessed: inputs, tree, storage rows, tracks */
-            --border: #2f435a;
-            --text: #ece2d8;
-            --text-muted: #b0a59b;
+               The page/card shades are the palette slate warmed and softened, so
+               the contrast is easier on the eye; the slate's coolness stays in
+               the border. Warm sand light (#ebe1d6) on cool slate is the whole
+               character of this theme — do not neutralise either side. */
+            --bg: #17222e;
+            --card: #1f2c3a;
+            --card-2: #293847;
+            --field: #141d27;        /* recessed: inputs, tree, storage rows, tracks */
+            --border: #2b3e52;
+            --text: #ebe1d6;
+            --text-muted: #aca19a;
 
             /* Teal is the accent. The palette teal is light enough to *mark*
                (#39918c = 3.6:1 on a card) but a filled button needs a label at
@@ -1446,7 +1743,7 @@ HTML_TEMPLATE = """
             /* Teal readable at 11px on the dark card (accent itself is 3.6:1). */
             --accent-text: #7fc4bf;
             --accent-glow: rgba(57, 145, 140, 0.40);
-            --success: #22c55e;
+            --success: #7fbf93;
             --danger: #f43f5e;
             --danger-ink: #fc8b9b;   /* danger *text* (6.0:1 card, 5.2:1 raised) */
             --danger-soft: rgba(244, 63, 94, 0.12);
@@ -1488,7 +1785,7 @@ HTML_TEMPLATE = """
                the palette, and clearly not the teal primary button. */
             --sand-fill: #d0b49f;
             --sand-fill-hover: #c4a88f;
-            --radius: 14px;
+            --radius: 16px;
         }
         * { box-sizing: border-box; font-family: system-ui, -apple-system, 'Segoe UI', Roboto, 'Noto Sans Arabic', 'IBM Plex Sans Arabic', sans-serif; -webkit-tap-highlight-color: transparent; }
         body { background-color: var(--bg); color: var(--text); margin: 0; padding: 16px 14px 110px; font-size: 14px; line-height: 1.55; -webkit-font-smoothing: antialiased; }
@@ -1503,7 +1800,7 @@ HTML_TEMPLATE = """
         .pill { font-size: 11px; line-height: 1; padding: 6px 10px; border-radius: 999px; border: 1px solid var(--border); color: var(--text-muted); background: rgba(236,226,216,0.04); white-space: nowrap; }
         /* The version is the app's signature, so it wears the accent. */
         #appVersionPill { color: var(--accent-text); border-color: var(--accent-line); background: var(--accent-soft); font-weight: 600; }
-        .pill-ok { color: var(--success); border-color: rgba(34,197,94,0.35); background: rgba(34,197,94,0.08); }
+        .pill-ok { color: var(--success); border-color: rgba(127,191,147,0.38); background: rgba(127,191,147,0.10); }
         .pill-warn { color: var(--warning); border-color: var(--warning-line); background: var(--warning-soft); }
         /* Pills tinted by volume type: SD card / USB OTG / internal / unknown.
            Text uses the -ink variant so 11px labels stay legible (4.5:1+). */
@@ -1637,6 +1934,18 @@ HTML_TEMPLATE = """
         .disk-space-container { margin-bottom: 10px; font-size: 13px; color: var(--text-muted); display: none;}
         .disk-bar { width: 100%; height: 6px; background: var(--field); border-radius: 3px; overflow: hidden; margin-top: 6px; border: 1px solid var(--border);}
         .disk-used { height: 100%; background: var(--accent); width: 0%; transition: width 0.3s ease; }
+
+        /* Copy options and the optional group-parent folder. */
+        .check-line { display:flex; align-items:center; gap:9px; cursor:pointer; color:var(--text); font-size:13px; margin:12px 0 0; font-weight:500; }
+        .check-line .checkbox { width:17px; height:17px; margin:0; flex-shrink:0; }
+        .check-hint { display:block; color:var(--text-muted); font-size:11.5px; line-height:1.55; margin:5px 0 0; }
+        .group-btn { align-self:flex-start; }
+        .group-bar { display:flex; align-items:center; gap:9px; padding:10px 12px; border-radius:10px;
+            border:1px solid var(--accent-line); background:var(--accent-soft); color:var(--accent-text); }
+        .group-bar > .icon { width:16px; height:16px; flex-shrink:0; }
+        .group-bar-label { font-size:10.5px; color:var(--text-muted); }
+        .group-bar-name { font-size:13px; font-weight:600; color:var(--accent-text); }
+        .group-bar .btn { min-height:34px; padding:6px 10px; font-size:12px; flex-shrink:0; }
 
         .spoof-settings { background: var(--field); padding: 16px; border-radius: 10px; border: 1px dashed var(--border); margin-bottom: 10px; display:flex; flex-direction:column; gap:10px;}
 
@@ -1776,6 +2085,13 @@ HTML_TEMPLATE = """
             <div class="disk-bar"><div class="disk-used" id="diskFill"></div></div>
         </div>
 
+        <label class="check-line" for="verifyAfterCopy">
+            <input type="checkbox" id="verifyAfterCopy" class="checkbox"
+                   onchange="localStorage.setItem('sdmp3_verify_after_copy', this.checked ? '1' : '0')">
+            <span>التحقق من الحجم الإجمالي بعد النسخ</span>
+        </label>
+        <small class="check-hint">جولة واحدة بعد النسخ: تقارن حجم كل ملف على الوجهة بما كُتب فعلاً، ولا تقرأ محتوى الملفات ولا تعدّل المصدر.</small>
+
         <div class="grid-2" style="margin-top: 14px;">
             <button class="btn btn-outline" onclick="openJocModal()">
                 <svg class="icon" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path></svg>
@@ -1826,6 +2142,7 @@ HTML_TEMPLATE = """
                 <svg class="icon" viewBox="0 0 24 24"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg>
                 عرض المحدد
             </button>
+            <span id="cartGroupPill" class="pill" style="display:none; max-width:140px; overflow:hidden; text-overflow:ellipsis;"></span>
         </div>
         <div class="cart-buttons">
             <button class="btn btn-primary" style="font-size: 14px; padding: 10px 24px;" onclick="startTransfer()">
@@ -1910,6 +2227,22 @@ HTML_TEMPLATE = """
                 </button>
             </div>
             <div id="totalSizeSelected" style="font-size:13px; font-weight:500; background:var(--field); padding:12px; border-radius:6px; border: 1px solid var(--border);">جاري حساب المساحة...</div>
+            <div id="groupWrap" style="display:none; flex-direction:column; gap:8px;">
+                <button type="button" id="groupBtn" class="btn btn-outline btn-sm group-btn" onclick="editCopyGroup()">
+                    <svg class="icon" viewBox="0 0 24 24"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path><line x1="12" y1="11" x2="12" y2="17"></line><line x1="9" y1="14" x2="15" y2="14"></line></svg>
+                    ضم في مجلد أب
+                </button>
+                <div id="groupBar" class="group-bar" style="display:none;">
+                    <svg class="icon" viewBox="0 0 24 24"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>
+                    <div style="min-width:0; flex:1;">
+                        <div class="group-bar-label">سيتم النسخ داخل مجلد</div>
+                        <div id="groupNameText" class="truncate-text group-bar-name"></div>
+                    </div>
+                    <button type="button" class="btn btn-outline btn-sm" onclick="editCopyGroup()">تعديل</button>
+                    <button type="button" class="btn btn-outline btn-sm" onclick="clearCopyGroup()">إلغاء</button>
+                </div>
+                <small class="check-hint">يُنشأ المجلد الأب عند النسخ فقط — المصدر لا يتغيّر.</small>
+            </div>
         </div>
         <div id="selectedList" style="overflow-y:auto; flex-grow:1; max-height: 50vh;"></div>
     </div>
@@ -2090,10 +2423,19 @@ HTML_TEMPLATE = """
 <script>
     let selectedPaths = new Map();
     let excludedPaths = new Set();
+    let copyGroupName = '';
     let currentDestFreeBytes = 0; 
     let statusTimeout = null;
     let currentSourceRoot = localStorage.getItem('joc_source_root') || '/sdcard';
     let pickerMode = 'dest'; 
+
+    // Restore the copy verification preference. Fast and on by default: one
+    // metadata pass after the copy, never a per-file read during it.
+    (function restoreCopyPrefs() {
+        let saved = localStorage.getItem('sdmp3_verify_after_copy');
+        let el = document.getElementById('verifyAfterCopy');
+        if (el) el.checked = (saved === null) ? true : (saved === '1');
+    })();
 
     function isPathSelected(path) {
         let bestRoot = null;
@@ -2152,6 +2494,48 @@ HTML_TEMPLATE = """
     function refreshCheckboxStates() {
         document.querySelectorAll('.checkbox').forEach(cb => { if(cb.value && cb.value.startsWith('/')) cb.checked = isPathSelected(cb.value); });
         document.getElementById('selectedCount').innerText = selectedPaths.size;
+        // No selection means there is nothing to group; drop a stale name so it
+        // cannot silently apply to the next, unrelated selection.
+        if (selectedPaths.size === 0) copyGroupName = '';
+        renderCopyGroup();
+    }
+
+    // ---- Copy grouping (destination-only, the source is never touched) ----
+    function renderCopyGroup() {
+        let wrap = document.getElementById('groupWrap');
+        let bar = document.getElementById('groupBar');
+        let btn = document.getElementById('groupBtn');
+        let nameEl = document.getElementById('groupNameText');
+        let pill = document.getElementById('cartGroupPill');
+        let hasSelection = selectedPaths.size > 0;
+        if (wrap) wrap.style.display = hasSelection ? 'flex' : 'none';
+        if (bar) bar.style.display = copyGroupName ? 'flex' : 'none';
+        if (btn) btn.style.display = copyGroupName ? 'none' : 'inline-flex';
+        if (nameEl) nameEl.textContent = copyGroupName;
+        if (pill) {
+            pill.style.display = (copyGroupName && hasSelection) ? 'inline-block' : 'none';
+            pill.textContent = 'داخل: ' + copyGroupName;
+            pill.title = 'سيتم إنشاء مجلد «' + copyGroupName + '» داخل الوجهة ونسخ العناصر بداخله';
+        }
+    }
+
+    function editCopyGroup() {
+        showInputModal('ضم في مجلد أب', 'اسم المجلد الذي ستنسخ بداخله:', copyGroupName,
+            function(val) {
+                val = (val || '').trim();
+                if (!val) { copyGroupName = ''; renderCopyGroup(); return; }
+                if (val === '.' || val === '..' || /[\\/:*?"<>|]/.test(val) || /[ .]$/.test(val)) {
+                    alert('اسم غير صالح. لا تستخدم الرموز / : * ? " < > | ولا تنهِ الاسم بمسافة أو نقطة.');
+                    return;
+                }
+                copyGroupName = val;
+                renderCopyGroup();
+            });
+    }
+
+    function clearCopyGroup() {
+        copyGroupName = '';
+        renderCopyGroup();
     }
     
     const iconDir = `<svg class="icon" style="min-width:20px; color:var(--accent)" viewBox="0 0 24 24"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>`;
@@ -2621,6 +3005,7 @@ HTML_TEMPLATE = """
                 document.getElementById('inlineNotify').style.display = 'none';
                 document.getElementById('currentFile').innerText = name;
                 document.getElementById('currentFile').style.color = 'var(--text-muted)';
+                checkTransferStatus();
             }).catch(() => {
                 window._deleteHandled = true;
                 alert('خطأ في الاتصال بالخادم');
@@ -2843,6 +3228,7 @@ HTML_TEMPLATE = """
                 });
             }
             document.getElementById('selectedModal').style.display = 'flex';
+            renderCopyGroup();
             
             let totalBytes = 0;
             updateSizeDisplay(totalBytes);
@@ -2871,19 +3257,34 @@ HTML_TEMPLATE = """
     function reincludeFromModal(path, isDir) { includePath(path, isDir); refreshCheckboxStates(); openSelectedModal(); }
     function closeSelectedModal(e) { if(e.target.id === 'selectedModal') e.target.style.display = 'none'; }
 
-    function startTransfer() {
+    function startTransfer(confirmMerge) {
         if(selectedPaths.size === 0) return alert('اختر ملفات أولاً.');
         let dest = document.getElementById('custom_dest_path').value;
         if(!dest) return alert('حدد مسار الوجهة.');
+        let verifyEl = document.getElementById('verifyAfterCopy');
 
-        let reqData = { dest: dest, paths: Array.from(selectedPaths.keys()), excludes: Array.from(excludedPaths) };
+        let reqData = {
+            dest: dest,
+            paths: Array.from(selectedPaths.keys()),
+            excludes: Array.from(excludedPaths),
+            group: copyGroupName || '',
+            verify: verifyEl ? verifyEl.checked : true,
+            confirm_merge: !!confirmMerge
+        };
 
         fetch('/transfer/start', {
             method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(reqData)
         }).then(r=>r.json()).then(data=>{
+            // An existing group folder needs an explicit OK: a merge may replace
+            // files inside it, so it must never happen silently.
+            if (data.needs_group_confirm) {
+                showConfirmModal(data.error, function(){ startTransfer(true); });
+                return;
+            }
             // A refused copy (dead card, no permission, self-copy) is shown in
             // the modal banner so the whole reason stays readable, not in alert().
-            if(data.error) showInlineError('تعذر بدء النسخ: ' + data.error); else showProgressModal();
+            if(data.error) showInlineError('تعذر بدء النسخ: ' + data.error);
+            else { showProgressModal(); checkTransferStatus(); }
         });
     }
 
@@ -2904,7 +3305,7 @@ HTML_TEMPLATE = """
 
         fetch('/transfer/spoof_only', {
             method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({dest: dest, spoof_date: spoofDate})
-        }).then(r=>r.json()).then(data=>{ if(data.error) showInlineError('تعذر بدء التمويه: ' + data.error); else showProgressModal(); });
+        }).then(r=>r.json()).then(data=>{ if(data.error) showInlineError('تعذر بدء التمويه: ' + data.error); else { showProgressModal(); checkTransferStatus(); } });
     }
 
     function runDiagnostic() {
@@ -3293,7 +3694,7 @@ HTML_TEMPLATE = """
         el.innerHTML = html;
         el.style.display = 'flex';
         if(type === 'success') {
-            el.style.background = 'rgba(34,197,94,0.12)';
+            el.style.background = 'rgba(127,191,147,0.12)';
             el.style.borderColor = 'var(--success)';
             el.style.color = 'var(--success)';
         } else {
@@ -3320,6 +3721,7 @@ HTML_TEMPLATE = """
     function checkTransferStatus() {
         if (statusTimeout) clearTimeout(statusTimeout);
 
+        let pollDelay = 1000;
         fetch('/transfer/status?_t=' + new Date().getTime(), { cache: 'no-store' })
         .then(r=>r.json())
         .then(data => {
@@ -3342,6 +3744,12 @@ HTML_TEMPLATE = """
                         document.getElementById('progressText').innerText =
                             (data.status === 'done') ? '100%' : '';
                     }
+                } else if (data.phase === 'verifying') {
+                    fillEl.classList.remove('indeterminate');
+                    fillEl.style.width = (data.verify_progress || 0) + '%';
+                    document.getElementById('progressText').innerText = 'تحقق';
+                    document.getElementById('countText').innerText =
+                        (data.verify_done || 0) + ' / ' + (data.verify_total || 0);
                 } else {
                     fillEl.classList.remove('indeterminate');
                     document.getElementById('progressText').innerText = data.progress + '%';
@@ -3351,23 +3759,39 @@ HTML_TEMPLATE = """
                 // A stalled card must say so instead of pretending to work.
                 // TTS never touches a card: it is network-bound, so it can be
                 // slow without any volume being in trouble.
-                if (data.stalled && data.action !== 'tts') {
-                    document.getElementById('currentFile').innerText = (data.action === 'delete')
-                        ? 'الكارت لا يستجيب — لم يُحذف أي عنصر منذ ' + data.stall_seconds + ' ثانية. ' +
-                          'أخرج الكارت وأدخله جيداً. إذا لم تعُد العملية، أعد تشغيل التطبيق: sdmp3 restart'
-                        : 'الكارت لا يستجيب — لم يتم نقل أي بيانات منذ ' + data.stall_seconds + ' ثانية. ' +
-                          'أخرج الكارت وأدخله جيداً. إذا لم تعُد العملية، أعد تشغيل التطبيق: sdmp3 restart';
-                    document.getElementById('currentFile').style.color = 'var(--danger-ink)';
+                let currentEl = document.getElementById('currentFile');
+                if (data.phase === 'syncing' && data.action !== 'tts') {
+                    currentEl.innerText = 'جاري تثبيت البيانات على الكارت...'
+                        + (data.sync_seconds ? ' (' + data.sync_seconds + ' ث)' : '');
+                    currentEl.style.color = 'var(--text-muted)';
+                } else if (data.phase === 'verifying') {
+                    currentEl.innerText = 'جاري التحقق من الحجم الإجمالي... '
+                        + (data.verify_done || 0) + ' / ' + (data.verify_total || 0);
+                    currentEl.style.color = 'var(--accent-text)';
+                } else if (data.stalled && data.action !== 'tts') {
+                    currentEl.innerText = (data.action === 'delete')
+                        ? 'توقف الحذف — لم يُحذف أي عنصر منذ ' + data.stall_seconds + ' ثانية. ' +
+                          'إن كان الكارت يعمل فانتظر قليلاً. إذا استمر التوقف: أعد تشغيل التطبيق: sdmp3 restart'
+                        : 'توقف النقل — لم يتم نقل أي بيانات منذ ' + data.stall_seconds + ' ثانية. ' +
+                          'إن كان الكارت يعمل فانتظر قليلاً. إذا استمر التوقف: أخرج الكارت وأدخله ثم أعد المحاولة';
+                    currentEl.style.color = 'var(--danger-ink)';
+                } else if (data.slow && data.action !== 'tts') {
+                    currentEl.innerText = (data.action === 'delete')
+                        ? 'الكارت بطيء — لم يُحذف عنصر جديد منذ ' + data.slow_seconds + ' ثانية. العملية مستمرة، لا تُخرج الكارت.'
+                        : 'الكارت بطيء — لم تصل بيانات جديدة منذ ' + data.slow_seconds + ' ثانية. العملية مستمرة، لا تُخرج الكارت.';
+                    currentEl.style.color = 'var(--warning)';
                 } else {
-                    document.getElementById('currentFile').innerText = data.file;
-                    document.getElementById('currentFile').style.color = 'var(--text-muted)';
+                    currentEl.innerText = data.file;
+                    currentEl.style.color = 'var(--text-muted)';
                 }
                 document.getElementById('failedText').innerText = data.failed ? ('فشل: ' + data.failed) : '';
 
                 // Live throughput + remaining time, so "slow" is a number.
                 let speedEl = document.getElementById('speedText');
                 if (speedEl) {
-                    if (data.speed_mbps > 0) {
+                    if (data.phase === 'syncing' || data.phase === 'verifying') {
+                        speedEl.innerText = '';
+                    } else if (data.speed_mbps > 0) {
                         let eta = '';
                         if (data.eta_seconds > 0) {
                             let m = Math.floor(data.eta_seconds / 60);
@@ -3414,9 +3838,20 @@ HTML_TEMPLATE = """
                         document.getElementById('currentFile').style.color = 'var(--danger-ink)';
                         showInlineError('فشلت العملية: ' + data.log);
                     } else if (data.status === 'done' && data.time_taken) {
+                        let verifyNote = '';
+                        if (data.verify_total > 0) {
+                            if (data.verify_cancelled) {
+                                verifyNote = ' • تم إيقاف التحقق';
+                            } else if (data.verify_failed && data.verify_failed.length) {
+                                verifyNote = ' • التحقق: ' + data.verified + '/' + data.verify_total + ' (مخالف)';
+                            } else {
+                                verifyNote = ' • التحقق: ' + data.verified + '/' + data.verify_total + ' سليم';
+                            }
+                        }
                         document.getElementById('timeTakenDiv').style.display = 'block';
                         document.getElementById('timeTakenDiv').innerText = 'استغرق: ' + data.time_taken
-                            + (data.speed_mbps ? ' • متوسط السرعة: ' + data.speed_mbps + ' MB/s' : '');
+                            + (data.speed_mbps ? ' • متوسط السرعة: ' + data.speed_mbps + ' MB/s' : '')
+                            + verifyNote;
                     } else if (data.status === 'cancelled' && data.time_taken) {
                         document.getElementById('timeTakenDiv').style.display = 'block';
                         document.getElementById('timeTakenDiv').innerText = 'تم الإيقاف بعد: ' + data.time_taken;
@@ -3433,6 +3868,10 @@ HTML_TEMPLATE = """
                     if (data.skipped && data.skipped.length > 0) {
                         lines.push('<b>تم تخطي (غير مقروء):</b>');
                         data.skipped.forEach(function(n){ lines.push('- ' + esc(n)); });
+                    }
+                    if (data.verify_failed && data.verify_failed.length > 0) {
+                        lines.push('<b>التحقق من الحجم:</b>');
+                        data.verify_failed.forEach(function(n){ lines.push('- ' + esc(n)); });
                     }
                     if (data.hint) {
                         lines.push('<b>ملاحظة:</b> ' + esc(data.hint));
@@ -3456,10 +3895,13 @@ HTML_TEMPLATE = """
                     }
                 }
             }
+            // Idle polling does not need a request every second; during a copy
+            // it does, and verification wants a slightly smoother bar.
+            pollDelay = (data.status === 'idle') ? 2500 : (data.phase === 'verifying' ? 700 : 1000);
         })
         .catch(err => console.log('Network sync delayed...'))
         .finally(() => {
-            statusTimeout = setTimeout(checkTransferStatus, 1000);
+            statusTimeout = setTimeout(checkTransferStatus, pollDelay);
         });
     }
     
@@ -4337,15 +4779,33 @@ def start_transfer():
     if not dest or not os.path.isdir(dest): return jsonify({'error': 'مسار الوجهة غير صالح'})
     if not os.access(dest, os.W_OK): return jsonify({'error': 'لا توجد صلاحية كتابة'})
 
+    group, group_error = validate_group_name(data.get('group') or '')
+    if group_error: return jsonify({'error': group_error})
+    target_dest = os.path.join(os.path.normpath(dest), group) if group else os.path.normpath(dest)
+
     # A card can be mounted but dead. Check it now (with a timeout) so the user
     # gets "الكارت لا يستجيب" instead of a transfer that freezes at 0%.
     problem = check_destination(dest)
     if problem: return jsonify({'error': problem})
-    if dest_inside_source(paths, dest):
-        return jsonify({'error': 'لا يمكن النسخ إلى مجلد داخل المصدر: ' + dest})
-    if copy_targets_source(paths, dest):
+
+    # A group folder that already exists is a merge: files with the same name
+    # would be replaced. Ask first, once, instead of doing it silently.
+    if group and os.path.exists(target_dest):
+        if not os.path.isdir(target_dest):
+            return jsonify({'error': 'يوجد ملف بنفس اسم مجلد الضم — اختر اسماً آخر'})
+        if not data.get('confirm_merge'):
+            return jsonify({
+                'needs_group_confirm': True,
+                'error': ('مجلد «{}» موجود بالفعل. سيتم دمج العناصر داخله، واستبدال أي '
+                          'ملف بنفس الاسم. هل تريد المتابعة؟'.format(group))
+            })
+
+    if dest_inside_source(paths, target_dest):
+        return jsonify({'error': 'لا يمكن النسخ إلى مجلد داخل المصدر: ' + target_dest})
+    if copy_targets_source(paths, target_dest):
         return jsonify({'error': 'الوجهة هي مجلد المصدر نفسه — اختر مجلداً جديداً داخلها بدل اختيارها هي'})
 
+    verify = bool(data.get('verify', True))
     global ACTIVE_THREAD
     with transfer_lock:
         if transfer_state['status'] == 'copying' and is_thread_alive(ACTIVE_THREAD):
@@ -4358,10 +4818,10 @@ def start_transfer():
         # Clear the previous run here, not in the worker: otherwise a poll that
         # lands between this request and the thread start still sees the old
         # 'done'/'error' state and the UI reports the wrong result.
-        reset_state(status='copying', action='copy', start_time=time.time())
+        reset_state(status='copying', action='copy', start_time=time.time(), phase='planning')
         ACTIVE_THREAD = threading.Thread(
             target=copy_thread_task,
-            args=(paths, dest, set(p for p in data.get('excludes', []) if p)),
+            args=(paths, dest, set(p for p in data.get('excludes', []) if p), group, verify),
             daemon=True)
         ACTIVE_THREAD.start()
     return jsonify({'success': True})

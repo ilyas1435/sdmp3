@@ -10,8 +10,10 @@
 
 ### 🗂️ File Transfer & Organizing
 - 📁 **Multi-storage support** — internal storage, **SD card** and **USB OTG** are detected separately and each gets its own icon, label and colour (MMC vs USB is read from the block device, since Android shows both as `/storage/XXXX-XXXX`).
-- 📦 **Fast sequential copying** — 4 MB buffers, one write pass per file, and one global flush every 256 MB; playback order comes from writing files in order, not from per-file `fsync`.
+- 📦 **Fast sequential copying** — `sendfile` when the kernel supports it (about twice as fast on Android FUSE) with a 4 MB fallback buffer, one write pass per file, and one global flush every 1 GB; playback order comes from writing files in order, not from per-file `fsync`.
 - 🧭 **JOC physical-order sequencing** — files are copied in a natural, physical order (DFS traversal + natural sort) so hardware MP3 players play them reliably in sequence.
+- 🗂️ **Group into a parent folder at copy time** — in the "الملفات المحددة" window, name a parent folder and all selected folders/files are copied inside it (e.g. الكيمياء + الفيزياء → «العلوم»). The parent is created first, the source is never modified, and an existing group asks before merging.
+- ✅ **One-pass post-copy verification** — after the final flush, the app walks the copied files once (metadata only, no content reads) and compares every file size with what was actually written. The result is shown as `X/Y` in the progress window, with any mismatching file listed by path. Can be turned off in destination options.
 - 🖥️ **Built-in file browser** — expandable tree view to browse, select, and exclude folders/files; the destination picker lists files too (with sizes), and every row (folder **or** file, in the tree, the search results and the picker) has rename + delete.
 - 🛒 **Selection cart** — view total size of selections and copy everything with one tap.
 - ⏱️ **Instant folder indexing** — cache a folder's contents once for lightning-fast subsequent lookups. The index is **saved to disk**, so refreshing the page or restarting `sdmp3` keeps the folder cached and the source/destination paths restored.
@@ -59,8 +61,7 @@
 - ⚡ **Termux wake lock** — keeps the CPU awake during long transfers.
 - ♻️ **Safe shutdown** — Ctrl+C / SIGTERM cleans up TTS cache cleanly.
 - 🌐 **Network access** — serves on `0.0.0.0:5050` for access from any device.
-- 📊 **Honest progress** — live MB/s and ETA, per-file failure reasons, and an
-  "الكارت لا يستجيب" warning instead of a silent freeze when a card stops answering.
+- 📊 **Honest progress** — live (last-6-seconds) MB/s and ETA, per-file failure reasons, and a calm amber "الكارت بطيء" state that only becomes the red "الكارت لا يستجيب" after 60s of real silence. A normal `os.sync()` flush no longer triggers a false card warning.
 - 🧾 **Every transfer is logged** — start, per-file failures, finish (with average
   speed) and errors go to `sdmp3.log` under `[sdmp3]`.
 
@@ -189,7 +190,8 @@ destination before it starts, so the failure names itself instead of hanging:
 |---|---|---|
 | `تعذر الكتابة على الوجهة — الكارت يرفض الكتابة (خطأ إدخال/إخراج)` | The card is mounted and readable, but every write returns `EIO` — broken FAT or a worn-out card | Back up what you can, then repair on a PC (`chkdsk X: /f`, `sudo fsck.vfat -a /dev/sdX`) or format the card; if it still fails, replace it |
 | `الوجهة لا تستجيب (الكارت معلّق)` | The card was pulled or died while mounted; even a 5-byte write blocks forever | Remove and reinsert the card, then retry. If the app stays stuck: `sdmp3 restart` |
-| `الكارت لا يستجيب — لم يتم نقل أي بيانات منذ N ثانية` (during a copy) | Same, detected mid-transfer (no bytes moved for 25s) | Remove/reinsert; the transfer continues by itself if the card returns |
+| `الكارت بطيء — … العملية مستمرة` (amber) | No new bytes for 15s: a busy card or a long flush. This is **not** a failure | Wait; do not remove the card |
+| `توقف النقل — … منذ N ثانية` (red) | No bytes for 60s: the card really stopped answering | If the card is working, wait a little; otherwise reinsert it and retry. If the app stays stuck: `sdmp3 restart` |
 | `المساحة المتوفرة غير كافية` | Not enough free space for the whole selection | Free space or copy fewer folders |
 | `لا يمكن النسخ إلى مجلد داخل المصدر` | Destination is inside the source | Pick a destination outside the copied folders |
 
