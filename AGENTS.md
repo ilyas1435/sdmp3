@@ -63,12 +63,26 @@ byte-identical (DFS pre-order + `natural_sort_key`) and stay single-threaded.
   doubled the FUSE round-trips. It returns `(tasks, total_files, total_bytes,
   skipped)`; `skipped` reports unreadable source folders instead of dropping them
   silently (`except Exception: pass`).
-- **Copy group** (`group` on `/transfer/start`): a single FAT-legal folder name,
-  created inside the destination *first* (a dir task inserted at the front of the
-  queue), then every selected root is copied inside it. `plan_transfer` receives
-  `dest/group`; the source tree is never modified. An existing group is a merge,
-  so the route returns `needs_group_confirm` until the request carries
-  `confirm_merge: true`; the UI asks once, before anything is written.
+- **Copy groups** (`groups: [{name, paths}]` on `/transfer/start`): one or more
+  FAT-legal parent folder names, each created inside the destination *first*, then
+  the roots assigned to it are copied inside it. The worker plans each group as its
+  own segment (`plan_transfer(gpaths, dest/name)`), inserts the group dir task at
+  that segment's front, then plans the **ungrouped** roots straight into `dest`
+  last. So the queue stays one flat, ordered list — the group folder never contains
+  another segment's files, and ungrouped items keep today's behaviour. The source
+  tree is never modified.
+  - `prepare_copy_groups()` validates names (`validate_group_name`), rejects
+    duplicates (casefold: FAT is case-insensitive), rejects a path that is not in
+    the selection and a path that sits in two groups, and **drops empty groups**.
+  - A group name equal (casefold) to the basename of an **ungrouped** root is
+    refused in the route *and* in the worker: otherwise that root would silently
+    land inside the group folder and mix two trees.
+  - Any existing group folder is a merge, so the route returns one
+    `needs_group_confirm` listing **all** of them (`groups: [names]`) until the
+    request carries `confirm_merge: true`; the UI asks once, before anything is
+    written.
+  - The legacy single `group` field is still accepted (wrapped into one group) so
+    an old page cannot break.
 - **Post-copy verification** (`verify: true` by default): after the final
   `sync_with_heartbeat()`, `verify_copied_files()` makes **one metadata-only walk**
   over the destination roots and compares each planned file's size with the bytes
@@ -138,9 +152,23 @@ The spoofing button is `btn-sand` (`--sand-fill #d0b49f` on `--accent-ink`), not
 - **No remote assets.** The page used to load Google Fonts, which blocked first
   paint on a phone that is offline or behind a slow DNS; the font stack is the
   system face (`system-ui, … 'Noto Sans Arabic'`). Keep the page self-contained.
-- Markup built with `innerHTML` must escape names/paths with `esc()` (quotes
+- **Markup built with `innerHTML` must escape names/paths with `esc()` (quotes
   included). Row buttons carry no data: one delegated listener reads the path
   from the row, so a filename with `"` or `'` can't break or inject markup.
+- **The group UI has its own checkbox namespace.** Rows inside «الملفات المحددة»
+  use checkboxes with `value="pick"` (never a path) plus `data-path`, so
+  `refreshCheckboxStates()` — which syncs every `.checkbox` whose value starts
+  with `/` — can never treat them as tree selections. `pickPaths` is the separate
+  Set. Group-card and assign-sheet buttons are handled by **delegated** listeners
+  reading `data-gid`/`data-act`, so no group name is ever interpolated into an
+  `onclick`.
+- **`modal-selected` has a fixed height** (`min(84vh, 760px)`, `92vh` on phones)
+  with `#selectedList` as the flex child that scrolls, so the pick bar and the
+  confirm action cannot slide under the finger while rows are checked. The assign
+  sheet is `position:absolute` inside it (`bottom:14px`) for the same reason.
+- Group data lives only in JS: `copyGroups = [{id, name, paths}]`, one path per
+  group. It is cleared when a copy finishes with `action === 'copy'` and when the
+  selection becomes empty; cancelled/failed copies keep it for retry.
 - `/` is rendered per request; do not add a cache header to it — it embeds the
   per-volume storage list.
 - `theme-color` must stay `#17222e` (the page colour) so the Android status bar

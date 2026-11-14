@@ -28,7 +28,7 @@ app = Flask(__name__)
 
 # Version is kept in the VERSION file next to this script so that the `sdmp3`
 # CLI can read it without importing the app.
-APP_VERSION_FALLBACK = "1.5.4"
+APP_VERSION_FALLBACK = "1.5.5"
 
 # Toggled by --no-wakelock (see main() at the bottom).
 WAKELOCK_ENABLED = True
@@ -1105,6 +1105,64 @@ def validate_group_name(name):
     return name, None
 
 
+def prepare_copy_groups(raw_groups, paths):
+    """Normalise the optional copy groups from a request.
+
+    Each group is ``{name, paths}`` and becomes one folder inside the
+    destination. Returns ``(groups, error)`` where ``groups`` is a list of
+    ``(name, [paths])`` with empty groups dropped.
+
+    Names must be valid and unique (FAT is case-insensitive, so "علوم" and
+    "علوم " collide), every path must be part of this transfer's selection, and
+    no path may sit in two groups - otherwise the same folder would be copied
+    twice into two different parents, in two places in the queue.
+    """
+    if not raw_groups:
+        return [], None
+    if not isinstance(raw_groups, list):
+        return [], 'صيغة المجموعات غير صالحة'
+
+    by_norm = {}
+    for p in paths:
+        try:
+            by_norm[os.path.normpath(p)] = p
+        except (TypeError, ValueError):
+            return [], 'مسار غير صالح داخل التحديد'
+
+    groups = []
+    seen_names = set()
+    assigned = {}
+    for item in raw_groups:
+        if not isinstance(item, dict):
+            return [], 'صيغة المجموعات غير صالحة'
+        if not (item.get('name') or '').strip():
+            return [], 'اسم مجلد الضم مطلوب'
+        name, error = validate_group_name(item.get('name') or '')
+        if error:
+            return [], error
+        key = name.casefold()
+        if key in seen_names:
+            return [], 'اسم المجلد «{}» مستخدم في أكثر من مجموعة'.format(name)
+        seen_names.add(key)
+
+        group_paths = []
+        for p in (item.get('paths') or []):
+            try:
+                norm = os.path.normpath(p)
+            except (TypeError, ValueError):
+                return [], 'مسار غير صالح داخل المجموعة'
+            if norm not in by_norm:
+                return [], 'العنصر «{}» ليس ضمن التحديد'.format(p)
+            if norm in assigned:
+                return [], ('العنصر «{}» موجود في مجموعتين: «{}» و«{}»'
+                            .format(p, assigned[norm], name))
+            assigned[norm] = name
+            group_paths.append(by_norm[norm])
+        if group_paths:
+            groups.append((name, group_paths))
+    return groups, None
+
+
 def verify_copied_files(planned, roots, on_progress=None, cancel_check=None):
     """Check the copied files in ONE metadata-only pass.
 
@@ -1244,7 +1302,7 @@ def dest_inside_source(paths, dest):
     return False
 
 
-def copy_thread_task(paths, dest, excludes=None, group=None, verify=True):
+def copy_thread_task(paths, dest, excludes=None, groups=None, verify=True):
     acquire_wakelock()
     reset_state(status='copying', action='copy', start_time=time.time(), phase='planning')
     copied = 0
@@ -1258,41 +1316,94 @@ def copy_thread_task(paths, dest, excludes=None, group=None, verify=True):
     started = time.time()
     planned_files = {}
     dest = os.path.normpath(dest)
-    target_dest = dest
+    groups = list(groups or [])
     speed_window = deque()
     speed_ema = None
 
     try:
-        group, group_error = validate_group_name(group) if group else ('', None)
-        if group_error:
-            raise RuntimeError(group_error)
-        target_dest = os.path.join(dest, group) if group else dest
+        # Re-validate inside the worker: the queue must never be built from an
+        # unchecked name, even if the route changes later.
+        checked_groups = []
+        for name, gpaths in groups:
+            clean, group_error = validate_group_name(name)
+            if group_error:
+                raise RuntimeError(group_error)
+            checked_groups.append((clean, list(gpaths)))
+        groups = checked_groups
+
+        assigned_norm = {os.path.normpath(p) for _n, gpaths in groups for p in gpaths}
+        ungrouped = [p for p in paths if os.path.normpath(p) not in assigned_norm]
+
+        # A group name equal to an ungrouped root's name would pull that root
+        # inside the group folder and mix two unrelated trees: the route refuses
+        # it, and so must the worker.
+        ungrouped_names = {os.path.basename(os.path.normpath(p)).casefold() for p in ungrouped}
+        for name, _gpaths in groups:
+            if name.casefold() in ungrouped_names:
+                raise RuntimeError('اسم المجلد «{}» يتعارض مع عنصر غير مجمَّع بنفس الاسم'.format(name))
+
         # Safety net: the route already refuses this, but the worker must never
         # be able to duplicate a tree into itself either.
-        if dest_inside_source(paths, target_dest):
-            raise RuntimeError('لا يمكن النسخ إلى مجلد داخل المصدر: {}'.format(target_dest))
-        if copy_targets_source(paths, target_dest):
-            raise RuntimeError('الوجهة هي مجلد المصدر نفسه — اختر مجلداً جديداً داخلها')
+        for name, gpaths in groups:
+            target = os.path.join(dest, name)
+            if dest_inside_source(gpaths, target):
+                raise RuntimeError('لا يمكن النسخ إلى مجلد داخل المصدر: {}'.format(target))
+            if copy_targets_source(gpaths, target):
+                raise RuntimeError('الوجهة هي مجلد المصدر نفسه — اختر مجلداً جديداً داخلها')
+        if ungrouped:
+            if dest_inside_source(ungrouped, dest):
+                raise RuntimeError('لا يمكن النسخ إلى مجلد داخل المصدر: {}'.format(dest))
+            if copy_targets_source(ungrouped, dest):
+                raise RuntimeError('الوجهة هي مجلد المصدر نفسه — اختر مجلداً جديداً داخلها')
 
         set_state(file='جاري فحص الملفات وترتيبها بتسلسل JOC...', phase='planning')
         touch_progress()
-        tasks, total, needed_bytes, skipped = plan_transfer(
-            paths, target_dest, excludes, cancel_check=is_cancelled, on_progress=touch_progress)
-        if is_cancelled():
-            raise TransferCancelled()
-        # The group folder must be the first directory entry, before its
-        # contents: that is the whole point of "create the parent first".
-        if group:
-            tasks.insert(0, (target_dest, target_dest, 'dir'))
+
+        tasks = []
         verify_roots = []
-        for _src, _dst, _kind in tasks:
-            if os.path.dirname(_dst) == target_dest and _dst not in verify_roots:
-                verify_roots.append(_dst)
+        skipped = []
+        total = 0
+        needed_bytes = 0
+        group_names = []
+
+        def plan_segment(segment_paths, segment_dest):
+            """Plan one destination root and append its queue in order."""
+            nonlocal total, needed_bytes
+            seg_tasks, seg_total, seg_bytes, seg_skipped = plan_transfer(
+                segment_paths, segment_dest, excludes,
+                cancel_check=is_cancelled, on_progress=touch_progress)
+            total += seg_total
+            needed_bytes += seg_bytes
+            skipped.extend(seg_skipped)
+            # A verify root is the top entry of a copied root, never the group
+            # folder itself (a folder has no size to compare).
+            for _src, _dst, _kind in seg_tasks:
+                if os.path.dirname(_dst) == segment_dest and _dst not in verify_roots:
+                    verify_roots.append(_dst)
+            tasks.extend(seg_tasks)
+            if is_cancelled():
+                raise TransferCancelled()
+
+        # Each group folder is the first directory entry of its own segment, so
+        # it appears before the folders copied inside it.
+        for name, gpaths in groups:
+            target = os.path.join(dest, name)
+            before = len(tasks)
+            plan_segment(gpaths, target)
+            if len(tasks) > before:
+                tasks.insert(before, (target, target, 'dir'))
+                group_names.append(name)
+
+        # Anything not grouped keeps the old behaviour: straight into the chosen
+        # destination, after the groups.
+        if ungrouped:
+            plan_segment(ungrouped, dest)
+
         touch_progress()
         set_state(total=total, total_bytes=needed_bytes)
 
-        log_event('copy start: {} file(s), {}, dest={!r}, group={!r}, skipped={}'.format(
-            total, format_size(needed_bytes), target_dest, group or '', len(skipped)))
+        log_event('copy start: {} file(s), {}, dest={!r}, groups={}, skipped={}'.format(
+            total, format_size(needed_bytes), dest, group_names, len(skipped)))
         if skipped:
             set_state(skipped=['{} — {}'.format(p, r) for p, r in skipped[:20]])
             for p, r in skipped[:10]:
@@ -1414,7 +1525,14 @@ def copy_thread_task(paths, dest, excludes=None, group=None, verify=True):
 
         elapsed = max(time.time() - started, 0.001)
         avg_speed = bytes_done / elapsed / (1024 * 1024)
-        group_note = ' داخل «{}»'.format(group) if group else ''
+        if len(group_names) == 1:
+            group_note = ' داخل «{}»'.format(group_names[0])
+        elif len(group_names) == 2:
+            group_note = ' داخل مجلدين'
+        elif group_names:
+            group_note = ' داخل {} مجلدات'.format(len(group_names))
+        else:
+            group_note = ''
         if failed_details:
             final_msg = 'اكتمل النسخ{} مع فشل {} عنصر - راجع التفاصيل'.format(
                 group_note, len(failed_details))
@@ -1912,6 +2030,8 @@ HTML_TEMPLATE = """
             .modal { padding: 8px; align-items: stretch; }
             .modal-content { padding: 16px; max-height: 92vh; border-radius: 14px; }
             .modal-content.modal-picker { height: 92vh; max-height: 92vh; }
+            .modal-content.modal-selected { height: 92vh; max-height: 92vh; }
+            .assign-sheet { left:8px; right:8px; bottom:8px; }
         }
 
         .progress-bar { width: 100%; height: 10px; background: var(--field); border-radius: 999px; overflow: hidden; margin: 15px 0; border: 1px solid var(--border);}
@@ -1935,17 +2055,73 @@ HTML_TEMPLATE = """
         .disk-bar { width: 100%; height: 6px; background: var(--field); border-radius: 3px; overflow: hidden; margin-top: 6px; border: 1px solid var(--border);}
         .disk-used { height: 100%; background: var(--accent); width: 0%; transition: width 0.3s ease; }
 
-        /* Copy options and the optional group-parent folder. */
+        /* Copy options and the optional parent folders ("groups"). */
         .check-line { display:flex; align-items:center; gap:9px; cursor:pointer; color:var(--text); font-size:13px; margin:12px 0 0; font-weight:500; }
         .check-line .checkbox { width:17px; height:17px; margin:0; flex-shrink:0; }
         .check-hint { display:block; color:var(--text-muted); font-size:11.5px; line-height:1.55; margin:5px 0 0; }
-        .group-btn { align-self:flex-start; }
-        .group-bar { display:flex; align-items:center; gap:9px; padding:10px 12px; border-radius:10px;
-            border:1px solid var(--accent-line); background:var(--accent-soft); color:var(--accent-text); }
-        .group-bar > .icon { width:16px; height:16px; flex-shrink:0; }
-        .group-bar-label { font-size:10.5px; color:var(--text-muted); }
-        .group-bar-name { font-size:13px; font-weight:600; color:var(--accent-text); }
-        .group-bar .btn { min-height:34px; padding:6px 10px; font-size:12px; flex-shrink:0; }
+
+        /* The selected-items window keeps one height: the list scrolls while the
+           group cards and the pick bar stay put, so the action cannot move under
+           the finger while rows are checked. */
+        .modal-content.modal-selected { height: min(84vh, 760px); max-height: 84vh; position: relative; overflow: hidden; }
+        .selected-head { display:flex; flex-direction:column; gap:9px; flex-shrink:0; padding-bottom:10px; border-bottom:1px solid var(--border); }
+        .selected-list { flex:1 1 auto; min-height:0; overflow-y:auto; padding:10px 2px 4px; display:flex; flex-direction:column; gap:8px; }
+        .pick-head { display:flex; align-items:center; justify-content:space-between; gap:8px; flex-shrink:0; padding:8px 2px 0; }
+
+        .group-section { display:flex; flex-direction:column; gap:8px; padding:10px 11px; border-radius:12px;
+            background:var(--field); border:1px solid var(--border); max-height:34vh; overflow-y:auto; }
+        .group-section-head { display:flex; align-items:center; justify-content:space-between; gap:8px; flex-wrap:wrap; }
+        .group-section-title { display:flex; align-items:center; gap:8px; font-size:12.5px; font-weight:600; color:var(--text); }
+        .group-section-title .icon { color:var(--accent); width:16px; height:16px; }
+        .group-cards { display:flex; flex-direction:column; gap:7px; }
+        .group-card { display:flex; flex-direction:column; gap:7px; padding:9px 10px; border-radius:10px; border:1px solid var(--accent-line); background:var(--accent-soft); }
+        .group-card-main { display:flex; align-items:center; gap:9px; min-width:0; }
+        .group-card-main .icon { color:var(--accent-text); flex-shrink:0; }
+        .group-card-text { min-width:0; flex:1; }
+        .group-card-name { font-size:13px; font-weight:600; color:var(--text); }
+        .group-card-meta { font-size:10.5px; color:var(--text-muted); margin-top:2px; }
+        .group-card-actions { display:flex; flex-wrap:wrap; gap:6px; }
+        .group-card-actions .btn { min-height:32px; padding:5px 9px; font-size:11.5px; }
+        .btn-ghost-danger { color:var(--danger-ink); border-color:rgba(244,63,94,0.38); }
+        .group-empty-hint { font-size:11px; color:var(--text-muted); line-height:1.55; }
+
+        .selected-row { display:flex; align-items:center; gap:10px; padding:10px 11px; border-radius:10px; background:var(--field); border:1px solid var(--border); }
+        .selected-row.is-picked { border-color:var(--accent-line); background:var(--accent-soft); }
+        .selected-row-main { min-width:0; flex:1; display:flex; flex-direction:column; gap:4px; }
+        .selected-row-top { display:flex; align-items:center; gap:8px; min-width:0; }
+        .selected-row-name { font-size:13px; font-weight:500; color:var(--text); }
+        .selected-row-top .icon { color:var(--text-muted); flex-shrink:0; }
+        .selected-row-right { display:flex; align-items:center; gap:8px; flex-shrink:0; }
+        .selected-row-size { font-size:11px; color:var(--text-muted); min-width:52px; text-align:left; direction:ltr; }
+        .group-chip { align-self:flex-start; max-width:100%; font-size:10.5px; padding:2px 8px; border-radius:20px;
+            background:var(--accent-soft); border:1px solid var(--accent-line); color:var(--accent-text);
+            white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+        .group-chip.none { background:transparent; border-color:var(--border); color:var(--text-muted); }
+        .pick-box { width:18px; height:18px; margin:0; }
+
+        .pick-bar { display:flex; align-items:center; justify-content:space-between; gap:8px; flex-wrap:wrap;
+            flex-shrink:0; margin-top:10px; padding:9px 11px; border-radius:12px;
+            background:var(--card-2); border:1px solid var(--accent-line); }
+        .pick-count { font-size:12px; color:var(--text); }
+        .pick-count b { color:var(--accent-text); }
+        .pick-bar-actions { display:flex; flex-wrap:wrap; gap:6px; }
+        .pick-bar-actions .btn { min-height:36px; padding:7px 11px; font-size:12px; }
+
+        .assign-sheet { position:absolute; left:14px; right:14px; bottom:14px; z-index:6;
+            display:flex; flex-direction:column; gap:9px; padding:12px; border-radius:14px;
+            background:var(--card-2); border:1px solid var(--accent-line);
+            box-shadow:0 18px 40px rgba(0,0,0,0.5); }
+        .assign-sheet-head { display:flex; align-items:center; justify-content:space-between; gap:8px; font-size:12.5px; color:var(--text); }
+        .assign-groups { display:flex; flex-wrap:wrap; gap:7px; max-height:30vh; overflow-y:auto; }
+        .assign-group { display:flex; align-items:center; gap:7px; max-width:100%; padding:7px 11px;
+            border-radius:10px; background:var(--accent-soft); border:1px solid var(--accent-line);
+            color:var(--accent-text); font-size:12px; font-weight:600; cursor:pointer; }
+        .assign-group:hover { border-color:var(--accent); }
+        .assign-group-count { font-size:10.5px; font-weight:500; color:var(--text-muted); background:var(--field); border-radius:20px; padding:1px 7px; }
+        .group-editor { display:flex; flex-direction:column; gap:7px; }
+        .group-editor input { margin:0; }
+        .group-editor-actions { display:flex; gap:7px; }
+        .field-error { min-height:14px; font-size:11.5px; color:var(--danger-ink); }
 
         .spoof-settings { background: var(--field); padding: 16px; border-radius: 10px; border: 1px dashed var(--border); margin-bottom: 10px; display:flex; flex-direction:column; gap:10px;}
 
@@ -2142,7 +2318,7 @@ HTML_TEMPLATE = """
                 <svg class="icon" viewBox="0 0 24 24"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg>
                 عرض المحدد
             </button>
-            <span id="cartGroupPill" class="pill" style="display:none; max-width:140px; overflow:hidden; text-overflow:ellipsis;"></span>
+            <span id="cartGroupPill" class="pill" role="button" tabindex="0" onclick="openSelectedModal()" onkeydown="if(event.key==='Enter')openSelectedModal()" style="display:none; max-width:170px; overflow:hidden; text-overflow:ellipsis; cursor:pointer;"></span>
         </div>
         <div class="cart-buttons">
             <button class="btn btn-primary" style="font-size: 14px; padding: 10px 24px;" onclick="startTransfer()">
@@ -2186,7 +2362,8 @@ HTML_TEMPLATE = """
             <span id="inputModalTitleText">إعادة تسمية</span>
         </h3>
         <label id="inputModalLabel">الاسم الجديد:</label>
-        <input type="text" id="inputModalField" style="margin-bottom: 4px;" onkeydown="if(event.key==='Enter') submitInputModal()">
+        <input type="text" id="inputModalField" style="margin-bottom: 4px;" onkeydown="if(event.key==='Enter') submitInputModal()" oninput="hideInputModalError()">
+        <div id="inputModalError" class="field-error"></div>
         <div style="display:flex; gap:10px; margin-top:14px;">
             <button class="btn btn-outline" style="flex:1;" onclick="document.getElementById('inputModal').style.display='none'">إلغاء</button>
             <button class="btn btn-primary" style="flex:1;" onclick="submitInputModal()">حفظ</button>
@@ -2218,33 +2395,68 @@ HTML_TEMPLATE = """
 </div>
 
 <div class="modal" id="selectedModal" onclick="closeSelectedModal(event)">
-    <div class="modal-content" onclick="event.stopPropagation()">
-        <div style="display:flex; flex-direction:column; gap:8px; border-bottom:1px solid var(--border); padding-bottom:15px; margin-bottom:12px;">
+    <div class="modal-content modal-selected" onclick="event.stopPropagation()">
+        <div class="selected-head">
             <div style="display:flex; justify-content:space-between; align-items:center;">
                 <h3 style="margin:0; font-size: 16px;">الملفات المحددة</h3>
-                <button class="btn btn-outline" style="padding: 6px 10px; border:none; box-shadow: none;" onclick="document.getElementById('selectedModal').style.display='none'">
+                <button class="btn btn-outline" style="padding: 6px 10px; border:none; box-shadow: none;" aria-label="إغلاق" onclick="document.getElementById('selectedModal').style.display='none'">
                     <svg class="icon" viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
                 </button>
             </div>
-            <div id="totalSizeSelected" style="font-size:13px; font-weight:500; background:var(--field); padding:12px; border-radius:6px; border: 1px solid var(--border);">جاري حساب المساحة...</div>
-            <div id="groupWrap" style="display:none; flex-direction:column; gap:8px;">
-                <button type="button" id="groupBtn" class="btn btn-outline btn-sm group-btn" onclick="editCopyGroup()">
-                    <svg class="icon" viewBox="0 0 24 24"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path><line x1="12" y1="11" x2="12" y2="17"></line><line x1="9" y1="14" x2="15" y2="14"></line></svg>
-                    ضم في مجلد أب
-                </button>
-                <div id="groupBar" class="group-bar" style="display:none;">
-                    <svg class="icon" viewBox="0 0 24 24"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>
-                    <div style="min-width:0; flex:1;">
-                        <div class="group-bar-label">سيتم النسخ داخل مجلد</div>
-                        <div id="groupNameText" class="truncate-text group-bar-name"></div>
+            <div id="totalSizeSelected" style="font-size:13px; font-weight:500; background:var(--field); padding:12px; border-radius:10px; border: 1px solid var(--border);">جاري حساب المساحة...</div>
+
+            <div class="group-section">
+                <div class="group-section-head">
+                    <div class="group-section-title">
+                        <svg class="icon" viewBox="0 0 24 24"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path><line x1="12" y1="11" x2="12" y2="17"></line><line x1="9" y1="14" x2="15" y2="14"></line></svg>
+                        <span>المجلدات الأب</span>
                     </div>
-                    <button type="button" class="btn btn-outline btn-sm" onclick="editCopyGroup()">تعديل</button>
-                    <button type="button" class="btn btn-outline btn-sm" onclick="clearCopyGroup()">إلغاء</button>
+                    <button type="button" class="btn btn-outline btn-sm" onclick="startNewGroup()">＋ مجموعة جديدة</button>
                 </div>
-                <small class="check-hint">يُنشأ المجلد الأب عند النسخ فقط — المصدر لا يتغيّر.</small>
+                <div id="groupCards" class="group-cards"></div>
+                <div id="groupEmptyHint" class="group-empty-hint">أشّر العناصر بالأسفل ثم «ضم في مجلد أب»، ويمكن تكرار ذلك بعدة مجموعات.</div>
             </div>
         </div>
-        <div id="selectedList" style="overflow-y:auto; flex-grow:1; max-height: 50vh;"></div>
+
+        <div class="pick-head">
+            <label class="check-line" style="margin:0;">
+                <input type="checkbox" id="pickAll" class="checkbox pick-box" value="pick" onchange="togglePickAll(this.checked)">
+                <span>تحديد الكل للتجميع</span>
+            </label>
+            <span id="pickAllHint" class="check-hint" style="margin:0;"></span>
+        </div>
+
+        <div id="selectedList" class="selected-list"></div>
+
+        <div id="pickBar" class="pick-bar" style="display:none;">
+            <span class="pick-count"><b id="pickCount">0</b> مؤشَّر</span>
+            <div class="pick-bar-actions">
+                <button type="button" class="btn btn-outline btn-sm" id="unassignBtn" style="display:none;" onclick="unassignPicked()">إزالة من المجموعة</button>
+                <button type="button" class="btn btn-primary btn-sm" onclick="openAssignSheet()">ضم في مجلد أب</button>
+                <button type="button" class="btn btn-outline btn-sm" onclick="clearPick()">إلغاء التأشير</button>
+            </div>
+        </div>
+
+        <div id="assignSheet" class="assign-sheet" style="display:none;">
+            <div class="assign-sheet-head">
+                <span>أضف <b id="assignCount">0</b> عنصر إلى:</span>
+                <button type="button" class="btn btn-outline btn-sm" onclick="hideAssignSheet()">إغلاق</button>
+            </div>
+            <div id="assignHint" class="check-hint" style="margin:0;"></div>
+            <div id="assignGroups" class="assign-groups"></div>
+            <div id="assignNewWrap">
+                <button type="button" class="btn btn-outline btn-sm" onclick="beginGroupEditor()">＋ اسم جديد</button>
+            </div>
+            <div id="groupEditor" class="group-editor" style="display:none;">
+                <input type="text" id="groupNameInput" maxlength="80" autocomplete="off" placeholder="اسم المجلد الأب"
+                       oninput="onGroupNameInput(this.value)" onkeydown="onGroupNameKey(event)">
+                <div id="groupNameError" class="field-error"></div>
+                <div class="group-editor-actions">
+                    <button type="button" class="btn btn-primary btn-sm" id="groupSaveBtn" onclick="saveGroupEditor()">حفظ</button>
+                    <button type="button" class="btn btn-outline btn-sm" onclick="cancelGroupEditor()">إلغاء</button>
+                </div>
+            </div>
+        </div>
     </div>
 </div>
 
@@ -2423,7 +2635,13 @@ HTML_TEMPLATE = """
 <script>
     let selectedPaths = new Map();
     let excludedPaths = new Set();
-    let copyGroupName = '';
+    // Copy groups: [{id, name, paths: []}]. A selected path belongs to at most
+    // one group, and each group becomes one folder inside the destination when
+    // the copy starts - the source tree is never modified.
+    let copyGroups = [];
+    let nextGroupId = 1;
+    let pickPaths = new Set();   // rows checked in the "selected" window
+    let selectedSizes = {};      // path -> {bytes, formatted, owner}
     let currentDestFreeBytes = 0; 
     let statusTimeout = null;
     let currentSourceRoot = localStorage.getItem('joc_source_root') || '/sdcard';
@@ -2494,49 +2712,325 @@ HTML_TEMPLATE = """
     function refreshCheckboxStates() {
         document.querySelectorAll('.checkbox').forEach(cb => { if(cb.value && cb.value.startsWith('/')) cb.checked = isPathSelected(cb.value); });
         document.getElementById('selectedCount').innerText = selectedPaths.size;
-        // No selection means there is nothing to group; drop a stale name so it
-        // cannot silently apply to the next, unrelated selection.
-        if (selectedPaths.size === 0) copyGroupName = '';
-        renderCopyGroup();
-    }
-
-    // ---- Copy grouping (destination-only, the source is never touched) ----
-    function renderCopyGroup() {
-        let wrap = document.getElementById('groupWrap');
-        let bar = document.getElementById('groupBar');
-        let btn = document.getElementById('groupBtn');
-        let nameEl = document.getElementById('groupNameText');
-        let pill = document.getElementById('cartGroupPill');
-        let hasSelection = selectedPaths.size > 0;
-        if (wrap) wrap.style.display = hasSelection ? 'flex' : 'none';
-        if (bar) bar.style.display = copyGroupName ? 'flex' : 'none';
-        if (btn) btn.style.display = copyGroupName ? 'none' : 'inline-flex';
-        if (nameEl) nameEl.textContent = copyGroupName;
-        if (pill) {
-            pill.style.display = (copyGroupName && hasSelection) ? 'inline-block' : 'none';
-            pill.textContent = 'داخل: ' + copyGroupName;
-            pill.title = 'سيتم إنشاء مجلد «' + copyGroupName + '» داخل الوجهة ونسخ العناصر بداخله';
+        if (selectedPaths.size === 0) {
+            // A group only means something for the current selection.
+            copyGroups = [];
+            pickPaths = new Set();
+            selectedSizes = {};
+        } else {
+            syncGroupsWithSelection();
         }
+        renderGroupUI();
     }
 
-    function editCopyGroup() {
-        showInputModal('ضم في مجلد أب', 'اسم المجلد الذي ستنسخ بداخله:', copyGroupName,
+    // ---- Copy groups: named parent folders created at copy time only ----
+    function syncGroupsWithSelection() {
+        // A path that left the selection must leave its group too, and the pick
+        // set must never point at something the tree no longer has.
+        copyGroups.forEach(function(g) {
+            g.paths = g.paths.filter(function(p) { return selectedPaths.has(p); });
+        });
+        pickPaths.forEach(function(p) { if (!selectedPaths.has(p)) pickPaths.delete(p); });
+    }
+
+    function findGroup(gid) {
+        for (let i = 0; i < copyGroups.length; i++) {
+            if (copyGroups[i].id === gid) return copyGroups[i];
+        }
+        return null;
+    }
+
+    function groupNameForPath(path) {
+        for (let i = 0; i < copyGroups.length; i++) {
+            if (copyGroups[i].paths.indexOf(path) !== -1) return copyGroups[i].name;
+        }
+        return '';
+    }
+
+    // FAT is case-insensitive, so "علوم" and "علوم " collide. The backslash is
+    // built with fromCharCode: the page is a plain Python string, and a raw
+    // backslash here would be eaten before the browser ever sees it.
+    const GROUP_BAD_CHARS = '/' + String.fromCharCode(92) + ':*?"<>|';
+
+    function groupNameError(raw, exceptId) {
+        let name = (raw || '').trim();
+        if (!name) return 'اكتب اسماً للمجلد';
+        if (name === '.' || name === '..') return 'اسم غير صالح';
+        if (name.length > 80) return 'الاسم طويل جداً (الحد 80 حرفاً)';
+        for (let i = 0; i < GROUP_BAD_CHARS.length; i++) {
+            if (name.indexOf(GROUP_BAD_CHARS[i]) !== -1) return 'لا تستخدم الرموز / : * ? " < > |';
+        }
+        if (/[ .]$/.test(name)) return 'لا ينتهي الاسم بمسافة أو نقطة';
+        for (let i = 0; i < copyGroups.length; i++) {
+            let g = copyGroups[i];
+            if (g.id !== exceptId && g.name.toLowerCase() === name.toLowerCase()) return 'يوجد مجلد بنفس الاسم';
+        }
+        return '';
+    }
+
+    function renderGroupPill() {
+        let pill = document.getElementById('cartGroupPill');
+        if (!pill) return;
+        let used = copyGroups.filter(function(g) { return g.paths.length > 0; });
+        if (!selectedPaths.size || !used.length) { pill.style.display = 'none'; return; }
+        let names = used.map(function(g) { return g.name; }).join('، ');
+        pill.style.display = 'inline-block';
+        pill.textContent = (used.length === 1 ? 'مجلد: ' : 'مجلدات: ') + names;
+        pill.title = 'سيتم إنشاء «' + names + '» داخل الوجهة — اضغط للعرض والتعديل';
+    }
+
+    function renderGroupSection() {
+        let cards = document.getElementById('groupCards');
+        if (!cards) return;
+        let empty = document.getElementById('groupEmptyHint');
+        if (empty) empty.style.display = copyGroups.length ? 'none' : 'block';
+        cards.innerHTML = copyGroups.map(function(g) {
+            let n = g.paths.length;
+            let meta = n === 0 ? 'فارغة — أشّر ثم أضف'
+                : (n === 1 ? 'عنصر واحد' : (n === 2 ? 'عنصران' : n + ' عناصر'));
+            let addDisabled = pickPaths.size ? '' : ' disabled';
+            return '<div class="group-card" data-gid="' + g.id + '">' +
+                '<div class="group-card-main">' +
+                    '<svg class="icon" viewBox="0 0 24 24"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>' +
+                    '<div class="group-card-text">' +
+                        '<div class="group-card-name truncate-text" title="' + esc(g.name) + '">' + esc(g.name) + '</div>' +
+                        '<div class="group-card-meta">' + esc(meta) + '</div>' +
+                    '</div>' +
+                '</div>' +
+                '<div class="group-card-actions">' +
+                    '<button type="button" class="btn btn-outline btn-sm" data-act="add"' + addDisabled + '>إضافة المؤشَّر</button>' +
+                    '<button type="button" class="btn btn-outline btn-sm" data-act="rename">تعديل الاسم</button>' +
+                    '<button type="button" class="btn btn-outline btn-sm btn-ghost-danger" data-act="delete">حذف</button>' +
+                '</div>' +
+            '</div>';
+        }).join('');
+    }
+
+    function renderPickBar() {
+        let bar = document.getElementById('pickBar');
+        if (!bar) return;
+        let n = pickPaths.size;
+        bar.style.display = n ? 'flex' : 'none';
+        let count = document.getElementById('pickCount');
+        if (count) count.innerText = n;
+        let anyGrouped = false;
+        pickPaths.forEach(function(p) { if (groupNameForPath(p)) anyGrouped = true; });
+        let unassign = document.getElementById('unassignBtn');
+        if (unassign) unassign.style.display = anyGrouped ? 'inline-flex' : 'none';
+        let all = document.getElementById('pickAll');
+        if (all) {
+            all.checked = n > 0 && n === selectedPaths.size;
+            all.indeterminate = n > 0 && n < selectedPaths.size;
+        }
+        let hint = document.getElementById('pickAllHint');
+        if (hint) hint.textContent = copyGroups.length ? ('مجموعات: ' + copyGroups.length) : '';
+    }
+
+    function renderGroupUI() {
+        renderGroupPill();
+        let modal = document.getElementById('selectedModal');
+        if (!modal || modal.style.display !== 'flex') return;
+        renderGroupSection();
+        renderPickBar();
+        renderSelectedRows();
+    }
+
+    function togglePick(path, checked) {
+        if (checked) pickPaths.add(path); else pickPaths.delete(path);
+        // Compare data-path instead of building a selector: a track name with a
+        // quote or a bracket must never be able to break the lookup.
+        let rows = document.querySelectorAll('#selectedList .selected-row');
+        for (let i = 0; i < rows.length; i++) {
+            if (rows[i].getAttribute('data-path') === path) {
+                rows[i].classList.toggle('is-picked', pickPaths.has(path));
+            }
+        }
+        renderPickBar();
+        renderGroupSection();
+    }
+
+    function togglePickAll(checked) {
+        pickPaths = checked ? new Set(selectedPaths.keys()) : new Set();
+        renderSelectedRows();
+        renderPickBar();
+        renderGroupSection();
+    }
+
+    function clearPick() {
+        pickPaths = new Set();
+        renderSelectedRows();
+        renderPickBar();
+        renderGroupSection();
+    }
+
+    function addPickedToGroup(gid) {
+        let g = findGroup(gid);
+        if (!g || !pickPaths.size) return;
+        // An item belongs to one group only: adding it here removes it from any
+        // other group, which is the "move it" the user expects.
+        copyGroups.forEach(function(other) {
+            if (other.id !== gid) {
+                other.paths = other.paths.filter(function(p) { return !pickPaths.has(p); });
+            }
+        });
+        let set = new Set(g.paths);
+        pickPaths.forEach(function(p) { set.add(p); });
+        g.paths = Array.from(set);
+        pickPaths = new Set();
+        hideAssignSheet();
+        renderGroupUI();
+    }
+
+    function assignPickedToGroup(gid) {
+        if (!pickPaths.size) {
+            let hint = document.getElementById('assignHint');
+            if (hint) hint.textContent = 'أشّر العناصر من القائمة أولاً.';
+            return;
+        }
+        addPickedToGroup(gid);
+    }
+
+    function unassignPicked() {
+        if (!pickPaths.size) return;
+        copyGroups.forEach(function(g) {
+            g.paths = g.paths.filter(function(p) { return !pickPaths.has(p); });
+        });
+        pickPaths = new Set();
+        hideAssignSheet();
+        renderGroupUI();
+    }
+
+    function renameGroup(gid) {
+        let g = findGroup(gid);
+        if (!g) return;
+        showInputModal('تعديل اسم المجلد', 'اسم المجلد الأب داخل الوجهة:', g.name,
             function(val) {
-                val = (val || '').trim();
-                if (!val) { copyGroupName = ''; renderCopyGroup(); return; }
-                if (val === '.' || val === '..' || /[\\/:*?"<>|]/.test(val) || /[ .]$/.test(val)) {
-                    alert('اسم غير صالح. لا تستخدم الرموز / : * ? " < > | ولا تنهِ الاسم بمسافة أو نقطة.');
-                    return;
-                }
-                copyGroupName = val;
-                renderCopyGroup();
-            });
+                g.name = val;
+                renderGroupUI();
+            },
+            function(val) { return groupNameError(val, gid); });
     }
 
-    function clearCopyGroup() {
-        copyGroupName = '';
-        renderCopyGroup();
+    function deleteGroup(gid) {
+        copyGroups = copyGroups.filter(function(g) { return g.id !== gid; });
+        renderGroupUI();
     }
+
+    function openAssignSheet() {
+        let sheet = document.getElementById('assignSheet');
+        if (!sheet) return;
+        let editor = document.getElementById('groupEditor');
+        if (editor) editor.style.display = 'none';
+        let wrap = document.getElementById('assignNewWrap');
+        if (wrap) wrap.style.display = 'block';
+        let hint = document.getElementById('assignHint');
+        if (hint) hint.textContent = pickPaths.size ? '' : 'أشّر العناصر التي تريد ضمّها، أو أنشئ المجلد أولاً.';
+        let count = document.getElementById('assignCount');
+        if (count) count.textContent = pickPaths.size;
+        renderAssignGroups();
+        sheet.style.display = 'flex';
+    }
+
+    function hideAssignSheet() {
+        let sheet = document.getElementById('assignSheet');
+        if (sheet) sheet.style.display = 'none';
+        cancelGroupEditor();
+    }
+
+    function renderAssignGroups() {
+        let el = document.getElementById('assignGroups');
+        if (!el) return;
+        if (!copyGroups.length) {
+            el.innerHTML = '<div class="group-empty-hint">لا توجد مجلدات بعد — اكتب اسماً جديداً بالأسفل.</div>';
+            return;
+        }
+        el.innerHTML = copyGroups.map(function(g) {
+            return '<button type="button" class="assign-group" data-gid="' + g.id + '">' +
+                '<span class="truncate-text">' + esc(g.name) + '</span>' +
+                '<span class="assign-group-count">' + g.paths.length + '</span>' +
+            '</button>';
+        }).join('');
+    }
+
+    function startNewGroup() {
+        openAssignSheet();
+        beginGroupEditor();
+    }
+
+    function beginGroupEditor() {
+        let editor = document.getElementById('groupEditor');
+        if (!editor) return;
+        let wrap = document.getElementById('assignNewWrap');
+        if (wrap) wrap.style.display = 'none';
+        editor.style.display = 'flex';
+        let input = document.getElementById('groupNameInput');
+        input.value = 'مجموعة ' + (copyGroups.length + 1);
+        input.focus();
+        input.select();
+        onGroupNameInput(input.value);
+    }
+
+    function onGroupNameInput(val) {
+        let err = groupNameError(val, null);
+        let errEl = document.getElementById('groupNameError');
+        // Do not scold an empty field before the user has typed anything.
+        if (errEl) errEl.textContent = (val || '').trim() ? (err || '') : '';
+        let save = document.getElementById('groupSaveBtn');
+        if (save) save.disabled = !!err;
+    }
+
+    function onGroupNameKey(e) {
+        if (e.key === 'Enter') { e.preventDefault(); saveGroupEditor(); }
+        else if (e.key === 'Escape') { e.preventDefault(); cancelGroupEditor(); }
+    }
+
+    function cancelGroupEditor() {
+        let editor = document.getElementById('groupEditor');
+        if (editor) editor.style.display = 'none';
+        let wrap = document.getElementById('assignNewWrap');
+        if (wrap) wrap.style.display = 'block';
+    }
+
+    function saveGroupEditor() {
+        let input = document.getElementById('groupNameInput');
+        let name = (input.value || '').trim();
+        let err = groupNameError(name, null);
+        if (err) {
+            let errEl = document.getElementById('groupNameError');
+            if (errEl) errEl.textContent = err;
+            input.focus();
+            return;
+        }
+        // Whatever is checked right now comes into the new group with it, and
+        // leaves any other group first: one item, one parent folder.
+        copyGroups.forEach(function(other) {
+            other.paths = other.paths.filter(function(p) { return !pickPaths.has(p); });
+        });
+        copyGroups.push({ id: nextGroupId++, name: name, paths: Array.from(pickPaths) });
+        pickPaths = new Set();
+        hideAssignSheet();
+        renderGroupUI();
+    }
+
+    // One delegated listener for the group cards and one for the assign sheet:
+    // no name or path is ever embedded in an inline onclick.
+    document.getElementById('groupCards').addEventListener('click', function(e) {
+        let btn = e.target.closest ? e.target.closest('button[data-act]') : null;
+        if (!btn) return;
+        let card = btn.closest('.group-card');
+        if (!card) return;
+        let gid = Number(card.getAttribute('data-gid'));
+        let act = btn.getAttribute('data-act');
+        if (act === 'add') addPickedToGroup(gid);
+        else if (act === 'rename') renameGroup(gid);
+        else if (act === 'delete') deleteGroup(gid);
+    });
+    document.getElementById('assignGroups').addEventListener('click', function(e) {
+        let btn = e.target.closest ? e.target.closest('.assign-group') : null;
+        if (!btn) return;
+        assignPickedToGroup(Number(btn.getAttribute('data-gid')));
+    });
+
     
     const iconDir = `<svg class="icon" style="min-width:20px; color:var(--accent)" viewBox="0 0 24 24"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>`;
     const iconFile = `<svg class="icon" style="min-width:20px; color:var(--text-muted)" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline></svg>`;
@@ -2904,17 +3398,36 @@ HTML_TEMPLATE = """
         });
     }
 
-    function showInputModal(title, label, defaultValue, onConfirm) {
+    function showInputModal(title, label, defaultValue, onConfirm, validate) {
         document.getElementById('inputModalTitleText').innerText = title;
         document.getElementById('inputModalLabel').innerText = label;
         let field = document.getElementById('inputModalField');
         field.value = defaultValue || '';
+        let err = document.getElementById('inputModalError');
+        if (err) err.textContent = '';
         document.getElementById('inputModal').style.display = 'flex';
         window._inputModalCallback = onConfirm;
+        window._inputModalValidate = validate || null;
         setTimeout(() => { field.focus(); field.select(); }, 60);
     }
+    function hideInputModalError() {
+        let err = document.getElementById('inputModalError');
+        if (err) err.textContent = '';
+    }
     function submitInputModal() {
-        let val = document.getElementById('inputModalField').value.trim();
+        let field = document.getElementById('inputModalField');
+        let val = field.value.trim();
+        // A validator keeps the dialog open with a readable message instead of
+        // closing it and firing an alert the user cannot correct in place.
+        if (window._inputModalValidate) {
+            let err = window._inputModalValidate(val);
+            if (err) {
+                let errEl = document.getElementById('inputModalError');
+                if (errEl) errEl.textContent = err;
+                field.focus();
+                return;
+            }
+        }
         document.getElementById('inputModal').style.display = 'none';
         if (window._inputModalCallback) window._inputModalCallback(val);
     }
@@ -2942,6 +3455,22 @@ HTML_TEMPLATE = """
         refreshCheckboxStates();
     }
 
+    function remapPathInGroups(oldPath, newPath) {
+        // A renamed folder stays in its group and keeps its size/checked state.
+        function remap(p) {
+            if (p === oldPath) return newPath;
+            if (p.startsWith(oldPath + '/')) return newPath + p.slice(oldPath.length);
+            return p;
+        }
+        copyGroups.forEach(function(g) { g.paths = g.paths.map(remap); });
+        let nextPicks = new Set();
+        pickPaths.forEach(function(p) { nextPicks.add(remap(p)); });
+        pickPaths = nextPicks;
+        let nextSizes = {};
+        Object.keys(selectedSizes).forEach(function(p) { nextSizes[remap(p)] = selectedSizes[p]; });
+        selectedSizes = nextSizes;
+    }
+
     function renamePathInSelections(oldPath, newPath) {
         if (selectedPaths.has(oldPath)) { selectedPaths.set(newPath, selectedPaths.get(oldPath)); selectedPaths.delete(oldPath); }
         for (let k of Array.from(selectedPaths.keys())) {
@@ -2951,6 +3480,7 @@ HTML_TEMPLATE = """
         for (let k of Array.from(excludedPaths)) {
             if (k.startsWith(oldPath + '/')) { excludedPaths.delete(k); excludedPaths.add(newPath + k.slice(oldPath.length)); }
         }
+        remapPathInGroups(oldPath, newPath);
         refreshCheckboxStates();
     }
 
@@ -3153,109 +3683,190 @@ HTML_TEMPLATE = """
     }
 
     async function openSelectedModal() {
-        let list = document.getElementById('selectedList');
-        list.innerHTML = '';
-        document.getElementById('totalSizeSelected').innerHTML = 'جاري الحساب...';
-        
+        let modal = document.getElementById('selectedModal');
+        modal.style.display = 'flex';
+        hideAssignSheet();
+
         if (selectedPaths.size === 0) {
-            list.innerHTML = '<div style="text-align:center; padding:40px; color:var(--text-muted);">لا يوجد عناصر محددة</div>';
+            document.getElementById('selectedList').innerHTML = '<div style="text-align:center; padding:40px; color:var(--text-muted);">لا يوجد عناصر محددة</div>';
             document.getElementById('totalSizeSelected').innerHTML = 'لا توجد ملفات محددة';
-        } else {
-            let idx = 0;
-            let pathsArray = Array.from(selectedPaths.keys());
-            // Built with DOM nodes: a track named `01 "live".mp3` must not be able
-            // to break out of an attribute or inject markup.
-            pathsArray.forEach(function(path) {
-                let isDir = selectedPaths.get(path);
-                let itemName = path.split('/').filter(Boolean).pop() || path;
+            document.getElementById('pickBar').style.display = 'none';
+            renderGroupUI();
+            return;
+        }
 
-                let row = document.createElement('div');
-                row.className = 'item-row';
-                row.style.cssText = 'justify-content: space-between; margin-bottom: 8px; background: var(--field); padding: 12px; border: 1px solid var(--border); border-radius: 8px;';
+        // The window is drawn immediately from whatever is already known; sizes
+        // are requested once for the whole selection and cached for re-renders
+        // (checking a box must not refetch anything).
+        renderGroupUI();
+        updateSelectedTotal(Array.from(selectedPaths.keys()));
+        let pathsArray = Array.from(selectedPaths.keys());
+        let missing = pathsArray.some(function(p) { return !selectedSizes[p]; });
+        if (!missing) { renderSelectedRows(); return; }
 
-                let left = document.createElement('div');
-                left.style.cssText = 'display:flex; align-items:center; gap:10px; overflow:hidden; width:65%;';
-                left.title = path;
-                left.innerHTML = isDir ? iconDir : iconFile;
-                let nameEl = document.createElement('div');
-                nameEl.className = 'truncate-text';
-                nameEl.style.cssText = 'font-size:13px; color:var(--text); width:100%; font-weight:500;';
-                nameEl.textContent = itemName;
-                left.appendChild(nameEl);
-
-                let right = document.createElement('div');
-                right.style.cssText = 'display:flex; align-items:center; gap:12px; flex-shrink: 0;';
-                let sizeEl = document.createElement('span');
-                sizeEl.id = 'size_label_' + idx;
-                sizeEl.style.cssText = 'font-size:11px; color:var(--text-muted); min-width: 52px; text-align: right; direction:ltr;';
-                sizeEl.textContent = '...';
-                let removeBtn = document.createElement('button');
-                removeBtn.className = 'btn btn-outline';
-                removeBtn.style.cssText = 'padding: 6px 10px; font-size: 12px; color:var(--danger-ink); border-color:var(--danger-ink);';
-                removeBtn.textContent = 'إزالة';
-                removeBtn.onclick = function () { unselectFromModal(path); };
-                right.appendChild(sizeEl);
-                right.appendChild(removeBtn);
-
-                row.appendChild(left);
-                row.appendChild(right);
-                list.appendChild(row);
-                idx++;
-            });
-            if (excludedPaths.size > 0) {
-                let head = document.createElement('div');
-                head.style.cssText = 'margin:20px 0 10px; font-size:13px; color:var(--warning); font-weight:500;';
-                head.textContent = 'عناصر مستثناة (' + excludedPaths.size + '):';
-                list.appendChild(head);
-                Array.from(excludedPaths).forEach(function(path) {
-                    let itemName = path.split('/').filter(Boolean).pop() || path;
-                    let row = document.createElement('div');
-                    row.className = 'item-row';
-                    row.style.cssText = 'justify-content: space-between; margin-bottom: 8px; background: var(--warning-soft); padding: 12px; border: 1px dashed var(--warning-line); border-radius: 8px;';
-                    let nameEl = document.createElement('div');
-                    nameEl.className = 'truncate-text';
-                    nameEl.style.cssText = 'font-size:13px; color:var(--danger-ink); width:70%;';
-                    nameEl.title = path;
-                    nameEl.textContent = itemName;
-                    let addBtn = document.createElement('button');
-                    addBtn.className = 'btn btn-outline';
-                    addBtn.style.cssText = 'padding: 6px 10px; font-size: 12px; flex-shrink: 0;';
-                    addBtn.textContent = 'إرجاع';
-                    addBtn.onclick = function () { reincludeFromModal(path, false); };
-                    row.appendChild(nameEl);
-                    row.appendChild(addBtn);
-                    list.appendChild(row);
-                });
-            }
-            document.getElementById('selectedModal').style.display = 'flex';
-            renderCopyGroup();
-            
-            let totalBytes = 0;
-            updateSizeDisplay(totalBytes);
-            // One request for the whole selection; the server walks each tree once
-            // and drops nested duplicates (a child is already inside its parent).
-            fetch('/api/sizes', {
+        let list = document.getElementById('selectedList');
+        if (!list.querySelector('.selected-row')) {
+            list.innerHTML = '<div style="text-align:center; padding:30px; color:var(--text-muted);">جاري حساب المساحة...</div>';
+        }
+        try {
+            // One request for the whole selection; the server walks each tree
+            // once and drops nested duplicates (a child is inside its parent).
+            let res = await fetch('/api/sizes', {
                 method: 'POST', headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify({paths: pathsArray, excludes: Array.from(excludedPaths)})
-            }).then(function(r){ return r.json(); }).then(function(data) {
-                let sizes = data.sizes || {};
-                let counted = {};
-                pathsArray.forEach(function(path, i) {
-                    let info = sizes[path] || {bytes: 0, formatted: '0 B', owner: path};
-                    let el = document.getElementById('size_label_' + i);
-                    if (el) el.innerText = info.formatted;
-                    if (!counted[info.owner]) { counted[info.owner] = true; totalBytes += info.bytes || 0; }
-                });
-                updateSizeDisplay(totalBytes);
-            }).catch(function(){
-                document.getElementById('totalSizeSelected').innerText = 'تعذر حساب الحجم — تحقق من الاتصال.';
             });
+            let data = await res.json();
+            let sizes = data.sizes || {};
+            pathsArray.forEach(function(path) {
+                selectedSizes[path] = sizes[path] || {bytes: 0, formatted: '0 B', owner: path};
+            });
+            renderSelectedRows();
+            updateSelectedTotal(pathsArray);
+        } catch (e) {
+            if (!list.querySelector('.selected-row')) {
+                list.innerHTML = '<div style="padding:20px; color:var(--danger-ink);">تعذر حساب الحجم — تحقق من الاتصال.</div>';
+            }
+            document.getElementById('totalSizeSelected').innerText = 'تعذر حساب الحجم';
         }
     }
 
-    function unselectFromModal(path) { excludePath(path); refreshCheckboxStates(); openSelectedModal(); }
-    function reincludeFromModal(path, isDir) { includePath(path, isDir); refreshCheckboxStates(); openSelectedModal(); }
-    function closeSelectedModal(e) { if(e.target.id === 'selectedModal') e.target.style.display = 'none'; }
+    function updateSelectedTotal(pathsArray) {
+        let counted = {};
+        let totalBytes = 0;
+        pathsArray.forEach(function(path) {
+            let info = selectedSizes[path] || {bytes: 0, owner: path};
+            if (!counted[info.owner]) { counted[info.owner] = true; totalBytes += info.bytes || 0; }
+        });
+        updateSizeDisplay(totalBytes);
+    }
+
+    // Rows are rebuilt with DOM nodes: a track named `01 "live".mp3` must not be
+    // able to break out of an attribute or inject markup.
+    function renderSelectedRows() {
+        let list = document.getElementById('selectedList');
+        if (!list) return;
+        let pathsArray = Array.from(selectedPaths.keys());
+        let keepScroll = list.scrollTop;
+        list.innerHTML = '';
+        if (!pathsArray.length) {
+            list.innerHTML = '<div style="text-align:center; padding:40px; color:var(--text-muted);">لا يوجد عناصر محددة</div>';
+            return;
+        }
+
+        pathsArray.forEach(function(path) {
+            let isDir = selectedPaths.get(path);
+            let itemName = path.split('/').filter(Boolean).pop() || path;
+
+            let row = document.createElement('div');
+            row.className = 'selected-row' + (pickPaths.has(path) ? ' is-picked' : '');
+            row.setAttribute('data-path', path);
+
+            let box = document.createElement('input');
+            box.type = 'checkbox';
+            box.className = 'checkbox pick-box';
+            box.value = 'pick';   // never a path: refreshCheckboxStates() syncs the tree
+            box.checked = pickPaths.has(path);
+            box.title = 'تأشير للتجميع';
+            box.onchange = function() { togglePick(path, box.checked); };
+
+            let main = document.createElement('div');
+            main.className = 'selected-row-main';
+            let top = document.createElement('div');
+            top.className = 'selected-row-top';
+            top.innerHTML = isDir ? iconDir : iconFile;
+            let nameEl = document.createElement('div');
+            nameEl.className = 'truncate-text selected-row-name';
+            nameEl.textContent = itemName;
+            nameEl.title = path;
+            top.appendChild(nameEl);
+            main.appendChild(top);
+
+            let gname = groupNameForPath(path);
+            if (gname) {
+                let chip = document.createElement('span');
+                chip.className = 'group-chip';
+                chip.textContent = 'داخل: ' + gname;
+                chip.title = 'سيُنسخ داخل مجلد «' + gname + '»';
+                main.appendChild(chip);
+            } else if (copyGroups.length) {
+                let chip = document.createElement('span');
+                chip.className = 'group-chip none';
+                chip.textContent = 'بدون مجموعة — سيُنسخ مباشرة في الوجهة';
+                main.appendChild(chip);
+            }
+
+            let right = document.createElement('div');
+            right.className = 'selected-row-right';
+            let sizeEl = document.createElement('span');
+            sizeEl.className = 'selected-row-size';
+            let info = selectedSizes[path];
+            sizeEl.textContent = info ? info.formatted : '...';
+            let removeBtn = document.createElement('button');
+            removeBtn.type = 'button';
+            removeBtn.className = 'btn btn-outline';
+            removeBtn.style.cssText = 'padding: 6px 10px; font-size: 12px; color:var(--danger-ink); border-color:var(--danger-ink);';
+            removeBtn.textContent = 'إزالة';
+            removeBtn.onclick = function () { unselectFromModal(path); };
+            right.appendChild(sizeEl);
+            right.appendChild(removeBtn);
+
+            row.appendChild(box);
+            row.appendChild(main);
+            row.appendChild(right);
+            list.appendChild(row);
+        });
+
+        if (excludedPaths.size > 0) {
+            let head = document.createElement('div');
+            head.style.cssText = 'margin:12px 0 2px; font-size:13px; color:var(--warning); font-weight:500;';
+            head.textContent = 'عناصر مستثناة (' + excludedPaths.size + '):';
+            list.appendChild(head);
+            Array.from(excludedPaths).forEach(function(path) {
+                let itemName = path.split('/').filter(Boolean).pop() || path;
+                let row = document.createElement('div');
+                row.className = 'selected-row';
+                row.style.cssText = 'background: var(--warning-soft); border-style: dashed; border-color: var(--warning-line);';
+                let nameEl = document.createElement('div');
+                nameEl.className = 'truncate-text';
+                nameEl.style.cssText = 'font-size:13px; color:var(--danger-ink); flex:1; min-width:0;';
+                nameEl.title = path;
+                nameEl.textContent = itemName;
+                let addBtn = document.createElement('button');
+                addBtn.className = 'btn btn-outline';
+                addBtn.style.cssText = 'padding: 6px 10px; font-size: 12px; flex-shrink: 0;';
+                addBtn.textContent = 'إرجاع';
+                addBtn.onclick = function () { reincludeFromModal(path, false); };
+                row.appendChild(nameEl);
+                row.appendChild(addBtn);
+                list.appendChild(row);
+            });
+        }
+        list.scrollTop = keepScroll;
+    }
+
+    function unselectFromModal(path) {
+        excludePath(path);
+        // A removed item must leave its group as well, or the copy would still
+        // try to place a folder that is no longer in the cart.
+        copyGroups.forEach(function(g) {
+            g.paths = g.paths.filter(function(p) { return p !== path; });
+        });
+        pickPaths.delete(path);
+        refreshCheckboxStates();
+        updateSelectedTotal(Array.from(selectedPaths.keys()));
+    }
+
+    function reincludeFromModal(path, isDir) {
+        includePath(path, isDir);
+        refreshCheckboxStates();
+        updateSelectedTotal(Array.from(selectedPaths.keys()));
+    }
+
+    function closeSelectedModal(e) {
+        if (e.target.id !== 'selectedModal') return;
+        e.target.style.display = 'none';
+        hideAssignSheet();
+    }
 
     function startTransfer(confirmMerge) {
         if(selectedPaths.size === 0) return alert('اختر ملفات أولاً.');
@@ -3267,7 +3878,9 @@ HTML_TEMPLATE = """
             dest: dest,
             paths: Array.from(selectedPaths.keys()),
             excludes: Array.from(excludedPaths),
-            group: copyGroupName || '',
+            groups: copyGroups
+                .filter(function(g) { return g.paths.length > 0; })
+                .map(function(g) { return { name: g.name, paths: g.paths.slice() }; }),
             verify: verifyEl ? verifyEl.checked : true,
             confirm_merge: !!confirmMerge
         };
@@ -3852,6 +4465,12 @@ HTML_TEMPLATE = """
                         document.getElementById('timeTakenDiv').innerText = 'استغرق: ' + data.time_taken
                             + (data.speed_mbps ? ' • متوسط السرعة: ' + data.speed_mbps + ' MB/s' : '')
                             + verifyNote;
+                        // The parent folders belonged to the copy that just ran.
+                        if (data.action === 'copy' && copyGroups.length) {
+                            copyGroups = [];
+                            pickPaths = new Set();
+                            renderGroupUI();
+                        }
                     } else if (data.status === 'cancelled' && data.time_taken) {
                         document.getElementById('timeTakenDiv').style.display = 'block';
                         document.getElementById('timeTakenDiv').innerText = 'تم الإيقاف بعد: ' + data.time_taken;
@@ -4779,31 +5398,67 @@ def start_transfer():
     if not dest or not os.path.isdir(dest): return jsonify({'error': 'مسار الوجهة غير صالح'})
     if not os.access(dest, os.W_OK): return jsonify({'error': 'لا توجد صلاحية كتابة'})
 
-    group, group_error = validate_group_name(data.get('group') or '')
-    if group_error: return jsonify({'error': group_error})
-    target_dest = os.path.join(os.path.normpath(dest), group) if group else os.path.normpath(dest)
+    # One request may carry several named parent folders ("groups"). The old
+    # single `group` field is still accepted so an old page cannot break.
+    raw_groups = data.get('groups')
+    if raw_groups is None and data.get('group'):
+        raw_groups = [{'name': data.get('group'), 'paths': paths}]
+    groups, groups_error = prepare_copy_groups(raw_groups or [], paths)
+    if groups_error: return jsonify({'error': groups_error})
+
+    dest = os.path.normpath(dest)
+    group_names = [name for name, _ in groups]
+    assigned_norm = {os.path.normpath(p) for _name, gpaths in groups for p in gpaths}
+    ungrouped = [p for p in paths if os.path.normpath(p) not in assigned_norm]
 
     # A card can be mounted but dead. Check it now (with a timeout) so the user
     # gets "الكارت لا يستجيب" instead of a transfer that freezes at 0%.
     problem = check_destination(dest)
     if problem: return jsonify({'error': problem})
 
-    # A group folder that already exists is a merge: files with the same name
-    # would be replaced. Ask first, once, instead of doing it silently.
-    if group and os.path.exists(target_dest):
-        if not os.path.isdir(target_dest):
-            return jsonify({'error': 'يوجد ملف بنفس اسم مجلد الضم — اختر اسماً آخر'})
-        if not data.get('confirm_merge'):
-            return jsonify({
-                'needs_group_confirm': True,
-                'error': ('مجلد «{}» موجود بالفعل. سيتم دمج العناصر داخله، واستبدال أي '
-                          'ملف بنفس الاسم. هل تريد المتابعة؟'.format(group))
-            })
+    # A group name that matches an ungrouped root would put that root inside the
+    # group folder instead of at the destination: silent mixing, so refuse it.
+    ungrouped_names = {os.path.basename(os.path.normpath(p)).casefold() for p in ungrouped}
+    for name in group_names:
+        if name.casefold() in ungrouped_names:
+            return jsonify({'error': ('اسم المجلد «{}» يتعارض مع عنصر غير مجمَّع بنفس الاسم — '
+                                      'ضمّه إلى مجموعة أو غيّر الاسم'.format(name))})
 
-    if dest_inside_source(paths, target_dest):
-        return jsonify({'error': 'لا يمكن النسخ إلى مجلد داخل المصدر: ' + target_dest})
-    if copy_targets_source(paths, target_dest):
-        return jsonify({'error': 'الوجهة هي مجلد المصدر نفسه — اختر مجلداً جديداً داخلها بدل اختيارها هي'})
+    # A group folder that already exists is a merge: files with the same name
+    # would be replaced. Ask once, before anything is written, for all of them.
+    existing = []
+    for name, _gpaths in groups:
+        target = os.path.join(dest, name)
+        if os.path.exists(target):
+            if not os.path.isdir(target):
+                return jsonify({'error': 'يوجد ملف بنفس اسم المجلد «{}» — اختر اسماً آخر'.format(name)})
+            existing.append(name)
+    if existing and not data.get('confirm_merge'):
+        if len(existing) == 1:
+            detail = 'مجلد «{}» موجود بالفعل'.format(existing[0])
+        else:
+            detail = 'المجلدات التالية موجودة بالفعل: {}'.format(
+                '، '.join('«{}»'.format(n) for n in existing))
+        return jsonify({
+            'needs_group_confirm': True,
+            'groups': existing,
+            'error': (detail + '. سيتم دمج العناصر داخلها، واستبدال أي ملف بنفس '
+                      'الاسم. هل تريد المتابعة؟')
+        })
+
+    # Same self-copy guards as before, once per group target and once for the
+    # ungrouped roots that go straight into the destination.
+    for name, gpaths in groups:
+        target = os.path.join(dest, name)
+        if dest_inside_source(gpaths, target):
+            return jsonify({'error': 'لا يمكن النسخ إلى مجلد داخل المصدر: ' + target})
+        if copy_targets_source(gpaths, target):
+            return jsonify({'error': 'الوجهة هي مجلد المصدر نفسه — اختر مجلداً جديداً داخلها بدل اختيارها هي'})
+    if ungrouped:
+        if dest_inside_source(ungrouped, dest):
+            return jsonify({'error': 'لا يمكن النسخ إلى مجلد داخل المصدر: ' + dest})
+        if copy_targets_source(ungrouped, dest):
+            return jsonify({'error': 'الوجهة هي مجلد المصدر نفسه — اختر مجلداً جديداً داخلها بدل اختيارها هي'})
 
     verify = bool(data.get('verify', True))
     global ACTIVE_THREAD
@@ -4821,7 +5476,7 @@ def start_transfer():
         reset_state(status='copying', action='copy', start_time=time.time(), phase='planning')
         ACTIVE_THREAD = threading.Thread(
             target=copy_thread_task,
-            args=(paths, dest, set(p for p in data.get('excludes', []) if p), group, verify),
+            args=(paths, dest, set(p for p in data.get('excludes', []) if p), groups, verify),
             daemon=True)
         ACTIVE_THREAD.start()
     return jsonify({'success': True})
