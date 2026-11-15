@@ -2015,6 +2015,7 @@ HTML_TEMPLATE = """
         .btn-sand { background: var(--sand-fill); color: var(--on-fill); }
         .btn-sand:hover { background: var(--sand-fill-hover); }
         .btn-outline { background: var(--card-2); border: 1px solid var(--border); color: var(--text); }
+        .btn-outline.is-open { background: var(--accent-soft); border-color: var(--accent); color: var(--accent-text); }
         .btn-outline:hover { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent-soft); }
         .btn-sm { padding: 8px 12px; min-height: 38px; font-size: 12.5px; }
 
@@ -2192,6 +2193,7 @@ HTML_TEMPLATE = """
         .group-section-title .icon { color:var(--accent); width:16px; height:16px; }
         .group-cards { display:flex; flex-direction:column; gap:7px; }
         .group-card { display:flex; flex-direction:column; gap:7px; padding:9px 10px; border-radius:10px; border:1px solid var(--accent-line); background:var(--accent-soft); }
+        .group-card.drop-target { outline:2px dashed var(--accent); outline-offset:2px; }
         .group-card-main { display:flex; align-items:center; gap:9px; min-width:0; }
         .group-card-main .icon { color:var(--accent-text); flex-shrink:0; }
         .group-card-text { min-width:0; flex:1; }
@@ -2204,6 +2206,7 @@ HTML_TEMPLATE = """
         .group-empty-hint { font-size:11px; color:var(--text-muted); line-height:1.55; }
 
         .selected-row { display:flex; align-items:center; gap:10px; padding:10px 11px; border-radius:10px; background:var(--field); border:1px solid var(--border); }
+        .selected-row.is-dragging { opacity:.5; }
         .selected-row.is-picked { border-color:var(--accent-line); background:var(--accent-soft); }
         .selected-row-main { min-width:0; flex:1; display:flex; flex-direction:column; gap:4px; }
         .selected-row-top { display:flex; align-items:center; gap:8px; min-width:0; }
@@ -2406,6 +2409,7 @@ HTML_TEMPLATE = """
         <div style="display:flex; gap:8px; margin-bottom: 12px;">
             <input type="text" id="searchInput" placeholder="اكتب اسم الملف للبحث..." style="margin-bottom:0;">
             <button class="btn btn-primary" onclick="searchDeep(true)">بحث</button>
+            <button type="button" class="btn btn-outline" id="historyToggleBtn" onclick="toggleHistoryBlock()" title="يعرض المجلدات التي حدّدتها سابقاً من البحث — اضغط عنصراً لإعادته إلى التحديد">السجل</button>
         </div>
         <label style="display:flex; align-items:center; gap:8px; cursor:pointer; color: var(--text-muted); font-size:13px; margin-bottom:0;">
             <input type="checkbox" id="foldersOnlyCheck" class="checkbox" checked style="width:16px; height:16px; margin:0;">
@@ -2542,10 +2546,14 @@ HTML_TEMPLATE = """
                         <svg class="icon" viewBox="0 0 24 24"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path><line x1="12" y1="11" x2="12" y2="17"></line><line x1="9" y1="14" x2="15" y2="14"></line></svg>
                         <span>المجلدات الأب</span>
                     </div>
-                    <button type="button" class="btn btn-outline btn-sm" onclick="startNewGroup()">＋ مجموعة جديدة</button>
+                    <div style="display:flex; gap:6px; flex-wrap:wrap;">
+                        <button type="button" class="btn btn-outline btn-sm" onclick="smartOrganizeGroups()" title="ينشئ مجلداً أب باسم المجلد المشترك في المصدر (مثل «الصف الأول») ويدخل فيه كل المحدد">✨ تنظيم ذكي</button>
+                        <button type="button" class="btn btn-outline btn-sm" onclick="startNewGroup()">＋ مجموعة جديدة</button>
+                    </div>
                 </div>
+                <div id="groupStatusHint" class="check-hint" style="display:none; margin:6px 0 0;"></div>
                 <div id="groupCards" class="group-cards"></div>
-                <div id="groupEmptyHint" class="group-empty-hint">أشّر العناصر بالأسفل ثم «ضم في مجلد أب»، ويمكن تكرار ذلك بعدة مجموعات.</div>
+                <div id="groupEmptyHint" class="group-empty-hint">أشّر العناصر بالأسفل ثم «ضم في مجلد أب»، أو اضغط «تنظيم ذكي» لإنشاء المجلد الأب تلقائياً من المصدر، أو اسحب عنصراً وأفلته على أي مجموعة. ويمكن تكرار ذلك بعدة مجموعات.</div>
             </div>
         </div>
 
@@ -2975,6 +2983,71 @@ HTML_TEMPLATE = """
         return groupPathParts(name).map(function(seg) { return esc(seg); }).join(' <span class="group-crumb-sep">›</span> ');
     }
 
+    function setGroupStatus(text) {
+        let el = document.getElementById('groupStatusHint');
+        if (!el) return;
+        el.textContent = text || '';
+        el.style.display = text ? 'block' : 'none';
+    }
+
+    // «تنظيم ذكي»: infer the common source parent of the selected paths and put
+    // everything into one group named after its last segment (e.g. «الصف الأول»).
+    // An existing group with the same name is reused, so nothing is ever
+    // duplicated; the source tree itself is never touched.
+    function smartOrganizeGroups() {
+        let paths = Array.from(selectedPaths.keys());
+        if (paths.length < 2) {
+            setGroupStatus('حدّد عنصرين على الأقل لإنشاء مجلد أب مشترك.');
+            return;
+        }
+        // Work on path segments relative to the current source root: the group
+        // name must be a real folder name, never the storage root itself.
+        let rootSegs = String(currentSourceRoot || '').split('/').filter(Boolean);
+        let relParents = paths.map(function(p) {
+            let segs = String(p).split('/').filter(Boolean);
+            if (rootSegs.length && rootSegs.every(function(s, i) { return segs[i] === s; })) {
+                segs = segs.slice(rootSegs.length);
+            }
+            segs.pop(); // drop the item's own name; we want its parent folder
+            return segs;
+        });
+        let common = relParents[0].slice();
+        for (let i = 1; i < relParents.length; i++) {
+            let j = 0;
+            while (j < common.length && j < relParents[i].length && common[j] === relParents[i][j]) j++;
+            common = common.slice(0, j);
+            if (!common.length) break;
+        }
+        if (!common.length) {
+            setGroupStatus('لا يوجد مجلد أب مشترك — حدّد مجلدات من نفس المصدر.');
+            return;
+        }
+        let name = common[common.length - 1];
+        if (name.length > 80) {
+            setGroupStatus('اسم المجلد المشترك طويل جداً (أكثر من 80 حرفاً).');
+            return;
+        }
+        // Reuse an existing group with this name (FAT is case-insensitive).
+        let target = null;
+        let key = name.toLowerCase();
+        for (let i = 0; i < copyGroups.length; i++) {
+            if (groupPathKey(copyGroups[i].name) === key) { target = copyGroups[i]; break; }
+        }
+        if (!target) {
+            target = { id: nextGroupId++, name: name, paths: [] };
+            copyGroups.push(target);
+        }
+        // One item lives in one group only: remove it from every other group.
+        copyGroups.forEach(function(g) {
+            if (g !== target) g.paths = g.paths.filter(function(p) { return paths.indexOf(p) === -1; });
+        });
+        let set = new Set(target.paths);
+        paths.forEach(function(p) { set.add(p); });
+        target.paths = Array.from(set);
+        setGroupStatus('تم ضم ' + paths.length + ' عنصر داخل «' + name + '» — راجع النتيجة بالأسفل قبل النسخ.');
+        renderGroupUI();
+    }
+
     function renderGroupPill() {
         let pill = document.getElementById('cartGroupPill');
         if (!pill) return;
@@ -3014,6 +3087,48 @@ HTML_TEMPLATE = """
                 '</div>' +
             '</div>';
         }).join('');
+    }
+
+    // Drag & drop: a selected row can be dropped onto a group card to move it
+    // there. Touch devices keep the «ضم في مجلد أب» sheet as the Select path.
+    function clearGroupDropTargets() {
+        let cards = document.querySelectorAll('#groupCards .group-card');
+        for (let i = 0; i < cards.length; i++) cards[i].classList.remove('drop-target');
+    }
+
+    function movePathToGroup(path, gid) {
+        if (!selectedPaths.has(path)) return;   // only real selections move
+        let target = findGroup(gid);
+        if (!target) return;
+        copyGroups.forEach(function(g) {
+            g.paths = g.paths.filter(function(p) { return p !== path; });
+        });
+        if (target.paths.indexOf(path) === -1) target.paths.push(path);
+        renderGroupUI();
+    }
+
+    let groupCardsEl = document.getElementById('groupCards');
+    if (groupCardsEl) {
+        groupCardsEl.addEventListener('dragover', function(e) {
+            let card = (e.target && e.target.closest) ? e.target.closest('.group-card') : null;
+            if (!card) return;
+            e.preventDefault();
+            e.dataTransfer.dropEffect = 'move';
+            let cards = groupCardsEl.querySelectorAll('.group-card');
+            for (let i = 0; i < cards.length; i++) cards[i].classList.toggle('drop-target', cards[i] === card);
+        });
+        groupCardsEl.addEventListener('dragleave', function(e) {
+            let card = (e.target && e.target.closest) ? e.target.closest('.group-card') : null;
+            if (card) card.classList.remove('drop-target');
+        });
+        groupCardsEl.addEventListener('drop', function(e) {
+            let card = (e.target && e.target.closest) ? e.target.closest('.group-card') : null;
+            if (!card) return;
+            e.preventDefault();
+            clearGroupDropTargets();
+            let path = e.dataTransfer.getData('text/x-sdmp3-path');
+            if (path) movePathToGroup(path, Number(card.getAttribute('data-gid')));
+        });
     }
 
     function renderPickBar() {
@@ -3865,8 +3980,25 @@ HTML_TEMPLATE = """
     }
 
     function toggleSelect(cb, isDir) {
-        // Use enhanced version that tracks selections for history
-        toggleSelectWithHistory(cb, isDir);
+        if(cb.checked) includePath(cb.value, isDir);
+        else excludePath(cb.value);
+        refreshCheckboxStates();
+    }
+
+    // Search-result checkboxes use this: a committed selection is also saved to
+    // the search history so the folder can be reused later without re-searching.
+    function toggleSearchResultSelect(cb, isDir) {
+        if (cb.checked) {
+            includePath(cb.value, isDir);
+            rememberSearchSelection([{
+                path: cb.value,
+                name: cb.getAttribute('data-name') || '',
+                is_dir: isDir
+            }]);
+        } else {
+            excludePath(cb.value);
+        }
+        refreshCheckboxStates();
     }
 
     let searchDebounceTimer = null;
@@ -3887,7 +4019,7 @@ HTML_TEMPLATE = """
             if(data.results.length === 0) { resBox.innerHTML = '<div style="padding:10px;color:var(--text-muted);">لم يتم العثور على نتائج.</div>'; }
             else data.results.forEach(item => {
                 let isChecked = isPathSelected(item.path) ? 'checked' : '';
-                resBox.innerHTML += `<div class="item-row"><input type="checkbox" class="checkbox" value="${esc(item.path)}" ${isChecked} onchange="toggleSelect(this, ${item.is_dir})">
+                resBox.innerHTML += `<div class="item-row"><input type="checkbox" class="checkbox" value="${esc(item.path)}" data-name="${esc(item.name)}" ${isChecked} onchange="toggleSearchResultSelect(this, ${item.is_dir})">
                     <div class="item-name" style="flex-direction:column;align-items:start;gap:4px;" onclick="this.previousElementSibling.click()">
                         <div style="display:flex;gap:6px;">${item.is_dir?iconDir:iconFile}${esc(item.name)}</div>
                         <div class="ltr-input truncate-text" style="font-size:11px;color:var(--text-muted); width: 100%;">${esc(item.path)}</div>
@@ -3896,13 +4028,6 @@ HTML_TEMPLATE = """
             // The search that just ran is now the newest history entry.
             if (committed) loadSearchHistory();
         }).catch(() => { if (myToken === searchRequestToken) resBox.innerHTML = '<div style="padding:10px;color:var(--danger-ink);">تعذر إتمام البحث.</div>'; });
-        
-        // Track user's selections from this search
-        data.results.forEach(item => {
-            if (isPathSelected(item.path)) {
-                rememberSearchSelection(q, currentSourceRoot, [], [{path: item.path, name: item.name, is_dir: item.is_dir}]);
-            }
-        });
     }
 
     document.getElementById('searchInput').addEventListener('input', function() {
@@ -3916,8 +4041,11 @@ HTML_TEMPLATE = """
 
     // ---- search history (last 25 results + last 25 queries) -------------
     // Kept in memory only; the server owns the file. Every mutation returns the
-    // new list, so the two can never drift apart.
+    // new list, so the two can never drift apart. The block is opened only by
+    // the «السجل» button; selecting folders from search results is tracked
+    // separately via rememberSearchSelection().
     let searchHistory = { items: [], queries: [] };
+    let historyOpen = false;
 
     function relativeTime(ts) {
         let seconds = Math.max(0, Math.floor(Date.now() / 1000 - (ts || 0)));
@@ -3926,6 +4054,13 @@ HTML_TEMPLATE = """
         if (seconds < 86400) return 'قبل ' + Math.floor(seconds / 3600) + ' س';
         if (seconds < 604800) return 'قبل ' + Math.floor(seconds / 86400) + ' ي';
         return new Date((ts || 0) * 1000).toLocaleDateString('ar');
+    }
+
+    function toggleHistoryBlock() {
+        historyOpen = !historyOpen;
+        renderSearchHistory();
+        let btn = document.getElementById('historyToggleBtn');
+        if (btn) btn.classList.toggle('is-open', historyOpen);
     }
 
     function loadSearchHistory() {
@@ -3942,7 +4077,7 @@ HTML_TEMPLATE = """
         if (!block || !chips || !rows) return;
         let queries = searchHistory.queries || [];
         let items = searchHistory.items || [];
-        if (!queries.length && !items.length) { block.style.display = 'none'; return; }
+        if (!historyOpen) { block.style.display = 'none'; return; }
         block.style.display = 'block';
 
         chips.innerHTML = queries.map(function(q) {
@@ -3952,7 +4087,7 @@ HTML_TEMPLATE = """
         }).join('');
 
         if (!items.length) {
-            rows.innerHTML = '<div class="history-empty">لا توجد نتائج محفوظة بعد — نفّذ بحثاً ليُحفظ هنا.</div>';
+            rows.innerHTML = '<div class="history-empty">لا يوجد سجل بعد — حدّد مجلدات من نتائج البحث أو نفّذ بحثاً، وستظهر هنا.</div>';
             return;
         }
         rows.innerHTML = items.map(function(it, index) {
@@ -4091,41 +4226,22 @@ HTML_TEMPLATE = """
             .catch(function() { setSettingsState('تعذر الاتصال بالخادم', 'err'); });
     }
 
-    // ---- enhanced search history with selection tracking ----
-    let searchHistory = { items: [], queries: [] };
-    let userSelectedFolders = new Set();
-
-    function rememberSearchSelection(query, root, results, selections) {
-        if (selections && selections.length > 0) {
-            fetch('/api/history/update', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({ selected_folders: selections })
-            }).then(r => r.json()).then(data => {
-                if (data.ok) {
-                    searchHistory = { items: data.items || [], queries: data.queries || [] };
-                    renderSearchHistory();
-                }
-            }).catch(() => {});
-        }
-    }
-
-    function toggleSelectWithHistory(cb, isDir) {
-        if(cb.checked) {
-            includePath(cb.value, isDir);
-            userSelectedFolders.add(cb.value);
-            // Track this selection for enhanced history
-            rememberSearchSelection(
-                document.getElementById('searchInput').value.trim(),
-                currentSourceRoot,
-                [],
-                [{path: cb.value, name: cb.getAttribute('data-name'), is_dir: isDir}]
-            );
-        } else {
-            excludePath(cb.value);
-            userSelectedFolders.delete(cb.value);
-        }
-        refreshCheckboxStates();
+    // ---- selection tracking for the «السجل» panel ------------------
+    // Called when a search-result checkbox is checked: the selected folder is
+    // recorded in the history so it can be reused later without re-searching.
+    // Only the items list is sent; the query chips are owned by /api/search.
+    function rememberSearchSelection(selections) {
+        if (!selections || !selections.length) return;
+        fetch('/api/history/update', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ selected_folders: selections })
+        }).then(function(r) { return r.json(); }).then(function(data) {
+            if (data.ok) {
+                searchHistory = { items: data.items || [], queries: data.queries || [] };
+                if (historyOpen) renderSearchHistory();
+            }
+        }).catch(function() {});
     }
 
     function updateSizeDisplay(totalBytes) {
@@ -4227,6 +4343,16 @@ HTML_TEMPLATE = """
             let row = document.createElement('div');
             row.className = 'selected-row' + (pickPaths.has(path) ? ' is-picked' : '');
             row.setAttribute('data-path', path);
+            row.draggable = true;
+            row.addEventListener('dragstart', function(e) {
+                e.dataTransfer.setData('text/x-sdmp3-path', path);
+                e.dataTransfer.effectAllowed = 'move';
+                row.classList.add('is-dragging');
+            });
+            row.addEventListener('dragend', function() {
+                row.classList.remove('is-dragging');
+                clearGroupDropTargets();
+            });
 
             let box = document.createElement('input');
             box.type = 'checkbox';
@@ -5534,19 +5660,20 @@ def api_history_remove():
 
 @app.route('/api/history/update', methods=['POST'])
 def api_history_update():
-    """Update search history with folder selections from search results.
-    
-    This is called by the client when users select folders from search results.
+    """Record explicitly selected items (e.g. search results) in the history.
+
+    Unlike a committed search this touches ONLY the items list: the user did
+    not type a query, so pushing a fake empty chip into the queries list would
+    corrupt it. Every path appears once (newest first), capped as everywhere.
     """
     global SEARCH_HISTORY
     body = request.json or {}
-    selected_folders = body.get('selected_folders', [])
-    if not selected_folders:
-        return jsonify({'ok': True})
-    
+    selected_folders = body.get('selected_folders') or []
     now = int(time.time())
     top = []
     for item in selected_folders:
+        if not isinstance(item, dict):
+            continue
         path = item.get('path')
         if not path:
             continue
@@ -5554,24 +5681,24 @@ def api_history_update():
             'path': path,
             'name': item.get('name') or os.path.basename(path),
             'is_dir': bool(item.get('is_dir')),
-            'root': item.get('root', '/sdcard'),
-            'q': item.get('q', ''),
+            'root': item.get('root') or '/sdcard',
+            'q': item.get('q') or '',
             'at': now,
         })
-    
     with _history_lock:
         items = [i for i in (SEARCH_HISTORY.get('items') or []) if i.get('path')]
-        # One row per path: a folder found twice is still one folder.
-        new_paths = {i['path'] for i in top}
-        items = [i for i in items if i['path'] not in new_paths]
-        items = (top + items)[:HISTORY_ITEM_LIMIT]
-        queries = upsert_recent(SEARCH_HISTORY.get('queries') or [],
-                                {'q': '', 'root': '/sdcard', 'at': now},
-                                'q', HISTORY_QUERY_LIMIT)
-        SEARCH_HISTORY = {'version': 1, 'items': items, 'queries': queries}
+        if top:
+            # One row per path: a folder selected twice is still one folder.
+            new_paths = {i['path'] for i in top}
+            items = [i for i in items if i['path'] not in new_paths]
+            items = (top + items)[:HISTORY_ITEM_LIMIT]
+        SEARCH_HISTORY = {'version': 1,
+                          'items': items,
+                          'queries': SEARCH_HISTORY.get('queries') or []}
         snapshot = dict(SEARCH_HISTORY)
     save_search_history(snapshot)
-    return jsonify({'ok': True, 'items': list(snapshot['items']),
+    return jsonify({'ok': True,
+                    'items': list(snapshot['items']),
                     'queries': list(snapshot['queries'])})
 
 def get_dir_size(path, excludes):
