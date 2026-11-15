@@ -3865,9 +3865,8 @@ HTML_TEMPLATE = """
     }
 
     function toggleSelect(cb, isDir) {
-        if(cb.checked) includePath(cb.value, isDir);
-        else excludePath(cb.value);
-        refreshCheckboxStates();
+        // Use enhanced version that tracks selections for history
+        toggleSelectWithHistory(cb, isDir);
     }
 
     let searchDebounceTimer = null;
@@ -3897,6 +3896,13 @@ HTML_TEMPLATE = """
             // The search that just ran is now the newest history entry.
             if (committed) loadSearchHistory();
         }).catch(() => { if (myToken === searchRequestToken) resBox.innerHTML = '<div style="padding:10px;color:var(--danger-ink);">تعذر إتمام البحث.</div>'; });
+        
+        // Track user's selections from this search
+        data.results.forEach(item => {
+            if (isPathSelected(item.path)) {
+                rememberSearchSelection(q, currentSourceRoot, [], [{path: item.path, name: item.name, is_dir: item.is_dir}]);
+            }
+        });
     }
 
     document.getElementById('searchInput').addEventListener('input', function() {
@@ -4083,6 +4089,43 @@ HTML_TEMPLATE = """
                 setTimeout(function() { setSettingsState('', ''); }, 2500);
             })
             .catch(function() { setSettingsState('تعذر الاتصال بالخادم', 'err'); });
+    }
+
+    // ---- enhanced search history with selection tracking ----
+    let searchHistory = { items: [], queries: [] };
+    let userSelectedFolders = new Set();
+
+    function rememberSearchSelection(query, root, results, selections) {
+        if (selections && selections.length > 0) {
+            fetch('/api/history/update', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ selected_folders: selections })
+            }).then(r => r.json()).then(data => {
+                if (data.ok) {
+                    searchHistory = { items: data.items || [], queries: data.queries || [] };
+                    renderSearchHistory();
+                }
+            }).catch(() => {});
+        }
+    }
+
+    function toggleSelectWithHistory(cb, isDir) {
+        if(cb.checked) {
+            includePath(cb.value, isDir);
+            userSelectedFolders.add(cb.value);
+            // Track this selection for enhanced history
+            rememberSearchSelection(
+                document.getElementById('searchInput').value.trim(),
+                currentSourceRoot,
+                [],
+                [{path: cb.value, name: cb.getAttribute('data-name'), is_dir: isDir}]
+            );
+        } else {
+            excludePath(cb.value);
+            userSelectedFolders.delete(cb.value);
+        }
+        refreshCheckboxStates();
     }
 
     function updateSizeDisplay(totalBytes) {
@@ -5483,6 +5526,48 @@ def api_history_remove():
             items = [i for i in items if i.get('path') != path]
         if query:
             queries = [i for i in queries if i.get('q') != query]
+        SEARCH_HISTORY = {'version': 1, 'items': items, 'queries': queries}
+        snapshot = dict(SEARCH_HISTORY)
+    save_search_history(snapshot)
+    return jsonify({'ok': True, 'items': list(snapshot['items']),
+                    'queries': list(snapshot['queries'])})
+
+@app.route('/api/history/update', methods=['POST'])
+def api_history_update():
+    """Update search history with folder selections from search results.
+    
+    This is called by the client when users select folders from search results.
+    """
+    global SEARCH_HISTORY
+    body = request.json or {}
+    selected_folders = body.get('selected_folders', [])
+    if not selected_folders:
+        return jsonify({'ok': True})
+    
+    now = int(time.time())
+    top = []
+    for item in selected_folders:
+        path = item.get('path')
+        if not path:
+            continue
+        top.append({
+            'path': path,
+            'name': item.get('name') or os.path.basename(path),
+            'is_dir': bool(item.get('is_dir')),
+            'root': item.get('root', '/sdcard'),
+            'q': item.get('q', ''),
+            'at': now,
+        })
+    
+    with _history_lock:
+        items = [i for i in (SEARCH_HISTORY.get('items') or []) if i.get('path')]
+        # One row per path: a folder found twice is still one folder.
+        new_paths = {i['path'] for i in top}
+        items = [i for i in items if i['path'] not in new_paths]
+        items = (top + items)[:HISTORY_ITEM_LIMIT]
+        queries = upsert_recent(SEARCH_HISTORY.get('queries') or [],
+                                {'q': '', 'root': '/sdcard', 'at': now},
+                                'q', HISTORY_QUERY_LIMIT)
         SEARCH_HISTORY = {'version': 1, 'items': items, 'queries': queries}
         snapshot = dict(SEARCH_HISTORY)
     save_search_history(snapshot)
