@@ -2,12 +2,27 @@
 
 Android/Termux Flask app that copies + timestamp-spoofs MP3s to SD cards, generates JOC text indexes, and converts them to audio via Edge TTS. Runs entirely on the device.
 
-## Single-file app
-Everything lives in **`project.py`** (no package split): Flask backend, HTML, CSS, and — critically — **all page JS in ONE inline `<script>` block** defined inside the Python string `HTML_TEMPLATE` (starts ~line 559).
+## Module layout
+`project.py` is still the app: Flask backend, HTML, CSS, and — critically — **all
+page JS in ONE inline `<script>` block** defined inside the Python string
+`HTML_TEMPLATE` (starts ~line 1790). Three pure sibling modules sit next to it
+(flat files, **not** a package, no `__init__.py`) because they are logic worth
+testing without Flask:
+
+| Module | Owns | Self-test |
+|--------|------|-----------|
+| `sdmp3_themes.py` | theme registry, CSS tokens, WCAG contrast contract | `python sdmp3_themes.py` |
+| `sdmp3_state.py` | atomic `settings.json` / `search_history.json` | `python sdmp3_state.py` |
+| `sdmp3_groups.py` | group paths (nested groups) validation + folder chain | `python sdmp3_groups.py` |
+
+They must stay **Flask-free and global-free**: `project.py` imports them, never
+the other way round, and each one runs its own checks when executed directly.
 
 - Run: `python project.py` (serves `0.0.0.0:5050`, **not** the Flask default 5000). UI at `http://localhost:5050` / `<device-ip>:5050`.
   Flags: `--host H`, `--port P`, `--no-wakelock`, `--version` (parsed in `main()` at the bottom of `project.py`).
-- No test framework, linter, or package manifest. Verify via `python -m py_compile project.py sdmp3_cli.py`, `bash -n install.sh`, and manual browser testing.
+- No test framework, linter, or package manifest. Verify via
+  `python -m py_compile project.py sdmp3_cli.py sdmp3_themes.py sdmp3_state.py sdmp3_groups.py`,
+  `bash -n install.sh`, the three module self-tests, and manual browser testing.
 - Stop with Ctrl+C / SIGTERM; this cleans the TTS temp cache (`tempfile.gettempdir()/tts_cache_<pid>`).
 
 ## Install / `sdmp3` entry point
@@ -20,7 +35,7 @@ The app is installed as the Termux command **`sdmp3`** so users never call `pyth
 | `requirements.txt` | `flask`, `edge-tts`; `update` re-runs pip only when this file changed. |
 | `VERSION` | Single source of version + git tags; read by both `sdmp3_cli.py` and `get_app_version()`. |
 | `$PREFIX/bin/sdmp3` | Generated `sh` wrapper with absolute `$PREFIX` paths (Termux has no `/usr/bin/env`). Not committed. |
-| `~/.local/state/sdmp3/` | `instance.json` (pid/port/host) + `sdmp3.log` for `start`/`stop`/`status`. Kept outside the checkout so `git pull` stays clean. |
+| `~/.local/state/sdmp3/` | `instance.json` (pid/port/host) + `sdmp3.log` for `start`/`stop`/`status`, plus `settings.json`, `search_history.json`, `search_cache.json`. Kept outside the checkout so `git pull` stays clean. |
 
 Gotchas: `/sdcard` is `noexec`, so the command must live in `$PREFIX/bin`; git checkouts on `/sdcard` need `git config --global --add safe.directory <path>` (dubious-ownership), which `install.sh` and `sdmp3 update` handle.
 
@@ -64,25 +79,36 @@ byte-identical (DFS pre-order + `natural_sort_key`) and stay single-threaded.
   skipped)`; `skipped` reports unreadable source folders instead of dropping them
   silently (`except Exception: pass`).
 - **Copy groups** (`groups: [{name, paths}]` on `/transfer/start`): one or more
-  FAT-legal parent folder names, each created inside the destination *first*, then
+  FAT-legal parent folder paths, each created inside the destination *first*, then
   the roots assigned to it are copied inside it. The worker plans each group as its
-  own segment (`plan_transfer(gpaths, dest/name)`), inserts the group dir task at
-  that segment's front, then plans the **ungrouped** roots straight into `dest`
-  last. So the queue stays one flat, ordered list — the group folder never contains
-  another segment's files, and ungrouped items keep today's behaviour. The source
-  tree is never modified.
-  - `prepare_copy_groups()` validates names (`validate_group_name`), rejects
-    duplicates (casefold: FAT is case-insensitive), rejects a path that is not in
-    the selection and a path that sits in two groups, and **drops empty groups**.
-  - A group name equal (casefold) to the basename of an **ungrouped** root is
-    refused in the route *and* in the worker: otherwise that root would silently
-    land inside the group folder and mix two trees.
+  own segment (`plan_segment(gpaths, dest/name)`), inserts the group's whole
+  directory chain at that segment's front (parents first), then plans the
+  **ungrouped** roots straight into `dest` last. So the queue stays one flat,
+  ordered list — the group folder never contains another segment's files, and
+  ungrouped items keep today's behaviour. The source tree is never modified.
+  - **Nested groups are paths**, not a tree: `name` may be `"العلماء/ابن باز"`
+    (a breadcrumb). `sdmp3_groups.py` owns the rules: `validate_group_name` (one
+    FAT segment), `validate_group_path` (collapse `//`, drop leading/trailing `/`,
+    every segment legal, depth ≤ `GROUP_MAX_DEPTH` = 3, whole path ≤
+    `GROUP_PATH_MAX` = 180), `group_segments`, `group_dir_chain(dest, name)` →
+    `[dest/A, dest/A/B]`. `/`, `\`, `:`, `*`, `?`, `"`, `<`, `>`, `|` are refused;
+    a name may not end in a space or a dot.
+  - `prepare_copy_groups()` rejects duplicate full paths (casefold: FAT is
+    case-insensitive) — `A` and `A/B` are **not** duplicates, that is nesting —
+    rejects a path that is not in the selection and a path that sits in two
+    groups, and **drops empty groups**. An old single `group` field is still
+    accepted (wrapped into one group).
+  - A group's **first segment** equal (casefold) to the basename of an
+    **ungrouped** root is refused in the route *and* in the worker: otherwise that
+    root would silently land inside the group folder and mix two trees.
   - Any existing group folder is a merge, so the route returns one
     `needs_group_confirm` listing **all** of them (`groups: [names]`) until the
     request carries `confirm_merge: true`; the UI asks once, before anything is
-    written.
-  - The legacy single `group` field is still accepted (wrapped into one group) so
-    an old page cannot break.
+    written. Every level of a nested chain is checked: a *file* where a folder
+    must go is refused before the copy starts.
+  - Queue order for groups `A` + `A/B`: dir `A`, dir `A/B`, then `A/B`'s tree
+    (`A/B/Books`, its files), then `A`'s own tree. Verified by test.
+
 - **Post-copy verification** (`verify: true` by default): after the final
   `sync_with_heartbeat()`, `verify_copied_files()` makes **one metadata-only walk**
   over the destination roots and compares each planned file's size with the bytes
@@ -91,7 +117,30 @@ byte-identical (DFS pre-order + `natural_sort_key`) and stay single-threaded.
   `verified`/`verify_total`/`verify_failed`, never reads file contents, and never
   changes the playback order. `verify: false` from the UI skips the pass.
 - **`copy_file_sequential()`** opens src/dst with `os.open`, `posix_fadvise(POSIX_FADV_SEQUENTIAL)` hints, then uses `os.sendfile` (4 MB chunks) when the kernel/filesystem supports it; on `EINVAL`/`ENOSYS`/`EXDEV`/`EOPNOTSUPP`/`EAGAIN` it continues with the 4 MB buffered loop from the same offset. sendfile measured ~2× faster on Android FUSE. Both paths write front-to-back, and on any error the half-written destination file is deleted so playback order can't be polluted.
-- **No `fsync` per file.** The transfer calls `sync_with_heartbeat()` every `SYNC_THRESHOLD` (1 GB) and once at the end. Ordering comes from *sequential writes*, never from fsync — the per-file fsync was removed because it cost tens of ms per MP3 (the main cause of "copy is very slow"). Do not add it back, and keep the threshold large: `os.sync()` flushes *every* filesystem on the device, so a small value turns one big copy into hundreds of short stalls.
+- **No `fsync` per file.** The transfer calls `sync_with_heartbeat()` every `SYNC_THRESHOLD` (1 GB) and once at the end. Ordering comes from *sequential writes*, never from fsync — the per-file fsync was removed because it cost tens of ms per MP3 (the main cause of "copy is very slow"). Do not add it back, and keep the threshold large: a small value turns one big copy into hundreds of short stalls.
+  - `sync_with_heartbeat(phase, dest=...)` flushes with **`flush_destination(dest)`**:
+    `syncfs(fd)` from libc via `ctypes` (one filesystem) and only falls back to
+    `os.sync()` (every filesystem on the phone) when libc has no `syncfs`. The
+    copy worker always passes `dest`; spoof/delete still use the global flush.
+- **Honest speeds and times.** Copy time and verify time are measured separately:
+  `copy_seconds` ends after the final flush, `verify_seconds` covers only
+  `verify_copied_files()`. `avg_mbps = bytes / copy_seconds` (verify never
+  inflates it), `speed_mbps` stays the 6s-window EMA. The UI shows
+  «اللحظية … • المتوسط …» while running and «النسخ X ث • متوسط السرعة … • التحقق Y ث»
+  when done. Do not hide these numbers: the cost is ~2 ms/file for verify and
+  negligible CPU for the display, and without them a slow card is indistinguishable
+  from a slow app.
+- **Card speed probe**: before a copy whose total is ≥ `CARD_SPEED_PROBE_MIN_BYTES`
+  (48 MB), the worker writes `CARD_SPEED_PROBE_MB` (8 MB) sequentially with one
+  end flush (`probe_card_speed`) and stores `card_mbps`; below `SLOW_CARD_MBPS`
+  (5 MB/s) it sets `card_warning`, which the UI shows as an amber note with no
+  "pull the card out" instruction. The probe file is deleted; it is written before
+  the first planned file so it cannot reorder the real copy. A probe that hangs
+  marks the destination unhealthy in `_UNHEALTHY_DESTS` (`destination_is_unhealthy`)
+  and the worker **aborts before writing any planned file** — the timeout is 25 s
+  for 8 MB (4× slower than `SLOW_CARD_MBPS`), so a merely slow card is reported as
+  slow, never called dead.
+
 - **`check_destination()`** writes a 5-byte probe with an 8s timeout before every
   copy / spoof / benchmark. A card that is mounted but dead would otherwise block
   the worker inside `write()` forever. Timed-out destinations are cached in
@@ -139,7 +188,7 @@ Each storage dict carries `kind` + `icon` so the UI can label it honestly:
 
 `storage_kind()` looks the volume up in `/proc/mounts` as `/mnt/media_rw/<UUID>` and passes the device to `classify_volume_device()`. `df -h` alone cannot tell an SD card from a USB stick — both are `/storage/XXXX-XXXX`. The icons are one SVG sprite (`<symbol id="ico-*">` right after `<body>`) referenced with `<use href="#ico-...">`; the select-based pickers were replaced by `.storage-card` buttons (`chooseStorage()` / `syncStorageCards()`), and the same icons appear in the path picker badge.
 
-Theme = **Coffee Blues** (https://www.color-hex.com/color-palette/102595): teal `#39918c`, sand `#d0b49f`, tan `#be9078`, clay `#ab6b51`, slate `#2f435a`. The darks are that slate warmed and softened — page `--bg #17222e`, card `--card #1f2c3a`, one lift `--card-2 #293847` — and the slate's coolness stays in `--border #2b3e52`. `--field #141d27` (a touch deeper than the page) is the recessed surface for inputs, the tree, storage rows and progress tracks. The character is **warm sand on cool slate** (`--text #ebe1d6` 11.0:1 on a card, muted `#aca19a` 5.6:1): do not neutralise either side, or the theme dies. `--radius` is 16px.
+Theme = **Coffee Blues** (https://www.color-hex.com/color-palette/102595) is the default of the theme registry (see «Settings, themes and search history»): teal `#39918c`, sand `#d0b49f`, tan `#be9078`, clay `#ab6b51`, slate `#2f435a`. The darks are that slate warmed and softened — page `--bg #17222e`, card `--card #1f2c3a`, one lift `--card-2 #293847` — and the slate's coolness stays in `--border #2b3e52`. `--field #141d27` (a touch deeper than the page) is the recessed surface for inputs, the tree, storage rows and progress tracks. The character is **warm sand on cool slate** (`--text #ebe1d6` 11.0:1 on a card, muted `#aca19a` 5.6:1): do not neutralise either side, or the theme dies. `--radius` is 16px. These values live in `sdmp3_themes.py` now, not in the template.
 
 Teal is the accent, with a split because the palette teal is light: `--accent #39918c` marks (icons, focus, checkbox, disk bar — 3.6:1, fine for marks but not for 11px text), while filled buttons use the darker palette teal `--accent-fill #2e7a75` with a white label (4.6:1; hover `--accent-fill-hover #276a66` 5.7:1). `--accent-ink #151e28` labels the warning/success/danger fills (7.8 / 7.4 / 4.6:1). Danger: `--danger #f43f5e` fill and `--danger-ink #fc8b9b` text (6.0:1 on a card, 5.2:1 raised). Success is the calm sage `--success #7fbf93` (6.6:1 as text on a card), not the old neon green. Nothing glows — no gradient, no coloured button shadow, no inset card sheen; secondary buttons stay neutral `btn-outline` so only the primary action wears teal.
 
@@ -166,13 +215,30 @@ The spoofing button is `btn-sand` (`--sand-fill #d0b49f` on `--accent-ink`), not
   with `#selectedList` as the flex child that scrolls, so the pick bar and the
   confirm action cannot slide under the finger while rows are checked. The assign
   sheet is `position:absolute` inside it (`bottom:14px`) for the same reason.
+  `modal-settings` uses the same fixed-height rule for its tabs.
 - Group data lives only in JS: `copyGroups = [{id, name, paths}]`, one path per
-  group. It is cleared when a copy finishes with `action === 'copy'` and when the
-  selection becomes empty; cancelled/failed copies keep it for retry.
+  group; `name` is a breadcrumb (`A/B`), so nesting needs no tree model. It is
+  cleared when a copy finishes with `action === 'copy'` and when the selection
+  becomes empty; cancelled/failed copies keep it for retry.
+- **Groups are typed as paths, validated client-side too**: `GROUP_BAD_CHARS`
+  deliberately does **not** contain `/` (it is the nesting separator), depth ≤
+  `GROUP_MAX_DEPTH` (3), full path ≤ `GROUP_PATH_MAX` (180), each segment ≤ 80.
+  The card shows the breadcrumb (`A › B`) and a «＋ فرع» button (`startChildGroup`)
+  that pre-fills `parent/`, disabled at depth 3. `saveGroupEditor`/`renameGroup`
+  store the canonical `groupPathParts(...).join('/')`.
 - `/` is rendered per request; do not add a cache header to it — it embeds the
-  per-volume storage list.
-- `theme-color` must stay `#17222e` (the page colour) so the Android status bar
-  matches the app.
+  per-volume storage list **and** the active theme.
+- `theme-color` is the active theme's `--bg` (`{{ theme_bg }}`), not a constant:
+  the Android status bar must match whichever theme is saved.
+
+## Settings modal
+`#settingsModal` (`modal-content modal-settings`, fixed height like the picker)
+has two tabs — «المظهر» and «حول». The appearance pane is the theme grid, rendered
+server-side by Jinja from `themes` (cards carry `data-theme-id` and a swatch row
+from `t.swatches`), so the page needs no theme JSON in JS. `pickTheme(id)` POSTs
+`/api/settings`, then applies the returned `tokens`/`theme_bg` and moves the
+`active` class. `settingsSaveState` reports saving / a failure in one line. The header gear
+button (`.header-settings`) opens it.
 
 ## Path picker (تحديد / تصفح)
 `/api/sizes` returns sizes for a whole selection in one request (parents are
@@ -202,12 +268,61 @@ immediately; the UI follows the normal `/transfer/status` poll with
 
 ## Search cache
 The instant-search index (`FOLDER_CACHE`) is mirrored to
-`~/.local/state/sdmp3/search_cache.json` (outside the checkout, next to
-`instance.json`/`sdmp3.log`) after every build and on a 2s debounce after
+`state_file('search_cache.json')` (`~/.local/state/sdmp3/`, outside the checkout,
+next to `instance.json`/`sdmp3.log`) after every build and on a 2s debounce after
 invalidation. It is restored in `main()` on startup, and roots that no longer
 exist (card pulled out) are dropped. `joc_source_root` / `joc_last_dest` are in
 `localStorage`, so an F5 or a restart returns to the same folder *with* its
 index — that is why `checkCacheStatus()` is called at load.
+
+## Settings, themes and search history
+
+Two JSON files, both written through `sdmp3_state.py` (atomic `tmp` +
+`os.replace`, chmod 0600, a corrupt file is moved to `.bak` and defaults are used):
+
+| File | Contents |
+|------|----------|
+| `state_file('settings.json')` | `{version, theme, updated}` — the theme is the only writable key |
+| `state_file('search_history.json')` | `{items: [last 25 results], queries: [last 25 queries]}` |
+
+Both are loaded in `main()` (so the first request already has them) and served by
+`GET/POST /api/settings`, `GET /api/history`, `POST /api/history/clear`,
+`POST /api/history/remove`.
+
+### Theme registry (`sdmp3_themes.py`)
+A theme is one dict of palette colours; **every** alpha variant (`--accent-soft`,
+`--kind-sdcard-tile`, `--pill-bg`, `--shine`, `--shadow-*`, …) is derived in
+`build_tokens()`, so a theme can never drift out of sync with the CSS. 8 themes:
+`coffee-blues` (default, byte-identical to the old hand-written `:root`),
+`midnight-teal`, `slate-sand`, `olive-grove`, `clay-rose`, `graphite`, and the two
+light ones `paper` / `sandstone`.
+
+- **Adding a theme is one dict** in `_THEME_DEFS` with the `BASE_KEYS`. Nothing in
+  `project.py` changes. Run `python sdmp3_themes.py`: it prints every contrast
+  ratio and the module **raises at import** if any theme breaks `CONTRAST_RULES`
+  (text ≥ 7:1 on page/card, muted/labels/kind-inks ≥ 4.5:1).
+- Tokens are rendered **server-side** into `:root` (`theme_css_pairs`) plus
+  `<html data-theme>` and `<meta name="theme-color">` (`theme_color` = `--bg`),
+  so there is no flash of the default theme. The `/` route passes `active_theme`,
+  `theme_css`, `theme_bg`, `themes`; do not add a cache header to `/`.
+- Switching a theme in the settings modal only assigns the returned tokens on
+  `documentElement.style` (`applyTheme` in the page JS). No reload, no re-render.
+- **Never hard-code a colour in the template** — not in CSS and not in inline JS
+  (`showInlineNotify` uses `--ok-soft`/`--danger-soft`). A new colour goes into the
+  registry. This is what makes the light themes actually light.
+
+### Search history
+Only a **committed** search is recorded (`remember=1`, sent by Enter / the بحث
+button). The 400 ms typing debounce calls the same endpoint without it, otherwise
+the list would fill with `م`, `مج`, `مجل`. Each search contributes its top
+`HISTORY_RESULTS_PER_SEARCH` (10) results; items dedupe by `path`, queries by `q`,
+both capped at 25 (`HISTORY_ITEM_LIMIT` / `HISTORY_QUERY_LIMIT`). Startup prunes
+items whose `root` no longer exists (`prune_history_to_roots`) — never per request,
+which would stat a sleeping card. The UI block (`#historyBlock`) is rendered by
+`renderSearchHistory()` from `/api/history` and is hidden when empty; clicking a
+chip re-runs that query, clicking a row adds the path to the selection, and every
+mutation returns the new list so client and file cannot drift.
+
 
 ## TTS specifics
 

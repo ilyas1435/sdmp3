@@ -17,6 +17,19 @@ from collections import deque
 from werkzeug.exceptions import HTTPException
 from flask import Flask, render_template_string, request, jsonify, send_file
 
+# Pure sibling modules (no Flask, no globals) so they can be tested on their own:
+#   sdmp3_themes.py  palette registry + contrast contract + CSS tokens
+#   sdmp3_state.py   atomic settings.json / search_history.json
+#   sdmp3_groups.py  copy-group paths (groups, including nested ones)
+from sdmp3_themes import (THEMES, DEFAULT_THEME, theme_ids, get_theme,
+                          theme_css_pairs, theme_color, theme_tokens, catalog)
+from sdmp3_state import (state_file, load_settings, save_settings,
+                         load_search_history, save_search_history,
+                         upsert_recent, prune_history_to_roots,
+                         HISTORY_ITEM_LIMIT, HISTORY_QUERY_LIMIT)
+from sdmp3_groups import (prepare_copy_groups, group_segments, group_dir_chain,
+                          validate_group_path)
+
 try:
     import edge_tts
     EDGE_TTS_AVAILABLE = True
@@ -106,6 +119,9 @@ DEFAULT_STATE = {
     'copied_bytes': 0,
     'total_bytes': 0,
     'speed_mbps': 0,
+    'avg_mbps': 0,
+    'copy_seconds': 0,
+    'verify_seconds': 0,
     'eta_seconds': 0,
     'phase': '',            # planning | copying | syncing | verifying | done
     'syncing': False,
@@ -121,6 +137,8 @@ DEFAULT_STATE = {
     'verify_progress': 0,
     'verify_failed': [],
     'verify_cancelled': False,
+    'card_mbps': 0,
+    'card_warning': '',
     'last_progress_ts': 0,
     'cancel': False,
     'start_time': 0,
@@ -201,15 +219,66 @@ def touch_progress():
     except Exception:
         pass
 
-def sync_with_heartbeat(phase_after='copying'):
-    """Flush every filesystem while keeping the stall clock alive.
+_syncfs_ref = {'resolved': False, 'fn': None}
 
-    os.sync() is a single blocking syscall: it cannot report progress, and on a
+
+def _syncfs_fn():
+    """libc's syncfs(fd), or None where it does not exist (never raises)."""
+    if not _syncfs_ref['resolved']:
+        _syncfs_ref['resolved'] = True
+        try:
+            import ctypes
+            fn = ctypes.CDLL(None, use_errno=True).syncfs
+            fn.argtypes = [ctypes.c_int]
+            fn.restype = ctypes.c_int
+            _syncfs_ref['fn'] = fn
+        except Exception:
+            _syncfs_ref['fn'] = None
+    return _syncfs_ref['fn']
+
+
+def flush_destination(dest):
+    """Flush *only* the filesystem that holds `dest`.
+
+    os.sync() flushes every mounted filesystem on the phone (/data, /sdcard,
+    any other volume), which is why one big copy could stall for 30-60s inside a
+    single syscall. syncfs(fd) on the destination touches exactly one filesystem.
+    Returns True when the narrow call was used, False for the global fallback.
+    """
+    fn = _syncfs_fn()
+    if fn is not None and dest:
+        fd = -1
+        try:
+            fd = os.open(dest, os.O_RDONLY)
+            if fn(fd) == 0:
+                return True
+        except OSError:
+            pass
+        finally:
+            if fd >= 0:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+    try:
+        os.sync()
+    except OSError:
+        pass
+    return False
+
+
+def sync_with_heartbeat(phase_after='copying', dest=None):
+    """Flush the destination while keeping the stall clock alive.
+
+    Flushing is a single blocking syscall: it cannot report progress, and on a
     slow card it can easily take longer than the old 25s stall threshold. That
     is what produced the false "pull the card out" warning while the copy was
     perfectly healthy. A companion thread touches the heartbeat every few
     seconds; it stops after SYNC_HEARTBEAT_LIMIT so a truly hung flush is still
     visible instead of being hidden forever.
+
+    `dest` is flushed with syncfs (one filesystem); without it os.sync() flushes
+    everything, which is correct but much slower.
     """
     set_state(syncing=True, sync_started=time.time(), phase='syncing',
               file='جاري تثبيت البيانات على الكارت...')
@@ -228,14 +297,12 @@ def sync_with_heartbeat(phase_after='copying'):
     worker = threading.Thread(target=beat, daemon=True)
     worker.start()
     try:
-        try:
-            os.sync()
-        except OSError:
-            pass
+        flush_destination(dest)
     finally:
         stop.set()
         worker.join(timeout=2)
         set_state(syncing=False, sync_started=0, phase=phase_after)
+
 
 def is_busy():
     with transfer_lock:
@@ -779,6 +846,79 @@ def describe_os_error(exc):
 # Destinations whose probe timed out -> absolute time until which we refuse them.
 _UNHEALTHY_DESTS = {}
 
+# Below this, a card is not "a bit slow", it needs to be reported before the
+# copy starts instead of after 40 minutes of waiting.
+SLOW_CARD_MBPS = 5.0
+CARD_SPEED_PROBE_MB = 8
+# Only bother with the speed probe when the transfer is big enough for the
+# measurement to matter (and for its 8MB to be negligible).
+CARD_SPEED_PROBE_MIN_BYTES = 48 * 1024 * 1024
+
+
+def _probe_speed_write(dest, size_mb, result):
+    probe = os.path.join(dest, '.sdmp3_speed_probe')
+    block = b'\0' * (4 * 1024 * 1024)
+    try:
+        fd = os.open(probe, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o666)
+        try:
+            started = time.time()
+            remaining = size_mb * 1024 * 1024
+            while remaining > 0:
+                chunk = block if remaining >= len(block) else block[:remaining]
+                os.write(fd, chunk)
+                remaining -= len(chunk)
+            os.fsync(fd)
+            elapsed = max(time.time() - started, 0.001)
+        finally:
+            os.close(fd)
+        try:
+            os.remove(probe)
+        except OSError:
+            pass
+        result.append(size_mb / elapsed)
+    except Exception as exc:
+        try:
+            if os.path.exists(probe):
+                os.remove(probe)
+        except Exception:
+            pass
+        result.append(exc)
+
+
+def probe_card_speed(dest, size_mb=CARD_SPEED_PROBE_MB, timeout=None):
+    """Write `size_mb` sequentially to `dest` and return MB/s, or None.
+
+    Deliberately the same shape as the copy itself: one file, 4MB sequential
+    writes, a single flush at the end. The old benchmark that fsynced every
+    block was measuring flush latency and always looked slow.
+
+    Returns None when the probe could not be measured; a probe that hangs is
+    cached in `_UNHEALTHY_DESTS` (see `destination_is_unhealthy`).
+    """
+    if not dest or not os.path.isdir(dest):
+        return None
+    # Only a card 4x slower than the "slow card" line is called *unresponsive*:
+    # a 1 MB/s card is bad news, but it is alive and must be reported as slow,
+    # not as dead.
+    timeout = timeout or max(25, int(size_mb / max(SLOW_CARD_MBPS / 4.0, 0.1)) + 10)
+    result = []
+    worker = threading.Thread(target=_probe_speed_write,
+                              args=(dest, size_mb, result), daemon=True)
+    worker.start()
+    worker.join(timeout)
+    if worker.is_alive():
+        _UNHEALTHY_DESTS[dest] = time.time() + UNHEALTHY_DEST_TTL
+        log_event('speed probe NOT responding (>{:.0f}s): {!r}'.format(timeout, dest))
+        return None
+    if not result or not isinstance(result[0], float):
+        return None
+    return result[0]
+
+
+def destination_is_unhealthy(dest):
+    """True while `dest` is cached as not responding (probe timed out)."""
+    return _UNHEALTHY_DESTS.get(dest, 0) > time.time()
+
 
 def _probe_write(dest, result):
     probe = os.path.join(dest, '.sdmp3_probe')
@@ -1081,88 +1221,6 @@ def plan_transfer(paths, dest, excludes=None, cancel_check=None, on_progress=Non
     return tasks, total_files, total_bytes, skipped
 
 
-# A copy group is one folder *name*, never a path: it is created inside the
-# chosen destination at copy time. The source tree is never modified.
-GROUP_NAME_MAX = 80
-_FAT_BAD_CHARS = set('/\\:*?"<>|')
-
-
-def validate_group_name(name):
-    """Return (clean_name, error) for the optional copy-group folder."""
-    if not isinstance(name, str):
-        return '', 'اسم المجلد غير صالح'
-    name = (name or '').strip()
-    if not name:
-        return '', None
-    if len(name) > GROUP_NAME_MAX:
-        return '', 'اسم المجلد طويل جداً (الحد {} حرفاً)'.format(GROUP_NAME_MAX)
-    if name in ('.', '..'):
-        return '', 'اسم المجلد غير صالح'
-    if any(c in _FAT_BAD_CHARS or ord(c) < 32 for c in name):
-        return '', 'اسم المجلد يحتوي رموزاً غير مسموحة: / \\ : * ? " < > |'
-    if name.endswith(' ') or name.endswith('.'):
-        return '', 'لا يمكن أن ينتهي اسم المجلد بمسافة أو نقطة'
-    return name, None
-
-
-def prepare_copy_groups(raw_groups, paths):
-    """Normalise the optional copy groups from a request.
-
-    Each group is ``{name, paths}`` and becomes one folder inside the
-    destination. Returns ``(groups, error)`` where ``groups`` is a list of
-    ``(name, [paths])`` with empty groups dropped.
-
-    Names must be valid and unique (FAT is case-insensitive, so "علوم" and
-    "علوم " collide), every path must be part of this transfer's selection, and
-    no path may sit in two groups - otherwise the same folder would be copied
-    twice into two different parents, in two places in the queue.
-    """
-    if not raw_groups:
-        return [], None
-    if not isinstance(raw_groups, list):
-        return [], 'صيغة المجموعات غير صالحة'
-
-    by_norm = {}
-    for p in paths:
-        try:
-            by_norm[os.path.normpath(p)] = p
-        except (TypeError, ValueError):
-            return [], 'مسار غير صالح داخل التحديد'
-
-    groups = []
-    seen_names = set()
-    assigned = {}
-    for item in raw_groups:
-        if not isinstance(item, dict):
-            return [], 'صيغة المجموعات غير صالحة'
-        if not (item.get('name') or '').strip():
-            return [], 'اسم مجلد الضم مطلوب'
-        name, error = validate_group_name(item.get('name') or '')
-        if error:
-            return [], error
-        key = name.casefold()
-        if key in seen_names:
-            return [], 'اسم المجلد «{}» مستخدم في أكثر من مجموعة'.format(name)
-        seen_names.add(key)
-
-        group_paths = []
-        for p in (item.get('paths') or []):
-            try:
-                norm = os.path.normpath(p)
-            except (TypeError, ValueError):
-                return [], 'مسار غير صالح داخل المجموعة'
-            if norm not in by_norm:
-                return [], 'العنصر «{}» ليس ضمن التحديد'.format(p)
-            if norm in assigned:
-                return [], ('العنصر «{}» موجود في مجموعتين: «{}» و«{}»'
-                            .format(p, assigned[norm], name))
-            assigned[norm] = name
-            group_paths.append(by_norm[norm])
-        if group_paths:
-            groups.append((name, group_paths))
-    return groups, None
-
-
 def verify_copied_files(planned, roots, on_progress=None, cancel_check=None):
     """Check the copied files in ONE metadata-only pass.
 
@@ -1325,7 +1383,7 @@ def copy_thread_task(paths, dest, excludes=None, groups=None, verify=True):
         # unchecked name, even if the route changes later.
         checked_groups = []
         for name, gpaths in groups:
-            clean, group_error = validate_group_name(name)
+            clean, group_error = validate_group_path(name)
             if group_error:
                 raise RuntimeError(group_error)
             checked_groups.append((clean, list(gpaths)))
@@ -1334,13 +1392,14 @@ def copy_thread_task(paths, dest, excludes=None, groups=None, verify=True):
         assigned_norm = {os.path.normpath(p) for _n, gpaths in groups for p in gpaths}
         ungrouped = [p for p in paths if os.path.normpath(p) not in assigned_norm]
 
-        # A group name equal to an ungrouped root's name would pull that root
-        # inside the group folder and mix two unrelated trees: the route refuses
-        # it, and so must the worker.
+        # A group's TOP-LEVEL folder equal to an ungrouped root's name would pull
+        # that root inside the group folder and mix two unrelated trees: the
+        # route refuses it, and so must the worker.
         ungrouped_names = {os.path.basename(os.path.normpath(p)).casefold() for p in ungrouped}
         for name, _gpaths in groups:
-            if name.casefold() in ungrouped_names:
-                raise RuntimeError('اسم المجلد «{}» يتعارض مع عنصر غير مجمَّع بنفس الاسم'.format(name))
+            top = group_segments(name)[0]
+            if top.casefold() in ungrouped_names:
+                raise RuntimeError('اسم المجلد «{}» يتعارض مع عنصر غير مجمَّع بنفس الاسم'.format(top))
 
         # Safety net: the route already refuses this, but the worker must never
         # be able to duplicate a tree into itself either.
@@ -1384,14 +1443,20 @@ def copy_thread_task(paths, dest, excludes=None, groups=None, verify=True):
             if is_cancelled():
                 raise TransferCancelled()
 
-        # Each group folder is the first directory entry of its own segment, so
-        # it appears before the folders copied inside it.
+        # Each group folder chain is the first directory entry of its own
+        # segment (parents first), so every folder appears before the folders
+        # copied inside it. A nested group "A/B" therefore yields: dir A,
+        # dir A/B, then its files.
         for name, gpaths in groups:
-            target = os.path.join(dest, name)
+            chain = group_dir_chain(dest, name)
+            if not chain:
+                continue
+            target = chain[-1]
             before = len(tasks)
             plan_segment(gpaths, target)
             if len(tasks) > before:
-                tasks.insert(before, (target, target, 'dir'))
+                for offset, dir_path in enumerate(chain):
+                    tasks.insert(before + offset, (dir_path, dir_path, 'dir'))
                 group_names.append(name)
 
         # Anything not grouped keeps the old behaviour: straight into the chosen
@@ -1415,6 +1480,32 @@ def copy_thread_task(paths, dest, excludes=None, groups=None, verify=True):
 
         set_state(file='جاري النقل المستقر المباشر...', phase='copying')
 
+        # One honest 8MB write before a big copy. On a dying card this is the
+        # difference between "the app froze" and "this card writes at 2 MB/s".
+        # Small transfers skip it: 8MB would be a noticeable share of them.
+        if needed_bytes >= CARD_SPEED_PROBE_MIN_BYTES:
+            set_state(phase='probing', file='جاري قياس سرعة الكتابة على الوجهة...')
+            touch_progress()
+            mbps = probe_card_speed(dest)
+            touch_progress()
+            if mbps is not None:
+                set_state(card_mbps=round(mbps, 2))
+                log_event('speed probe: {:.2f} MB/s ({})'.format(mbps, dest))
+                if mbps < SLOW_CARD_MBPS:
+                    set_state(card_warning=(
+                        'سرعة الكتابة على الوجهة الآن ~{:.1f} MB/s فقط، وهذا أبطأ من '
+                        'المعتاد بكثير (المتوقع 15 MB/s أو أكثر). إذا كان الكارت قديماً أو '
+                        'ممتلئاً فسيستغرق النسخ وقتاً طويلاً — يمكنك إيقافه الآن بلا خسارة.'
+                    ).format(mbps))
+            elif destination_is_unhealthy(dest):
+                # Nothing planned has been written yet, so this is the cheapest
+                # possible place to stop: a card that cannot take 8MB in 25s
+                # would stall on the first real file.
+                raise RuntimeError(
+                    'الوجهة لا تستجيب (الكارت معلّق). أخرجه وأدخله ثم أعد المحاولة. '
+                    'إذا استمرت المشكلة أعد تشغيل التطبيق: sdmp3 restart')
+            set_state(phase='copying', file='جاري النقل المستقر المباشر...')
+
         def on_bytes(count):
             nonlocal bytes_done, bytes_since_sync
             bytes_done += count
@@ -1423,6 +1514,10 @@ def copy_thread_task(paths, dest, excludes=None, groups=None, verify=True):
             # "alive", only a really hung one falls silent long enough to flag.
             touch_progress()
 
+        # The clock that the reported copy speed uses starts *after* planning and
+        # the probe: walking 2000 source dirs is not the card's fault, and folding
+        # it into the average made a fast card look slow.
+        copy_started = time.time()
         for src, dst_path, kind in tasks:
             # Heartbeat per entry too: a folder full of 0-byte files moves no
             # bytes at all, and must not look like a dead card.
@@ -1478,7 +1573,7 @@ def copy_thread_task(paths, dest, excludes=None, groups=None, verify=True):
                     inst = (bytes_done - b0) / dt / (1024 * 1024)
                     speed_ema = inst if speed_ema is None else (speed_ema * 0.55 + inst * 0.45)
                 if speed_ema is None:
-                    speed = bytes_done / max(now - started, 0.001) / (1024 * 1024)
+                    speed = bytes_done / max(now - copy_started, 0.001) / (1024 * 1024)
                 else:
                     speed = speed_ema
                 if needed_bytes:
@@ -1492,21 +1587,30 @@ def copy_thread_task(paths, dest, excludes=None, groups=None, verify=True):
                 set_state(copied=copied, failed=len(failed_details),
                           progress=min(progress, 99), file=name, phase='copying',
                           copied_bytes=bytes_done, speed_mbps=round(speed, 2),
+                          avg_mbps=round(bytes_done / max(now - copy_started, 0.001) / (1024 * 1024), 2),
                           eta_seconds=eta, sync_seconds=0)
                 last_ui_update = now
 
         # A single flush at the end (plus the 1GB checkpoints above). The
         # heartbeat keeps a slow flush from looking like a hung card.
-        sync_with_heartbeat('verifying' if verify else 'copying')
+        sync_with_heartbeat('verifying' if verify else 'copying', dest=dest)
+
+        # Copy time and verify time are reported separately from now on: verify
+        # walks the whole destination tree (~2ms/file), and folding it into the
+        # copy number made a healthy card look slower than it is.
+        copy_seconds = max(time.time() - copy_started, 0.001)
+        avg_speed = bytes_done / copy_seconds / (1024 * 1024)
 
         verify_cancelled = False
         verify_failures = []
         verified = 0
+        verify_seconds = 0.0
         if verify and planned_files:
             set_state(phase='verifying', file='جاري التحقق من الحجم الإجمالي...',
                       verify_total=len(planned_files), verify_done=0, verify_progress=0,
-                      speed_mbps=0, eta_seconds=0)
+                      speed_mbps=0, avg_mbps=round(avg_speed, 2), eta_seconds=0)
             touch_progress()
+            verify_started = time.time()
 
             def on_verify(done, total_files):
                 touch_progress()
@@ -1518,13 +1622,12 @@ def copy_thread_task(paths, dest, excludes=None, groups=None, verify=True):
             verified, verify_failures, verify_cancelled = verify_copied_files(
                 planned_files, verify_roots,
                 on_progress=on_verify, cancel_check=is_cancelled)
+            verify_seconds = max(time.time() - verify_started, 0.0)
             for p, r in verify_failures[:10]:
                 log_event('verify failed: {!r} -> {}'.format(p, r))
             log_event('verify done: {}/{} ok, {} failed, cancelled={}'.format(
                 verified, len(planned_files), len(verify_failures), verify_cancelled))
 
-        elapsed = max(time.time() - started, 0.001)
-        avg_speed = bytes_done / elapsed / (1024 * 1024)
         if len(group_names) == 1:
             group_note = ' داخل «{}»'.format(group_names[0])
         elif len(group_names) == 2:
@@ -1533,25 +1636,44 @@ def copy_thread_task(paths, dest, excludes=None, groups=None, verify=True):
             group_note = ' داخل {} مجلدات'.format(len(group_names))
         else:
             group_note = ''
+
+        # Honest numbers, in the user's terms: copy speed (the only part the
+        # card controls), how long the copy took, and the verify time.
+        def _dur(seconds):
+            seconds = int(round(seconds))
+            if seconds < 60:
+                return '{} ثانية'.format(seconds)
+            mins, secs = divmod(seconds, 60)
+            return '{} دقيقة و {} ثانية'.format(mins, secs)
+
+        if bytes_done:
+            speed_note = ' — {:.1f} MB/s في {}'.format(avg_speed, _dur(copy_seconds))
+        else:
+            speed_note = ''
+        verify_note = ''
+        if verify and planned_files:
+            verify_note = ' (التحقق {})'.format(_dur(verify_seconds))
+
         if failed_details:
-            final_msg = 'اكتمل النسخ{} مع فشل {} عنصر - راجع التفاصيل'.format(
-                group_note, len(failed_details))
+            final_msg = 'اكتمل النسخ{} مع فشل {} عنصر - راجع التفاصيل{}{}'.format(
+                group_note, len(failed_details), speed_note, verify_note)
         elif verify and planned_files:
             if verify_cancelled:
-                final_msg = 'اكتمل النسخ{} — تم إيقاف التحقق قبل نهايته.'.format(group_note)
+                final_msg = 'اكتمل النسخ{} — تم إيقاف التحقق قبل نهايته{}{}.'.format(
+                    group_note, speed_note, verify_note)
             elif verify_failures:
-                final_msg = ('اكتمل النسخ{} لكن التحقق وجد {} ملفاً مخالفاً — راجع التفاصيل'
-                             .format(group_note, len(verify_failures)))
+                final_msg = ('اكتمل النسخ{} لكن التحقق وجد {} ملفاً مخالفاً — راجع التفاصيل{}{}'
+                             .format(group_note, len(verify_failures), speed_note, verify_note))
             else:
-                final_msg = 'اكتمل النسخ{} والتحقق بنجاح — {} ملفاً سليماً.'.format(
-                    group_note, verified)
+                final_msg = 'اكتمل النسخ{} والتحقق بنجاح — {} ملفاً سليماً{}{}.'.format(
+                    group_note, verified, speed_note, verify_note)
         else:
-            final_msg = 'اكتمل النسخ{} بنجاح.'.format(group_note)
+            final_msg = 'اكتمل النسخ{} بنجاح{}.'.format(group_note, speed_note)
 
         log_event('copy done: copied={} failed={} bytes={} in {:.1f}s ({:.2f} MB/s) '
-                  'verified={} verify_failed={}'.format(
-                      copied, len(failed_details), bytes_done, elapsed, avg_speed,
-                      verified, len(verify_failures)))
+                  'verify={:.1f}s verified={} verify_failed={}'.format(
+                      copied, len(failed_details), bytes_done, copy_seconds, avg_speed,
+                      verify_seconds, verified, len(verify_failures)))
 
         invalidate_cache_for_path(dest)
         finish_transfer('done', final_msg, extra={
@@ -1563,6 +1685,9 @@ def copy_thread_task(paths, dest, excludes=None, groups=None, verify=True):
             'skipped': ['{} — {}'.format(p, r) for p, r in skipped[:20]],
             'copied_bytes': bytes_done,
             'speed_mbps': round(avg_speed, 2),
+            'avg_mbps': round(avg_speed, 2),
+            'copy_seconds': round(copy_seconds, 1),
+            'verify_seconds': round(verify_seconds, 1),
             'eta_seconds': 0,
             'verified': verified,
             'verify_total': len(planned_files) if verify else 0,
@@ -1574,11 +1699,11 @@ def copy_thread_task(paths, dest, excludes=None, groups=None, verify=True):
         })
 
     except TransferCancelled:
-        sync_with_heartbeat('copying')
+        sync_with_heartbeat('copying', dest=dest)
         log_event('copy cancelled by user after {}s'.format(int(time.time() - started)))
         finish_transfer('cancelled', 'تم إلغاء النسخ.')
     except Exception as e:
-        sync_with_heartbeat('copying')
+        sync_with_heartbeat('copying', dest=dest)
         log_event('copy ERROR: {}: {}'.format(type(e).__name__, e))
         set_state(status='error', log=str(e))
     finally:
@@ -1825,85 +1950,22 @@ def combine_mp3_chunks(chunk_files, final_path, bitrate="64k", obfuscate=False, 
 # ------------------ HTML & JS Template ---------------------
 HTML_TEMPLATE = """
 <!DOCTYPE html>
-<html dir="rtl" lang="ar">
+<html dir="rtl" lang="ar" data-theme="{{ active_theme.id }}">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>SD Card Coffee</title>
-    <meta name="theme-color" content="#17222e">
+    <meta name="theme-color" content="{{ theme_bg }}">
     <style>
         :root {
-            /* "Coffee Blues" palette — https://www.color-hex.com/color-palette/102595
-               #39918c teal · #d0b49f sand · #be9078 tan · #ab6b51 clay · #2f435a slate
-               The page/card shades are the palette slate warmed and softened, so
-               the contrast is easier on the eye; the slate's coolness stays in
-               the border. Warm sand light (#ebe1d6) on cool slate is the whole
-               character of this theme — do not neutralise either side. */
-            --bg: #17222e;
-            --card: #1f2c3a;
-            --card-2: #293847;
-            --field: #141d27;        /* recessed: inputs, tree, storage rows, tracks */
-            --border: #2b3e52;
-            --text: #ebe1d6;
-            --text-muted: #aca19a;
-
-            /* Teal is the accent. The palette teal is light enough to *mark*
-               (#39918c = 3.6:1 on a card) but a filled button needs a label at
-               4.5:1+, and white on #39918c is only 3.75 — so filled buttons use
-               the palette's darker teal (#2e7a75, white label 5.05:1). */
-            --accent: #39918c;
-            --accent-hover: #2e7a75;
-            --accent-fill: #2e7a75;
-            --accent-fill-hover: #276a66;
-            --accent-ink: #151e28;   /* label on warning/success/danger fills */
-            --accent-soft: rgba(57, 145, 140, 0.18);
-            --accent-line: rgba(57, 145, 140, 0.42);
-            /* Teal readable at 11px on the dark card (accent itself is 3.6:1). */
-            --accent-text: #7fc4bf;
-            --accent-glow: rgba(57, 145, 140, 0.40);
-            --success: #7fbf93;
-            --danger: #f43f5e;
-            --danger-ink: #fc8b9b;   /* danger *text* (6.0:1 card, 5.2:1 raised) */
-            --danger-soft: rgba(244, 63, 94, 0.12);
-            --warning: #f59e0b;
-            --warning-soft: rgba(245, 158, 11, 0.10);
-            --warning-line: rgba(245, 158, 11, 0.38);
-            /* Focus ring: teal at low alpha so it reads on every surface. */
-            --focus: rgba(57, 145, 140, 0.45);
-
-            /* One hue per volume type, all from the same palette. Clay is too
-               dark for 11px pill text, so the kinds carry an -ink variant. */
-            --kind-internal: #d0b49f;
-            --kind-internal-ink: #d0b49f;
-            --kind-internal-soft: rgba(208, 180, 159, 0.16);
-            /* Brighter clay: the palette clay (#ab6b51) disappeared on a dark
-               tile and sat too close to the sand of internal storage. */
-            --kind-sdcard: #d98b63;
-            --kind-sdcard-ink: #dda88c;
-            --kind-sdcard-soft: rgba(217, 139, 99, 0.20);
-            --kind-usb: #8fa9c4;
-            --kind-usb-ink: #a8bfd6;
-            --kind-usb-soft: rgba(143, 169, 196, 0.16);
-            /* Unknown volume: quiet olive, the one hue the palette was missing. */
-            --kind-card: #a3b18a;
-            --kind-card-ink: #b7c39f;
-            --kind-card-soft: rgba(163, 177, 138, 0.18);
-            /* Icon tiles need more colour than a pill background to read. */
-            --kind-internal-tile: rgba(208, 180, 159, 0.22);
-            --kind-sdcard-tile: rgba(217, 139, 99, 0.24);
-            --kind-usb-tile: rgba(143, 169, 196, 0.22);
-            --kind-card-tile: rgba(163, 177, 138, 0.24);
-            /* Border tints derived from each kind's *ink* so a pill's outline
-               matches its text instead of borrowing another theme's hue. */
-            --kind-internal-line: rgba(208, 180, 159, 0.42);
-            --kind-sdcard-line: rgba(221, 168, 140, 0.50);
-            --kind-usb-line: rgba(168, 191, 214, 0.42);
-            --kind-card-line: rgba(183, 195, 159, 0.45);
-            /* Sand fill for the secondary "apply spoofing" action: warm, part of
-               the palette, and clearly not the teal primary button. */
-            --sand-fill: #d0b49f;
-            --sand-fill-hover: #c4a88f;
-            --radius: 16px;
+            /* Theme tokens. The palette lives in sdmp3_themes.py (a registry with
+               a WCAG contrast contract) and is rendered here from the theme saved
+               in settings.json, so the very first paint already has the user's
+               theme - no flash of the default. Never hard-code a colour below:
+               add it to the registry instead. */
+{% for name, value in theme_css %}
+            {{ name }}: {{ value }};
+{% endfor %}
         }
         * { box-sizing: border-box; font-family: system-ui, -apple-system, 'Segoe UI', Roboto, 'Noto Sans Arabic', 'IBM Plex Sans Arabic', sans-serif; -webkit-tap-highlight-color: transparent; }
         body { background-color: var(--bg); color: var(--text); margin: 0; padding: 16px 14px 110px; font-size: 14px; line-height: 1.55; -webkit-font-smoothing: antialiased; }
@@ -1914,11 +1976,12 @@ HTML_TEMPLATE = """
         .app-header .badge svg { stroke: var(--accent); width:22px; height:22px; }
         .app-header h1 { font-size: 19px; color: var(--text); margin:0; font-weight: 700; letter-spacing: -0.2px; }
         .app-header p { margin: 3px 0 0; font-size: 12.5px; color: var(--text-muted); }
+        .app-header .header-settings { margin-inline-start: auto; width:36px; height:36px; flex-shrink:0; }
         .pill-row { display:flex; flex-wrap:wrap; gap:6px; margin-top:9px; }
-        .pill { font-size: 11px; line-height: 1; padding: 6px 10px; border-radius: 999px; border: 1px solid var(--border); color: var(--text-muted); background: rgba(236,226,216,0.04); white-space: nowrap; }
+        .pill { font-size: 11px; line-height: 1; padding: 6px 10px; border-radius: 999px; border: 1px solid var(--border); color: var(--text-muted); background: var(--pill-bg); white-space: nowrap; }
         /* The version is the app's signature, so it wears the accent. */
         #appVersionPill { color: var(--accent-text); border-color: var(--accent-line); background: var(--accent-soft); font-weight: 600; }
-        .pill-ok { color: var(--success); border-color: rgba(127,191,147,0.38); background: rgba(127,191,147,0.10); }
+        .pill-ok { color: var(--success); border-color: var(--ok-line); background: var(--ok-soft); }
         .pill-warn { color: var(--warning); border-color: var(--warning-line); background: var(--warning-soft); }
         /* Pills tinted by volume type: SD card / USB OTG / internal / unknown.
            Text uses the -ink variant so 11px labels stay legible (4.5:1+). */
@@ -1943,13 +2006,13 @@ HTML_TEMPLATE = """
         .btn:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
         .btn:focus-visible, .icon-btn:focus-visible, .storage-card:focus-visible, .toggle-btn:focus-visible {
             outline: 2px solid var(--accent); outline-offset: 2px; }
-        .btn-primary { background: var(--accent-fill); color: #f7f4f0; }
+        .btn-primary { background: var(--accent-fill); color: var(--on-accent); }
         .btn-primary:hover { background: var(--accent-fill-hover); }
-        .btn-success { background: var(--success); color: var(--accent-ink); }
+        .btn-success { background: var(--success-fill); color: var(--on-fill); }
         .btn-success:hover { filter: brightness(1.08); }
-        .btn-danger { background: var(--danger); color: var(--accent-ink); }
+        .btn-danger { background: var(--danger-fill); color: var(--on-fill); }
         .btn-danger:hover { filter: brightness(1.08); }
-        .btn-sand { background: var(--sand-fill); color: var(--accent-ink); }
+        .btn-sand { background: var(--sand-fill); color: var(--on-fill); }
         .btn-sand:hover { background: var(--sand-fill-hover); }
         .btn-outline { background: var(--card-2); border: 1px solid var(--border); color: var(--text); }
         .btn-outline:hover { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent-soft); }
@@ -2014,11 +2077,11 @@ HTML_TEMPLATE = """
         .icon-btn:hover { color: var(--accent); border-color: var(--accent); }
         .icon-btn.danger:hover { color: var(--danger-ink); border-color: var(--danger); }
 
-        .cart { position: fixed; bottom: 0; left: 0; width: 100%; background: rgba(24, 33, 44, 0.97); backdrop-filter: blur(6px); border-top: 1px solid var(--border); padding: 14px 18px calc(14px + env(safe-area-inset-bottom)); display: flex; justify-content: space-between; align-items: center; z-index: 50; box-shadow: 0 -8px 24px -8px rgba(0,0,0,0.5); }
+        .cart { position: fixed; bottom: 0; left: 0; width: 100%; background: var(--sheet); backdrop-filter: blur(6px); border-top: 1px solid var(--border); padding: 14px 18px calc(14px + env(safe-area-inset-bottom)); display: flex; justify-content: space-between; align-items: center; z-index: 50; box-shadow: 0 -8px 24px -8px var(--shadow-soft); }
         .cart-buttons { display: flex; gap: 12px; }
 
-        .modal { display: none; position: fixed; inset: 0; width: 100%; height: 100%; background: rgba(8, 12, 16, 0.88); z-index: 1000; justify-content: center; align-items: safe center; padding: 16px; overflow: auto; -webkit-overflow-scrolling: touch; }
-        .modal-content { background: var(--card); padding: 20px; border-radius: 18px; width: 100%; max-width: 600px; border: 1px solid var(--border); max-height: max(70vh, 480px); display: flex; flex-direction: column; box-shadow: 0 24px 48px -12px rgba(0,0,0,0.6); margin: auto; }
+        .modal { display: none; position: fixed; inset: 0; width: 100%; height: 100%; background: var(--scrim); z-index: 1000; justify-content: center; align-items: safe center; padding: 16px; overflow: auto; -webkit-overflow-scrolling: touch; }
+        .modal-content { background: var(--card); padding: 20px; border-radius: 18px; width: 100%; max-width: 600px; border: 1px solid var(--border); max-height: max(70vh, 480px); display: flex; flex-direction: column; box-shadow: 0 24px 48px -12px var(--shadow-strong); margin: auto; }
         .modal-content .modal-body { overflow-y: auto; flex: 1 1 auto; min-height: 0; -webkit-overflow-scrolling: touch; }
         .modal-content .modal-footer { display: flex; gap: 12px; margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--border); flex-shrink: 0; }
         /* The folder picker keeps one height whatever the folder holds: a 3-item
@@ -2026,11 +2089,65 @@ HTML_TEMPLATE = """
            the Confirm button under the finger. */
         .modal-content.modal-picker { height: min(84vh, 720px); max-height: 84vh; }
         .modal-content.modal-picker #destTree { max-height: none; }
+
+        /* ---- settings ------------------------------------------------- */
+        /* One fixed height for every tab: switching tabs must never move the
+           close button or resize the dialog under the finger. */
+        .modal-content.modal-settings { height: min(84vh, 760px); max-height: 84vh; }
+        .settings-tabs { display:flex; gap:6px; margin: 2px 0 14px; flex-shrink:0; }
+        .settings-tab { flex:1; padding:9px 10px; border-radius:10px; border:1px solid var(--border);
+            background:var(--field); color:var(--text-muted); font-size:12.5px; font-weight:600;
+            cursor:pointer; font-family:inherit; transition: border-color .15s, color .15s, background .15s; }
+        .settings-tab.active { color:var(--accent-text); border-color:var(--accent); background:var(--accent-soft); }
+        .settings-tab:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+        .settings-pane { display:flex; flex-direction:column; gap:12px; }
+        .theme-grid { display:grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap:9px; }
+        .theme-card { display:flex; flex-direction:column; gap:8px; padding:10px; border-radius:12px;
+            border:1px solid var(--border); background:var(--field); cursor:pointer; text-align:right;
+            font-family:inherit; color:var(--text); transition: border-color .15s, background .15s; }
+        .theme-card:hover { border-color:var(--accent); }
+        .theme-card.active { border-color:var(--accent); background:var(--accent-soft); }
+        .theme-card:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+        .theme-swatches { display:flex; height:26px; border-radius:7px; overflow:hidden; border:1px solid var(--border); }
+        .theme-swatches i { flex:1; display:block; }
+        .theme-card-name { font-size:12.5px; font-weight:600; display:flex; align-items:center; gap:6px; }
+        .theme-card-name .theme-check { margin-inline-start:auto; color:var(--accent-text); font-size:12px; opacity:0; }
+        .theme-card.active .theme-card-name .theme-check { opacity:1; }
+        .theme-card-desc { font-size:10.5px; color:var(--text-muted); line-height:1.5; }
+        .settings-note { font-size:10.5px; color:var(--text-muted); line-height:1.6; }
+        .settings-save-state { font-size:11.5px; min-height:16px; color:var(--text-muted); }
+        .settings-save-state.ok { color:var(--success); }
+        .settings-save-state.err { color:var(--danger-ink); }
+
+        /* ---- search history ------------------------------------------- */
+        .search-history { margin-top:14px; border-top:1px solid var(--border); padding-top:12px; }
+        .history-head { display:flex; align-items:center; gap:8px; margin-bottom:9px; }
+        .history-title { font-size:12px; font-weight:600; color:var(--text-muted); }
+        .history-head .btn { margin-inline-start:auto; padding:4px 9px; font-size:11px; }
+        .history-chips { display:flex; flex-wrap:wrap; gap:6px; margin-bottom:10px; }
+        .history-chip { display:inline-flex; align-items:center; gap:6px; padding:5px 11px;
+            border-radius:999px; border:1px solid var(--border); background:var(--field);
+            color:var(--text); font-family:inherit; font-size:11.5px; cursor:pointer; }
+        .history-chip:hover, .history-chip:focus-visible { border-color:var(--accent); color:var(--accent-text); outline:none; }
+        .history-chip small { font-size:9.5px; color:var(--text-muted); }
+        .history-rows { display:flex; flex-direction:column; gap:6px; max-height:280px; overflow-y:auto; scrollbar-width:thin; }
+        .history-row { display:flex; align-items:center; gap:8px; padding:8px 10px;
+            border:1px solid var(--border); background:var(--field); border-radius:11px; }
+        .history-row-main { flex:1; min-width:0; cursor:pointer; display:flex; flex-direction:column; gap:3px; }
+        .history-row-main:hover .history-row-name { color:var(--accent-text); }
+        .history-row-name { font-size:12.5px; color:var(--text); display:flex; align-items:center; gap:6px; }
+        .history-row-name svg { width:13px; height:13px; flex-shrink:0; }
+        .history-row-path { font-size:10.5px; color:var(--text-muted); direction:ltr; text-align:left;
+            white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+        .history-row-meta { font-size:10px; color:var(--text-muted); white-space:nowrap; flex-shrink:0; }
+        .history-empty { padding:10px 2px; font-size:11.5px; color:var(--text-muted); line-height:1.7; }
+        .history-row.added { border-color:var(--accent); background:var(--accent-soft); }
         @media (max-width: 480px) {
             .modal { padding: 8px; align-items: stretch; }
             .modal-content { padding: 16px; max-height: 92vh; border-radius: 14px; }
             .modal-content.modal-picker { height: 92vh; max-height: 92vh; }
             .modal-content.modal-selected { height: 92vh; max-height: 92vh; }
+            .modal-content.modal-settings { height: 92vh; max-height: 92vh; }
             .assign-sheet { left:8px; right:8px; bottom:8px; }
         }
 
@@ -2041,7 +2158,7 @@ HTML_TEMPLATE = """
            asked the system for reduced motion. */
         .progress-fill.indeterminate {
             width: 100% !important; background-color: var(--accent);
-            background-image: linear-gradient(90deg, rgba(236,226,216,0) 0%, rgba(236,226,216,0.55) 50%, rgba(236,226,216,0) 100%);
+            background-image: linear-gradient(90deg, transparent 0%, var(--shine) 50%, transparent 100%);
             background-size: 40% 100%; background-repeat: no-repeat;
             animation: sdmp3-sweep 1.3s linear infinite;
         }
@@ -2079,10 +2196,11 @@ HTML_TEMPLATE = """
         .group-card-main .icon { color:var(--accent-text); flex-shrink:0; }
         .group-card-text { min-width:0; flex:1; }
         .group-card-name { font-size:13px; font-weight:600; color:var(--text); }
+        .group-card-name .group-crumb-sep { color:var(--accent-text); margin:0 3px; font-weight:400; }
         .group-card-meta { font-size:10.5px; color:var(--text-muted); margin-top:2px; }
         .group-card-actions { display:flex; flex-wrap:wrap; gap:6px; }
         .group-card-actions .btn { min-height:32px; padding:5px 9px; font-size:11.5px; }
-        .btn-ghost-danger { color:var(--danger-ink); border-color:rgba(244,63,94,0.38); }
+        .btn-ghost-danger { color:var(--danger-ink); border-color:var(--danger-line); }
         .group-empty-hint { font-size:11px; color:var(--text-muted); line-height:1.55; }
 
         .selected-row { display:flex; align-items:center; gap:10px; padding:10px 11px; border-radius:10px; background:var(--field); border:1px solid var(--border); }
@@ -2110,7 +2228,7 @@ HTML_TEMPLATE = """
         .assign-sheet { position:absolute; left:14px; right:14px; bottom:14px; z-index:6;
             display:flex; flex-direction:column; gap:9px; padding:12px; border-radius:14px;
             background:var(--card-2); border:1px solid var(--accent-line);
-            box-shadow:0 18px 40px rgba(0,0,0,0.5); }
+            box-shadow:0 18px 40px var(--shadow-card); }
         .assign-sheet-head { display:flex; align-items:center; justify-content:space-between; gap:8px; font-size:12.5px; color:var(--text); }
         .assign-groups { display:flex; flex-wrap:wrap; gap:7px; max-height:30vh; overflow-y:auto; }
         .assign-group { display:flex; align-items:center; gap:7px; max-width:100%; padding:7px 11px;
@@ -2137,8 +2255,8 @@ HTML_TEMPLATE = """
         .grid-2 { display:grid; grid-template-columns: 1fr 1fr; gap: 10px; }
         @media (max-width: 420px) { .grid-2 { grid-template-columns: 1fr; } }
 
-        .seg.option.active { background: var(--accent-fill); color: #f7f4f0; font-weight: 600; }
-        .seg.option.active svg { stroke: #f7f4f0; }
+        .seg.option.active { background: var(--accent-fill); color: var(--on-accent); font-weight: 600; }
+        .seg.option.active svg { stroke: var(--on-accent); }
         .seg.option:hover:not(.active) { color: var(--accent); border-radius:7px; }
 
         svg.icon { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
@@ -2188,6 +2306,9 @@ HTML_TEMPLATE = """
                 <span class="pill" id="sdWritePill" title="هل يمكن الكتابة على كارت الذاكرة الخارجي؟">كتابة الكارت: جاري الفحص</span>
             </div>
         </div>
+        <button type="button" class="icon-btn header-settings" onclick="openSettings()" aria-label="الإعدادات" title="الإعدادات والمظهر">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1.08-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1.08 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
+        </button>
     </div>
 
     <div class="card">
@@ -2284,13 +2405,23 @@ HTML_TEMPLATE = """
         </div>
         <div style="display:flex; gap:8px; margin-bottom: 12px;">
             <input type="text" id="searchInput" placeholder="اكتب اسم الملف للبحث..." style="margin-bottom:0;">
-            <button class="btn btn-primary" onclick="searchDeep()">بحث</button>
+            <button class="btn btn-primary" onclick="searchDeep(true)">بحث</button>
         </div>
         <label style="display:flex; align-items:center; gap:8px; cursor:pointer; color: var(--text-muted); font-size:13px; margin-bottom:0;">
             <input type="checkbox" id="foldersOnlyCheck" class="checkbox" checked style="width:16px; height:16px; margin:0;">
             بحث في أسماء المجلدات فقط
         </label>
         <div id="searchResults" class="tree" style="display:none; max-height: 250px; margin-top: 12px;"></div>
+
+        <div id="historyBlock" class="search-history" style="display:none;">
+            <div class="history-head">
+                <svg class="icon" style="width:14px;height:14px;color:var(--text-muted);" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"></circle><polyline points="12 7 12 12 16 14"></polyline></svg>
+                <span class="history-title">آخر نتائج البحث</span>
+                <button type="button" class="btn btn-outline" onclick="clearSearchHistory()">مسح الكل</button>
+            </div>
+            <div id="historyChips" class="history-chips"></div>
+            <div id="historyRows" class="history-rows"></div>
+        </div>
     </div>
 
     <div class="card">
@@ -2448,14 +2579,63 @@ HTML_TEMPLATE = """
                 <button type="button" class="btn btn-outline btn-sm" onclick="beginGroupEditor()">＋ اسم جديد</button>
             </div>
             <div id="groupEditor" class="group-editor" style="display:none;">
-                <input type="text" id="groupNameInput" maxlength="80" autocomplete="off" placeholder="اسم المجلد الأب"
+                <input type="text" id="groupNameInput" maxlength="180" autocomplete="off" placeholder="اسم المجلد الأب"
                        oninput="onGroupNameInput(this.value)" onkeydown="onGroupNameKey(event)">
+                <div class="check-hint" style="margin:0;">للتداخل داخل مجلد أب آخر اكتب: العلماء/ابن باز (حتى 3 مستويات)</div>
                 <div id="groupNameError" class="field-error"></div>
                 <div class="group-editor-actions">
                     <button type="button" class="btn btn-primary btn-sm" id="groupSaveBtn" onclick="saveGroupEditor()">حفظ</button>
                     <button type="button" class="btn btn-outline btn-sm" onclick="cancelGroupEditor()">إلغاء</button>
                 </div>
             </div>
+        </div>
+    </div>
+</div>
+
+<!-- Settings Modal -->
+<div class="modal" id="settingsModal">
+    <div class="modal-content modal-settings">
+        <h3 style="margin-top:0; border-bottom: 1px solid var(--border); padding-bottom: 15px; display:flex; align-items:center; gap:8px; flex-shrink:0;">
+            <svg class="icon" style="color:var(--accent);" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1.08-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1.08 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
+            الإعدادات
+        </h3>
+        <div class="settings-tabs">
+            <button type="button" class="settings-tab active" data-tab="appearance" onclick="showSettingsTab('appearance')">المظهر</button>
+            <button type="button" class="settings-tab" data-tab="about" onclick="showSettingsTab('about')">حول</button>
+        </div>
+        <div class="modal-body">
+            <div class="settings-pane" id="settingsPaneAppearance">
+                <div class="settings-note">اختر سمة التطبيق. تُحفظ في ملف الإعدادات على جهازك وتُطبَّق فوراً.</div>
+                <div class="theme-grid" id="themeGrid">
+                    {% for t in themes %}
+                    <button type="button" class="theme-card{% if t.id == active_theme.id %} active{% endif %}" data-theme-id="{{ t.id }}" onclick="pickTheme('{{ t.id }}')">
+                        <span class="theme-swatches">
+                            {% for c in t.swatches %}<i style="background: {{ c }};"></i>{% endfor %}
+                        </span>
+                        <span class="theme-card-name">
+                            {{ t.name }}
+                            <span class="theme-check">✓</span>
+                        </span>
+                        <span class="theme-card-desc">{{ t.desc }}</span>
+                    </button>
+                    {% endfor %}
+                </div>
+                <div id="settingsSaveState" class="settings-save-state"></div>
+            </div>
+            <div class="settings-pane" id="settingsPaneAbout" style="display:none;">
+                <div class="settings-note">
+                    SD Card Coffee — نسخة <span class="ltr-input" style="display:inline-block; padding:1px 6px;">v{{ app_version }}</span>
+                </div>
+                <div class="settings-note">
+                    كل شيء يعمل على الجهاز: النسخ، الفهرس، تمويه التاريخ، وتحويل النص إلى صوت. لا يوجد حساب ولا سحابة.
+                </div>
+                <div class="settings-note">
+                    ملفات الحالة في <span class="ltr-input" style="display:inline-block; padding:1px 6px;">~/.local/state/sdmp3/</span> — الإعدادات وآخر عمليات البحث وذاكرة البحث.
+                </div>
+            </div>
+        </div>
+        <div style="display:flex; gap:10px; margin-top:14px; flex-shrink:0;">
+            <button class="btn btn-outline" style="flex:1;" onclick="document.getElementById('settingsModal').style.display='none'">إغلاق</button>
         </div>
     </div>
 </div>
@@ -2622,6 +2802,7 @@ HTML_TEMPLATE = """
             <span id="speedText" style="color:var(--accent); font-weight:500;"></span>
             <span id="failedText"></span>
         </div>
+        <div id="cardWarningBox" style="display:none; margin-top:10px; padding:10px 12px; border-radius:10px; font-size:12px; line-height:1.7; background:var(--warning-soft); border:1px solid var(--warning-line); color:var(--warning);"></div>
         <div id="errorsBox" style="display:none; max-height:200px; overflow:auto; background:var(--field); border:1px solid var(--border); border-radius:6px; padding:10px; margin-top:10px; font-size:12px; color:var(--danger-ink);"></div>
         <div id="timeTakenDiv" style="display:none; color:var(--success); font-weight:500; margin-top:15px; font-size:13px; text-align:center;"></div>
         <div id="inlineNotify" style="display:none; flex-wrap:wrap; margin-top:14px; padding:12px 14px; border-radius:10px; font-size:13.5px; line-height:1.7; text-align:center; font-weight:600; border:1px solid; align-items:center; justify-content:center; gap:8px;"></div>
@@ -2750,22 +2931,48 @@ HTML_TEMPLATE = """
     // FAT is case-insensitive, so "علوم" and "علوم " collide. The backslash is
     // built with fromCharCode: the page is a plain Python string, and a raw
     // backslash here would be eaten before the browser ever sees it.
-    const GROUP_BAD_CHARS = '/' + String.fromCharCode(92) + ':*?"<>|';
+    // The '/' is NOT in this set: it is the nesting separator, handled below.
+    const GROUP_BAD_CHARS = String.fromCharCode(92) + ':*?"<>|';
+    const GROUP_MAX_DEPTH = 3;
+    const GROUP_PATH_MAX = 180;
+
+    // "العلماء / ابن باز // دروس" -> ['العلماء','ابن باز','دروس']
+    function groupPathParts(raw) {
+        return String(raw || '').split('/').map(function(s) { return s.trim(); })
+            .filter(function(s) { return s.length > 0; });
+    }
+
+    function groupPathKey(raw) {
+        return groupPathParts(raw).join('/').toLowerCase();
+    }
 
     function groupNameError(raw, exceptId) {
         let name = (raw || '').trim();
         if (!name) return 'اكتب اسماً للمجلد';
-        if (name === '.' || name === '..') return 'اسم غير صالح';
-        if (name.length > 80) return 'الاسم طويل جداً (الحد 80 حرفاً)';
-        for (let i = 0; i < GROUP_BAD_CHARS.length; i++) {
-            if (name.indexOf(GROUP_BAD_CHARS[i]) !== -1) return 'لا تستخدم الرموز / : * ? " < > |';
+        if (name.length > GROUP_PATH_MAX) return 'المسار طويل جداً (الحد ' + GROUP_PATH_MAX + ' حرفاً)';
+        let parts = groupPathParts(name);
+        if (!parts.length) return 'اكتب اسماً للمجلد';
+        if (parts.length > GROUP_MAX_DEPTH) return 'أقصى تداخل ' + GROUP_MAX_DEPTH + ' مستويات (مثال: العلماء/ابن باز)';
+        for (let i = 0; i < parts.length; i++) {
+            let seg = parts[i];
+            if (seg === '.' || seg === '..') return 'اسم غير صالح';
+            if (seg.length > 80) return 'طول المقطع أكثر من 80 حرفاً';
+            for (let j = 0; j < GROUP_BAD_CHARS.length; j++) {
+                if (seg.indexOf(GROUP_BAD_CHARS[j]) !== -1) return 'لا تستخدم الرموز \\ : * ? " < > |';
+            }
+            if (/[ .]$/.test(seg)) return 'لا ينتهي الاسم بمسافة أو نقطة';
         }
-        if (/[ .]$/.test(name)) return 'لا ينتهي الاسم بمسافة أو نقطة';
+        let key = parts.join('/').toLowerCase();
         for (let i = 0; i < copyGroups.length; i++) {
             let g = copyGroups[i];
-            if (g.id !== exceptId && g.name.toLowerCase() === name.toLowerCase()) return 'يوجد مجلد بنفس الاسم';
+            if (g.id !== exceptId && groupPathKey(g.name) === key) return 'يوجد مجلد بنفس الاسم';
         }
         return '';
+    }
+
+    // "A/B" -> "A › B": the card shows the real nesting, not a slash soup.
+    function groupBreadcrumbHtml(name) {
+        return groupPathParts(name).map(function(seg) { return esc(seg); }).join(' <span class="group-crumb-sep">›</span> ');
     }
 
     function renderGroupPill() {
@@ -2788,17 +2995,20 @@ HTML_TEMPLATE = """
             let n = g.paths.length;
             let meta = n === 0 ? 'فارغة — أشّر ثم أضف'
                 : (n === 1 ? 'عنصر واحد' : (n === 2 ? 'عنصران' : n + ' عناصر'));
+            let depth = groupPathParts(g.name).length;
+            if (depth > 1) meta += ' • داخل مجلد أب';
             let addDisabled = pickPaths.size ? '' : ' disabled';
             return '<div class="group-card" data-gid="' + g.id + '">' +
                 '<div class="group-card-main">' +
                     '<svg class="icon" viewBox="0 0 24 24"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>' +
                     '<div class="group-card-text">' +
-                        '<div class="group-card-name truncate-text" title="' + esc(g.name) + '">' + esc(g.name) + '</div>' +
+                        '<div class="group-card-name truncate-text" title="' + esc(g.name) + '">' + groupBreadcrumbHtml(g.name) + '</div>' +
                         '<div class="group-card-meta">' + esc(meta) + '</div>' +
                     '</div>' +
                 '</div>' +
                 '<div class="group-card-actions">' +
                     '<button type="button" class="btn btn-outline btn-sm" data-act="add"' + addDisabled + '>إضافة المؤشَّر</button>' +
+                    '<button type="button" class="btn btn-outline btn-sm" data-act="child"' + (depth >= GROUP_MAX_DEPTH ? ' disabled title="أقصى تداخل 3 مستويات"' : '') + '>＋ فرع</button>' +
                     '<button type="button" class="btn btn-outline btn-sm" data-act="rename">تعديل الاسم</button>' +
                     '<button type="button" class="btn btn-outline btn-sm btn-ghost-danger" data-act="delete">حذف</button>' +
                 '</div>' +
@@ -2903,9 +3113,9 @@ HTML_TEMPLATE = """
     function renameGroup(gid) {
         let g = findGroup(gid);
         if (!g) return;
-        showInputModal('تعديل اسم المجلد', 'اسم المجلد الأب داخل الوجهة:', g.name,
+        showInputModal('تعديل اسم المجلد', 'اسم المجلد الأب داخل الوجهة (استخدم / للتداخل):', g.name,
             function(val) {
-                g.name = val;
+                g.name = groupPathParts(val).join('/');
                 renderGroupUI();
             },
             function(val) { return groupNameError(val, gid); });
@@ -2944,9 +3154,18 @@ HTML_TEMPLATE = """
             el.innerHTML = '<div class="group-empty-hint">لا توجد مجلدات بعد — اكتب اسماً جديداً بالأسفل.</div>';
             return;
         }
-        el.innerHTML = copyGroups.map(function(g) {
-            return '<button type="button" class="assign-group" data-gid="' + g.id + '">' +
-                '<span class="truncate-text">' + esc(g.name) + '</span>' +
+        // Parents before their children: a plain path sort already does that
+        // ("A" < "A/B"), and it keeps the indentation readable.
+        let ordered = copyGroups.slice().sort(function(a, b) {
+            return groupPathKey(a.name).localeCompare(groupPathKey(b.name));
+        });
+        el.innerHTML = ordered.map(function(g) {
+            let depth = groupPathParts(g.name).length;
+            let indent = depth > 1 ? ' style="margin-inline-start:' + ((depth - 1) * 14) + 'px;"' : '';
+            let label = depth > 1 ? groupPathParts(g.name)[depth - 1] : g.name;
+            return '<button type="button" class="assign-group" data-gid="' + g.id + '"' + indent +
+                ' title="' + esc(g.name) + '">' +
+                '<span class="truncate-text">' + esc(label) + '</span>' +
                 '<span class="assign-group-count">' + g.paths.length + '</span>' +
             '</button>';
         }).join('');
@@ -2955,6 +3174,27 @@ HTML_TEMPLATE = """
     function startNewGroup() {
         openAssignSheet();
         beginGroupEditor();
+    }
+
+    // "＋ فرع" on a group card: nest a new group inside it without typing the
+    // parent name again (the editor opens with "parent/" already there).
+    function startChildGroup(gid) {
+        let parent = null;
+        for (let i = 0; i < copyGroups.length; i++) {
+            if (copyGroups[i].id === gid) parent = copyGroups[i];
+        }
+        if (!parent) return;
+        openAssignSheet();
+        let editor = document.getElementById('groupEditor');
+        let wrap = document.getElementById('assignNewWrap');
+        if (!editor) return;
+        if (wrap) wrap.style.display = 'none';
+        editor.style.display = 'flex';
+        let input = document.getElementById('groupNameInput');
+        input.value = parent.name + '/';
+        input.focus();
+        try { input.setSelectionRange(input.value.length, input.value.length); } catch (_e) {}
+        onGroupNameInput(input.value);
     }
 
     function beginGroupEditor() {
@@ -3001,6 +3241,9 @@ HTML_TEMPLATE = """
             input.focus();
             return;
         }
+        // Store the canonical breadcrumb: "A / B // C" is saved as "A/B/C", so
+        // the card, the pill and the server all see the same path.
+        name = groupPathParts(name).join('/');
         // Whatever is checked right now comes into the new group with it, and
         // leaves any other group first: one item, one parent folder.
         copyGroups.forEach(function(other) {
@@ -3022,6 +3265,7 @@ HTML_TEMPLATE = """
         let gid = Number(card.getAttribute('data-gid'));
         let act = btn.getAttribute('data-act');
         if (act === 'add') addPickedToGroup(gid);
+        else if (act === 'child') startChildGroup(gid);
         else if (act === 'rename') renameGroup(gid);
         else if (act === 'delete') deleteGroup(gid);
     });
@@ -3091,6 +3335,7 @@ HTML_TEMPLATE = """
         generateRandomSpoofDate();
         checkTransferStatus(); 
         checkCacheStatus(currentSourceRoot);
+        loadSearchHistory();
     };
 
     function updateSourceRoot(path) {
@@ -3627,7 +3872,7 @@ HTML_TEMPLATE = """
 
     let searchDebounceTimer = null;
     let searchRequestToken = 0;
-    function searchDeep() {
+    function searchDeep(committed) {
         let q = document.getElementById('searchInput').value.trim();
         let foldersOnly = document.getElementById('foldersOnlyCheck').checked; 
         let resBox = document.getElementById('searchResults');
@@ -3635,13 +3880,13 @@ HTML_TEMPLATE = """
         resBox.style.display = 'block'; resBox.innerHTML = '<div style="padding:10px;color:var(--text-muted);">جاري البحث السريع...</div>';
 
         let myToken = ++searchRequestToken;
-        fetch('/api/search?q=' + encodeURIComponent(q) + '&folders_only=' + foldersOnly + '&root=' + encodeURIComponent(currentSourceRoot))
+        fetch('/api/search?q=' + encodeURIComponent(q) + '&folders_only=' + foldersOnly + '&root=' + encodeURIComponent(currentSourceRoot) + (committed ? '&remember=1' : ''))
             .then(r=>r.json()).then(data=>{
             if (myToken !== searchRequestToken) return; 
             document.getElementById('searchSpeedBadge').style.display = data.from_cache ? 'inline-block' : 'none';
             resBox.innerHTML = '';
-            if(data.results.length === 0) { resBox.innerHTML = '<div style="padding:10px;color:var(--text-muted);">لم يتم العثور على نتائج.</div>'; return; }
-            data.results.forEach(item => {
+            if(data.results.length === 0) { resBox.innerHTML = '<div style="padding:10px;color:var(--text-muted);">لم يتم العثور على نتائج.</div>'; }
+            else data.results.forEach(item => {
                 let isChecked = isPathSelected(item.path) ? 'checked' : '';
                 resBox.innerHTML += `<div class="item-row"><input type="checkbox" class="checkbox" value="${esc(item.path)}" ${isChecked} onchange="toggleSelect(this, ${item.is_dir})">
                     <div class="item-name" style="flex-direction:column;align-items:start;gap:4px;" onclick="this.previousElementSibling.click()">
@@ -3649,17 +3894,196 @@ HTML_TEMPLATE = """
                         <div class="ltr-input truncate-text" style="font-size:11px;color:var(--text-muted); width: 100%;">${esc(item.path)}</div>
                     </div>${rowActionsHtml(item.path, item.name, item.is_dir)}</div>`;
             });
+            // The search that just ran is now the newest history entry.
+            if (committed) loadSearchHistory();
         }).catch(() => { if (myToken === searchRequestToken) resBox.innerHTML = '<div style="padding:10px;color:var(--danger-ink);">تعذر إتمام البحث.</div>'; });
     }
 
     document.getElementById('searchInput').addEventListener('input', function() {
         clearTimeout(searchDebounceTimer);
         if (this.value.trim().length === 0) { document.getElementById('searchResults').style.display = 'none'; return; }
-        searchDebounceTimer = setTimeout(searchDeep, 400);
+        searchDebounceTimer = setTimeout(function() { searchDeep(false); }, 400);
     });
     document.getElementById('searchInput').addEventListener('keydown', function(e) {
-        if (e.key === 'Enter') { clearTimeout(searchDebounceTimer); searchDeep(); }
+        if (e.key === 'Enter') { clearTimeout(searchDebounceTimer); searchDeep(true); }
     });
+
+    // ---- search history (last 25 results + last 25 queries) -------------
+    // Kept in memory only; the server owns the file. Every mutation returns the
+    // new list, so the two can never drift apart.
+    let searchHistory = { items: [], queries: [] };
+
+    function relativeTime(ts) {
+        let seconds = Math.max(0, Math.floor(Date.now() / 1000 - (ts || 0)));
+        if (seconds < 60) return 'الآن';
+        if (seconds < 3600) return 'قبل ' + Math.floor(seconds / 60) + ' د';
+        if (seconds < 86400) return 'قبل ' + Math.floor(seconds / 3600) + ' س';
+        if (seconds < 604800) return 'قبل ' + Math.floor(seconds / 86400) + ' ي';
+        return new Date((ts || 0) * 1000).toLocaleDateString('ar');
+    }
+
+    function loadSearchHistory() {
+        return fetch('/api/history').then(function(r) { return r.json(); }).then(function(data) {
+            searchHistory = { items: data.items || [], queries: data.queries || [] };
+            renderSearchHistory();
+        }).catch(function() {});
+    }
+
+    function renderSearchHistory() {
+        let block = document.getElementById('historyBlock');
+        let chips = document.getElementById('historyChips');
+        let rows = document.getElementById('historyRows');
+        if (!block || !chips || !rows) return;
+        let queries = searchHistory.queries || [];
+        let items = searchHistory.items || [];
+        if (!queries.length && !items.length) { block.style.display = 'none'; return; }
+        block.style.display = 'block';
+
+        chips.innerHTML = queries.map(function(q) {
+            return '<button type="button" class="history-chip" data-query="' + esc(q.q) + '" title="ابحث مرة أخرى عن «' + esc(q.q) + '»">' +
+                '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:11px;height:11px;"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>' +
+                esc(q.q) + '<small>' + esc(relativeTime(q.at)) + '</small></button>';
+        }).join('');
+
+        if (!items.length) {
+            rows.innerHTML = '<div class="history-empty">لا توجد نتائج محفوظة بعد — نفّذ بحثاً ليُحفظ هنا.</div>';
+            return;
+        }
+        rows.innerHTML = items.map(function(it, index) {
+            let icon = it.is_dir
+                ? '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>'
+                : '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path></svg>';
+            return '<div class="history-row" data-index="' + index + '">' +
+                '<div class="history-row-main" data-act="use" role="button" tabindex="0" title="أضف إلى التحديد">' +
+                    '<div class="history-row-name">' + icon + '<span class="truncate-text">' + esc(it.name || it.path) + '</span></div>' +
+                    '<div class="history-row-path">' + esc(it.path) + '</div>' +
+                '</div>' +
+                '<span class="history-row-meta">' + esc(relativeTime(it.at)) + '</span>' +
+                '<button type="button" class="icon-btn danger" data-act="forget" aria-label="حذف من السجل">' +
+                    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>' +
+                '</button>' +
+            '</div>';
+        }).join('');
+    }
+
+    // One delegated listener: no path or query is ever interpolated into an
+    // inline onclick, so a name with a quote cannot break the markup.
+    document.getElementById('historyChips').addEventListener('click', function(e) {
+        let chip = e.target.closest ? e.target.closest('[data-query]') : null;
+        if (!chip) return;
+        document.getElementById('searchInput').value = chip.getAttribute('data-query');
+        searchDeep(true);
+    });
+
+    document.getElementById('historyRows').addEventListener('click', function(e) {
+        let btn = e.target.closest ? e.target.closest('[data-act]') : null;
+        if (!btn) return;
+        let row = btn.closest('.history-row');
+        if (!row) return;
+        let item = searchHistory.items[Number(row.getAttribute('data-index'))];
+        if (!item) return;
+        if (btn.getAttribute('data-act') === 'forget') { forgetHistoryItem(item.path); return; }
+        useHistoryItem(item, btn.closest('.history-row-main'));
+    });
+    document.getElementById('historyRows').addEventListener('keydown', function(e) {
+        if (e.key !== 'Enter' && e.key !== ' ') return;
+        let main = e.target.closest ? e.target.closest('.history-row-main') : null;
+        if (!main) return;
+        e.preventDefault();
+        let item = searchHistory.items[Number(main.closest('.history-row').getAttribute('data-index'))];
+        if (item) useHistoryItem(item, main);
+    });
+
+    function useHistoryItem(item, rowEl) {
+        includePath(item.path, !!item.is_dir);
+        refreshCheckboxStates();
+        // Feedback without a modal: the row flashes, and the cart counter (which
+        // is already on screen) shows the new total.
+        if (rowEl) {
+            rowEl.classList.add('added');
+            setTimeout(function() { rowEl.classList.remove('added'); }, 1200);
+        }
+    }
+
+    function forgetHistoryItem(path) {
+        fetch('/api/history/remove', { method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ path: path }) })
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                searchHistory = { items: data.items || [], queries: data.queries || [] };
+                renderSearchHistory();
+            }).catch(function() {});
+    }
+
+    function clearSearchHistory() {
+        showConfirmModal('سيتم مسح سجل البحث بالكامل. هل تريد المتابعة؟', function() {
+            fetch('/api/history/clear', { method: 'POST' })
+                .then(function(r) { return r.json(); })
+                .then(function() { searchHistory = { items: [], queries: [] }; renderSearchHistory(); })
+                .catch(function() {});
+        });
+    }
+
+    // ---- settings + themes ---------------------------------------------
+    let activeThemeId = document.documentElement.getAttribute('data-theme') || '';
+
+    function openSettings() {
+        document.getElementById('settingsModal').style.display = 'flex';
+        showSettingsTab('appearance');
+    }
+
+    function showSettingsTab(tab) {
+        document.querySelectorAll('.settings-tab').forEach(function(btn) {
+            btn.classList.toggle('active', btn.getAttribute('data-tab') === tab);
+        });
+        let appearance = document.getElementById('settingsPaneAppearance');
+        let about = document.getElementById('settingsPaneAbout');
+        if (appearance) appearance.style.display = (tab === 'appearance') ? 'flex' : 'none';
+        if (about) about.style.display = (tab === 'about') ? 'flex' : 'none';
+    }
+
+    // Applying a theme is only token assignment: the whole palette is a set of
+    // CSS custom properties, so nothing is re-rendered and nothing flickers.
+    function applyTheme(tokens, bg, id) {
+        if (tokens) {
+            Object.keys(tokens).forEach(function(name) {
+                document.documentElement.style.setProperty(name, tokens[name]);
+            });
+        }
+        if (bg) {
+            let meta = document.querySelector('meta[name="theme-color"]');
+            if (meta) meta.setAttribute('content', bg);
+        }
+        if (id) {
+            activeThemeId = id;
+            document.documentElement.setAttribute('data-theme', id);
+        }
+        document.querySelectorAll('.theme-card').forEach(function(card) {
+            card.classList.toggle('active', card.getAttribute('data-theme-id') === activeThemeId);
+        });
+    }
+
+    function setSettingsState(text, kind) {
+        let el = document.getElementById('settingsSaveState');
+        if (!el) return;
+        el.className = 'settings-save-state' + (kind ? ' ' + kind : '');
+        el.textContent = text || '';
+    }
+
+    function pickTheme(id) {
+        if (!id || id === activeThemeId) return;
+        setSettingsState('جارٍ الحفظ...', '');
+        fetch('/api/settings', { method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ theme: id }) })
+            .then(function(r) { return r.json().then(function(d) { return { ok: r.ok, data: d }; }); })
+            .then(function(res) {
+                if (!res.ok) { setSettingsState(res.data.error || 'تعذر حفظ السمة', 'err'); return; }
+                applyTheme(res.data.tokens, res.data.theme_bg, id);
+                setSettingsState('تم الحفظ — السمة مطبقة.', 'ok');
+                setTimeout(function() { setSettingsState('', ''); }, 2500);
+            })
+            .catch(function() { setSettingsState('تعذر الاتصال بالخادم', 'err'); });
+    }
 
     function updateSizeDisplay(totalBytes) {
         let formattedSize = '';
@@ -4283,6 +4707,7 @@ HTML_TEMPLATE = """
         document.getElementById('cancelProgressBtn').style.display = 'block';
         document.getElementById('closeProgressBtn').style.display = 'none';
         document.getElementById('timeTakenDiv').style.display = 'none';
+        document.getElementById('cardWarningBox').style.display = 'none';
         document.getElementById('inlineNotify').style.display = 'none';
         document.getElementById('currentFile').style.color = 'var(--text-muted)';
     }
@@ -4307,8 +4732,8 @@ HTML_TEMPLATE = """
         el.innerHTML = html;
         el.style.display = 'flex';
         if(type === 'success') {
-            el.style.background = 'rgba(127,191,147,0.12)';
-            el.style.borderColor = 'var(--success)';
+            el.style.background = 'var(--ok-soft)';
+            el.style.borderColor = 'var(--ok-line)';
             el.style.color = 'var(--success)';
         } else {
             el.style.background = 'var(--danger-soft)';
@@ -4411,9 +4836,26 @@ HTML_TEMPLATE = """
                             let s = data.eta_seconds % 60;
                             eta = ' • متبقي ~' + (m > 0 ? m + ' د ' : '') + s + ' ث';
                         }
-                        speedEl.innerText = data.speed_mbps + ' MB/s' + eta;
+                        // Instant and average side by side: a momentary dip is
+                        // not a slow card, and the average is what the copy got.
+                        let avg = (data.avg_mbps > 0)
+                            ? ' • المتوسط ' + data.avg_mbps + ' MB/s'
+                            : '';
+                        speedEl.innerText = 'اللحظية ' + data.speed_mbps + ' MB/s' + avg + eta;
                     } else {
                         speedEl.innerText = '';
+                    }
+                }
+
+                // A measured slow card is a warning, not a failure: no red, no
+                // "pull it out" instruction while files are still being written.
+                let warnEl = document.getElementById('cardWarningBox');
+                if (warnEl) {
+                    if (data.card_warning) {
+                        warnEl.innerText = data.card_warning;
+                        warnEl.style.display = 'block';
+                    } else {
+                        warnEl.style.display = 'none';
                     }
                 }
 
@@ -4463,7 +4905,9 @@ HTML_TEMPLATE = """
                         }
                         document.getElementById('timeTakenDiv').style.display = 'block';
                         document.getElementById('timeTakenDiv').innerText = 'استغرق: ' + data.time_taken
-                            + (data.speed_mbps ? ' • متوسط السرعة: ' + data.speed_mbps + ' MB/s' : '')
+                            + (data.copy_seconds ? ' • النسخ ' + data.copy_seconds + ' ث' : '')
+                            + (data.avg_mbps ? ' • متوسط السرعة: ' + data.avg_mbps + ' MB/s' : '')
+                            + (data.verify_seconds ? ' • التحقق ' + data.verify_seconds + ' ث' : '')
                             + verifyNote;
                         // The parent folders belonged to the copy that just ran.
                         if (data.action === 'copy' && copyGroups.length) {
@@ -4530,6 +4974,7 @@ HTML_TEMPLATE = """
             document.getElementById('progressModal').style.display = 'none';
             progressModalVisible = false;
             document.getElementById('errorsBox').style.display = 'none';
+            document.getElementById('cardWarningBox').style.display = 'none';
             document.getElementById('inlineNotify').style.display = 'none';
             document.getElementById('cancelProgressBtn').disabled = false;
             document.getElementById('modalTitle').innerText = 'العملية قيد التنفيذ...';
@@ -4542,8 +4987,23 @@ HTML_TEMPLATE = """
 
 @app.route('/')
 def index():
-    return render_template_string(HTML_TEMPLATE, storages=get_available_storages(),
-                                  app_version=get_app_version())
+    """The whole page, painted with the saved theme on the first byte.
+
+    The token block and `theme-color` are rendered server-side from
+    settings.json: a client-side apply would flash the default theme on every
+    load, which is exactly what a phone user notices.
+    """
+    theme_id = APP_SETTINGS.get('theme') or DEFAULT_THEME
+    active = get_theme(theme_id)
+    return render_template_string(
+        HTML_TEMPLATE,
+        storages=get_available_storages(),
+        app_version=get_app_version(),
+        active_theme=active,
+        theme_css=theme_css_pairs(active['id']),
+        theme_bg=theme_color(active['id']),
+        themes=catalog(),
+    )
 
 @app.route('/api/system')
 def system_info():
@@ -4644,10 +5104,17 @@ folder_cache_building = set()  # root paths currently being indexed
 
 # The index lives outside the checkout so `git pull` stays clean, next to the
 # CLI's own state (instance.json / sdmp3.log).
-SEARCH_CACHE_FILE = os.path.join(
-    os.path.expanduser('~'), '.local', 'state', 'sdmp3', 'search_cache.json')
+SEARCH_CACHE_FILE = state_file('search_cache.json')
 SEARCH_CACHE_MAX_ROOTS = 32
 _cache_save_timer = {'handle': None}
+
+# User settings (currently: the theme) and the last searches. Both files live in
+# ~/.local/state/sdmp3/ through sdmp3_state.py, and both are loaded in main() so
+# the page can be painted with them on the very first request.
+APP_SETTINGS = {'version': 1, 'theme': DEFAULT_THEME}
+SEARCH_HISTORY = {'version': 1, 'items': [], 'queries': []}
+_settings_lock = threading.RLock()
+_history_lock = threading.RLock()
 
 
 def _save_folder_cache():
@@ -4848,6 +5315,9 @@ def deep_search():
     root = request.args.get('root', '/sdcard') or '/sdcard'
     if not q: return jsonify({'results': []})
     if not os.path.isdir(root): root = '/sdcard'
+    # Only a *committed* search (Enter / the button) is remembered; the 400ms
+    # typing debounce would otherwise fill the history with `م`, `مج`, `مجل`...
+    remember = request.args.get('remember') == '1'
 
     with folder_cache_lock:
         cached = FOLDER_CACHE.get(root)
@@ -4861,6 +5331,8 @@ def deep_search():
             if q in it['name_lower']:
                 results.append({'name': it['name'], 'path': it['path'], 'is_dir': it['is_dir']})
         _rank_search_results(results, q)
+        if remember:
+            remember_search(q, root, results)
         return jsonify({'results': results[:SEARCH_MAX_RESULTS], 'from_cache': True, 'cache_count': cached['count']})
 
     results = []
@@ -4893,7 +5365,129 @@ def deep_search():
         pass
 
     _rank_search_results(results, q)
+    if remember:
+        remember_search(q, root, results)
     return jsonify({'results': results, 'from_cache': False})
+
+
+# ---------------------------------------------------------------------------
+# settings (theme) and search history
+# ---------------------------------------------------------------------------
+
+# How many results one search may contribute to the history. A single 500-hit
+# search would otherwise wipe the 25 slots and the section would stop being a
+# history of *searches*.
+HISTORY_RESULTS_PER_SEARCH = 10
+
+
+def remember_search(query, root, results):
+    """Save a committed search: the query chip and its top results."""
+    global SEARCH_HISTORY
+    now = int(time.time())
+    top = []
+    for item in (results or [])[:HISTORY_RESULTS_PER_SEARCH]:
+        path = item.get('path')
+        if not path:
+            continue
+        top.append({
+            'path': path,
+            'name': item.get('name') or os.path.basename(path),
+            'is_dir': bool(item.get('is_dir')),
+            'root': root,
+            'q': query,
+            'at': now,
+        })
+    with _history_lock:
+        items = [i for i in (SEARCH_HISTORY.get('items') or []) if i.get('path')]
+        # One row per path: a folder found twice is still one folder.
+        new_paths = {i['path'] for i in top}
+        items = [i for i in items if i['path'] not in new_paths]
+        items = (top + items)[:HISTORY_ITEM_LIMIT]
+        queries = upsert_recent(SEARCH_HISTORY.get('queries') or [],
+                                {'q': query, 'root': root, 'at': now},
+                                'q', HISTORY_QUERY_LIMIT)
+        SEARCH_HISTORY = {'version': 1, 'items': items, 'queries': queries}
+        snapshot = dict(SEARCH_HISTORY)
+    save_search_history(snapshot)
+
+
+@app.route('/api/settings', methods=['GET', 'POST'])
+def api_settings():
+    """Read or update the theme.
+
+    The only writable key is `theme`, checked against the registry: a bad id
+    falls back to the default instead of being stored, so the page can always
+    render.
+    """
+    global APP_SETTINGS
+    if request.method == 'GET':
+        return jsonify({
+            'settings': APP_SETTINGS,
+            'themes': [{'id': t['id'], 'name': t['name'], 'desc': t['desc'],
+                        'dark': t['dark'], 'swatches': t['swatches'],
+                        'tokens': t['tokens'] if request.args.get('tokens') == '1' else None}
+                       for t in catalog()],
+            'default': DEFAULT_THEME,
+        })
+
+    body = request.json or {}
+    theme_id = body.get('theme')
+    if theme_id not in THEMES:
+        return jsonify({'error': 'سمة غير معروفة'}), 400
+    with _settings_lock:
+        APP_SETTINGS = dict(APP_SETTINGS)
+        APP_SETTINGS['theme'] = theme_id
+        settings = dict(APP_SETTINGS)
+    if not save_settings(settings):
+        return jsonify({'error': 'تعذر حفظ الإعدادات على الجهاز'}), 500
+    return jsonify({
+        'ok': True,
+        'settings': settings,
+        'theme_bg': theme_color(theme_id),
+        'tokens': theme_tokens(theme_id),
+    })
+
+
+@app.route('/api/history')
+def api_history():
+    with _history_lock:
+        return jsonify({
+            'items': list(SEARCH_HISTORY.get('items') or []),
+            'queries': list(SEARCH_HISTORY.get('queries') or []),
+        })
+
+
+@app.route('/api/history/clear', methods=['POST'])
+def api_history_clear():
+    global SEARCH_HISTORY
+    with _history_lock:
+        SEARCH_HISTORY = {'version': 1, 'items': [], 'queries': []}
+        snapshot = dict(SEARCH_HISTORY)
+    save_search_history(snapshot)
+    return jsonify({'ok': True})
+
+
+@app.route('/api/history/remove', methods=['POST'])
+def api_history_remove():
+    """Forget one result row (`path`) or one query chip (`q`)."""
+    global SEARCH_HISTORY
+    body = request.json or {}
+    path = body.get('path')
+    query = body.get('q')
+    if not path and not query:
+        return jsonify({'error': 'لا يوجد عنصر للحذف'}), 400
+    with _history_lock:
+        items = SEARCH_HISTORY.get('items') or []
+        queries = SEARCH_HISTORY.get('queries') or []
+        if path:
+            items = [i for i in items if i.get('path') != path]
+        if query:
+            queries = [i for i in queries if i.get('q') != query]
+        SEARCH_HISTORY = {'version': 1, 'items': items, 'queries': queries}
+        snapshot = dict(SEARCH_HISTORY)
+    save_search_history(snapshot)
+    return jsonify({'ok': True, 'items': list(snapshot['items']),
+                    'queries': list(snapshot['queries'])})
 
 def get_dir_size(path, excludes):
     total = 0
@@ -5416,22 +6010,30 @@ def start_transfer():
     problem = check_destination(dest)
     if problem: return jsonify({'error': problem})
 
-    # A group name that matches an ungrouped root would put that root inside the
-    # group folder instead of at the destination: silent mixing, so refuse it.
+    # A group's TOP-LEVEL folder that matches an ungrouped root would put that
+    # root inside the group folder instead of at the destination: silent mixing,
+    # so refuse it. ("A" and "A/B" groups are fine: that is nesting.)
     ungrouped_names = {os.path.basename(os.path.normpath(p)).casefold() for p in ungrouped}
     for name in group_names:
-        if name.casefold() in ungrouped_names:
+        top = group_segments(name)[0]
+        if top.casefold() in ungrouped_names:
             return jsonify({'error': ('اسم المجلد «{}» يتعارض مع عنصر غير مجمَّع بنفس الاسم — '
-                                      'ضمّه إلى مجموعة أو غيّر الاسم'.format(name))})
+                                      'ضمّه إلى مجموعة أو غيّر الاسم'.format(top))})
 
     # A group folder that already exists is a merge: files with the same name
     # would be replaced. Ask once, before anything is written, for all of them.
+    # Every level of a nested path is checked: a *file* where a folder must be
+    # would otherwise fail halfway through the copy.
     existing = []
+    group_chain = {}
     for name, _gpaths in groups:
-        target = os.path.join(dest, name)
-        if os.path.exists(target):
-            if not os.path.isdir(target):
-                return jsonify({'error': 'يوجد ملف بنفس اسم المجلد «{}» — اختر اسماً آخر'.format(name)})
+        chain = group_dir_chain(dest, name)
+        group_chain[name] = chain
+        for dir_path in chain:
+            if os.path.exists(dir_path) and not os.path.isdir(dir_path):
+                return jsonify({'error': 'يوجد ملف بنفس اسم المجلد «{}» — اختر اسماً آخر'.format(
+                    os.path.basename(dir_path))})
+        if chain and os.path.exists(chain[-1]):
             existing.append(name)
     if existing and not data.get('confirm_merge'):
         if len(existing) == 1:
@@ -5449,7 +6051,8 @@ def start_transfer():
     # Same self-copy guards as before, once per group target and once for the
     # ungrouped roots that go straight into the destination.
     for name, gpaths in groups:
-        target = os.path.join(dest, name)
+        chain = group_chain.get(name) or group_dir_chain(dest, name)
+        target = chain[-1] if chain else dest
         if dest_inside_source(gpaths, target):
             return jsonify({'error': 'لا يمكن النسخ إلى مجلد داخل المصدر: ' + target})
         if copy_targets_source(gpaths, target):
@@ -5577,6 +6180,18 @@ def main(argv=None):
                 pass
 
     print(f"sdmp3 {get_app_version()} - serving on {args.host}:{args.port}", flush=True)
+    # Settings + search history: read once, here, so the first request is already
+    # painted with the saved theme and the previous searches are on screen.
+    try:
+        global APP_SETTINGS, SEARCH_HISTORY
+        APP_SETTINGS = load_settings(theme_ids(), DEFAULT_THEME)
+        SEARCH_HISTORY = load_search_history()
+        # A pulled-out card leaves stale results behind. Prune them once at
+        # startup instead of stat()-ing every saved path on each request.
+        SEARCH_HISTORY = prune_history_to_roots(SEARCH_HISTORY, os.path.isdir)
+        save_search_history(SEARCH_HISTORY)
+    except Exception as exc:
+        print(f"  settings: using defaults ({exc})", flush=True)
     # The instant-search index survives a restart; restoring it here means the
     # first search after `sdmp3 restart` is already fast.
     try:
