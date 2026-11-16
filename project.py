@@ -2084,6 +2084,9 @@ HTML_TEMPLATE = """
         .cart-buttons { display: flex; gap: 12px; }
 
         .modal { display: none; position: fixed; inset: 0; width: 100%; height: 100%; background: var(--scrim); z-index: 1000; justify-content: center; align-items: safe center; padding: 16px; overflow: auto; -webkit-overflow-scrolling: touch; }
+        /* The modal opened last must sit on top of any other open modal (e.g.
+           rename/input opening over the selected-items window). */
+        .modal-front { z-index: 1001; }
         .modal-content { background: var(--card); padding: 20px; border-radius: 18px; width: 100%; max-width: 600px; border: 1px solid var(--border); max-height: max(70vh, 480px); display: flex; flex-direction: column; box-shadow: 0 24px 48px -12px var(--shadow-strong); margin: auto; }
         .modal-content .modal-body { overflow-y: auto; flex: 1 1 auto; min-height: 0; -webkit-overflow-scrolling: touch; }
         .modal-content .modal-footer { display: flex; gap: 12px; margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--border); flex-shrink: 0; }
@@ -3769,7 +3772,17 @@ HTML_TEMPLATE = """
         });
     }
 
+    // Bring a modal to the front so a dialog opened over another modal (e.g.
+    // rename/input opening over the selected-items window) is never hidden behind it.
+    function bringModalToFront(id) {
+        let el = document.getElementById(id);
+        if (!el) return;
+        document.querySelectorAll('.modal').forEach(function(m) { m.classList.remove('modal-front'); });
+        el.classList.add('modal-front');
+    }
+
     function showInputModal(title, label, defaultValue, onConfirm, validate) {
+        bringModalToFront('inputModal');
         document.getElementById('inputModalTitleText').innerText = title;
         document.getElementById('inputModalLabel').innerText = label;
         let field = document.getElementById('inputModalField');
@@ -4651,6 +4664,30 @@ HTML_TEMPLATE = """
         loadSystemInfo(false, false);
         setInterval(function(){ loadSystemInfo(false, true); }, 120000);
     });
+
+    // ---- keep the most recently opened modal on top of any other open modal ----
+    // (e.g. rename/input or settings opening over the selected-items window must
+    // never appear behind it). z-index comes from .modal-front in CSS.
+    (function() {
+        let seq = 0;
+        let visibleSeq = {};
+        function syncModalFront() {
+            let frontId = null;
+            let frontSeq = -1;
+            document.querySelectorAll('.modal').forEach(function(m) {
+                let visible = (m.style.display === 'flex' || m.style.display === 'block');
+                if (visible && !(m.id in visibleSeq)) visibleSeq[m.id] = ++seq;
+                if (!visible) { delete visibleSeq[m.id]; m.classList.remove('modal-front'); }
+                if (visible && visibleSeq[m.id] > frontSeq) { frontSeq = visibleSeq[m.id]; frontId = m.id; }
+            });
+            document.querySelectorAll('.modal').forEach(function(m) {
+                if (m.id === frontId) m.classList.add('modal-front');
+            });
+        }
+        const obs = new MutationObserver(syncModalFront);
+        document.querySelectorAll('.modal').forEach(function(m) { obs.observe(m, { attributes: true, attributeFilter: ['style'] }); });
+        syncModalFront();
+    })();
 
     function loadTtsVoices() {
         fetch('/api/tts/voices').then(r=>r.json()).then(data=>{
