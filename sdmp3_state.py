@@ -22,13 +22,34 @@ STATE_DIR = os.path.join(os.path.expanduser('~'), '.local', 'state', 'sdmp3')
 
 SETTINGS_FILE = 'settings.json'
 SEARCH_HISTORY_FILE = 'search_history.json'
+INDEX_SETTINGS_FILE = 'index_settings.json'
 
 SETTINGS_VERSION = 1
 HISTORY_VERSION = 1
+INDEX_SETTINGS_VERSION = 1
 
 # "the last 25" is the product decision; keep it in one place.
 HISTORY_ITEM_LIMIT = 25
 HISTORY_QUERY_LIMIT = 25
+
+# Default JOC / index settings. Kept in one place so the server and the page
+# agree on the shape. Nothing here raises: unknown or missing keys fall back to
+# these defaults.
+DEFAULT_INDEX_SETTINGS = {
+    'version': INDEX_SETTINGS_VERSION,
+    'joc_start': 1,
+    'joc_limit': 93,
+    'joc_mode': '1',
+    'joc_template': '4',
+    'joc_filename': '',
+    'joc_strip': True,
+    'joc_download_txt': False,
+    'joc_review_txt': False,
+    'joc_mp3_index': False,
+    'tts_voice': 'ar-AE-HamdanNeural',
+    'tts_rate': '+0%',
+    'mask_mode': 'noise',
+}
 
 
 def state_file(name):
@@ -155,6 +176,31 @@ def save_search_history(history):
     return save_json(state_file(SEARCH_HISTORY_FILE), payload)
 
 
+def load_index_settings():
+    """Return the saved JOC index settings, filling missing keys from defaults.
+
+    Never raises: a corrupt file falls back to defaults and is quarantined.
+    """
+    raw = load_json(state_file(INDEX_SETTINGS_FILE), {})
+    settings = dict(DEFAULT_INDEX_SETTINGS)
+    for key in DEFAULT_INDEX_SETTINGS:
+        if key in raw:
+            settings[key] = raw[key]
+    settings['version'] = INDEX_SETTINGS_VERSION
+    return settings
+
+
+def save_index_settings(settings):
+    payload = {
+        'version': INDEX_SETTINGS_VERSION,
+        'updated': int(time.time()),
+    }
+    for key in DEFAULT_INDEX_SETTINGS:
+        if key in settings:
+            payload[key] = settings[key]
+    return save_json(state_file(INDEX_SETTINGS_FILE), payload)
+
+
 def upsert_recent(entries, entry, key, limit):
     """Put `entry` at the front, drop any previous copy of the same `key`.
 
@@ -223,6 +269,16 @@ if __name__ == '__main__':  # pragma: no cover - manual report
             fh.write('{broken')
         assert load_settings(['a'], 'a')['theme'] == 'a', 'corrupt file not handled'
         assert os.path.exists(state_file(SETTINGS_FILE) + '.bak')
+        # index settings round-trip + defaults
+        assert load_index_settings() == DEFAULT_INDEX_SETTINGS
+        custom = dict(DEFAULT_INDEX_SETTINGS)
+        custom['joc_limit'] = 200
+        custom['tts_rate'] = '+20%'
+        assert save_index_settings(custom) is True
+        loaded = load_index_settings()
+        assert loaded['joc_limit'] == 200
+        assert loaded['tts_rate'] == '+20%'
+        assert loaded['joc_start'] == DEFAULT_INDEX_SETTINGS['joc_start']
     finally:
         STATE_DIR = real_dir
     print('sdmp3_state: all checks passed')

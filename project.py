@@ -25,6 +25,8 @@ from sdmp3_themes import (THEMES, DEFAULT_THEME, theme_ids, get_theme,
                           theme_css_pairs, theme_color, theme_tokens, catalog)
 from sdmp3_state import (state_file, load_settings, save_settings,
                          load_search_history, save_search_history,
+                         load_index_settings, save_index_settings,
+                         DEFAULT_INDEX_SETTINGS,
                          upsert_recent, prune_history_to_roots,
                          HISTORY_ITEM_LIMIT, HISTORY_QUERY_LIMIT)
 from sdmp3_groups import (prepare_copy_groups, group_segments, group_dir_chain,
@@ -2433,6 +2435,14 @@ HTML_TEMPLATE = """
             <svg class="icon" viewBox="0 0 24 24"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>
             متصفح الملفات (المصدر)
         </div>
+        <div style="display:flex; align-items:center; gap:8px; padding:6px 11px; font-size:12px; color:var(--text-muted); border-bottom:1px solid var(--border); background:var(--field);">
+            <span style="font-weight:600;">ترتيب حسب:</span>
+            <select id="sourceSort" style="background:var(--bg); color:var(--text); border:1px solid var(--border); border-radius:6px; padding:3px 8px; font-size:12px;">
+                <option value="name">الاسم</option>
+                <option value="date_desc">التاريخ (الأحدث أولاً)</option>
+                <option value="date_asc">التاريخ (الأقدم أولاً)</option>
+            </select>
+        </div>
         <div class="tree" id="treeContainer"></div>
     </div>
 
@@ -2834,6 +2844,7 @@ HTML_TEMPLATE = """
     let currentDestFreeBytes = 0; 
     let statusTimeout = null;
     let currentSourceRoot = localStorage.getItem('joc_source_root') || '/sdcard';
+    let currentSort = localStorage.getItem('sdmp3_source_sort') || 'name';
     let pickerMode = 'dest'; 
 
     // Restore the copy verification preference. Fast and on by default: one
@@ -3734,7 +3745,7 @@ HTML_TEMPLATE = """
     function loadSubFolders(path, parentElement) {
         parentElement.innerHTML = '<div style="padding:10px; color:var(--text-muted);">جاري التحميل...</div>';
         parentElement.dataset.dirPath = path;
-        fetch('/api/items?path=' + encodeURIComponent(path)).then(r=>r.json()).then(data=>{
+        fetch('/api/items?path=' + encodeURIComponent(path) + '&sort=' + encodeURIComponent(currentSort)).then(r=>r.json()).then(data=>{
             parentElement.innerHTML = '';
             if (data.items.length === 0) { parentElement.innerHTML = '<div style="padding:10px; color:var(--text-muted);">مجلد فارغ</div>'; return; }
             data.items.forEach(item => {
@@ -4620,6 +4631,23 @@ HTML_TEMPLATE = """
             let f = ev.target.files && ev.target.files[0];
             if(f) uploadCustomAudio(f);
         });
+        const sourceSort = document.getElementById('sourceSort');
+        if (sourceSort) {
+            sourceSort.value = currentSort;
+            sourceSort.addEventListener('change', function() {
+                currentSort = this.value;
+                localStorage.setItem('sdmp3_source_sort', currentSort);
+                loadSubFolders(currentSourceRoot, document.getElementById('treeContainer'));
+            });
+        }
+        // Load persisted JOC index settings and bind the auto-saver.
+        fetch('/api/index_settings').then(function(r) { return r.json(); }).then(function(data) {
+            if (data.ok && data.settings) {
+                savedIndexSettings = data.settings;
+                applyIndexSettingsToUI(savedIndexSettings);
+            }
+            bindIndexSettingsSaver();
+        }).catch(function() {});
         loadSystemInfo(false, false);
         setInterval(function(){ loadSystemInfo(false, true); }, 120000);
     });
@@ -4636,6 +4664,10 @@ HTML_TEMPLATE = """
                 o.selected = (v === defaultVoice);
                 sel.appendChild(o);
             });
+            // Restore the user's saved voice if present.
+            if (savedIndexSettings && savedIndexSettings.tts_voice) {
+                sel.value = savedIndexSettings.tts_voice;
+            }
             if(!data.available) {
                 sel.disabled = true;
                 document.getElementById('ttsOptions').innerHTML = '<small style="color:var(--danger-ink);">حزمة edge-tts غير مثبتة (يرجى تشغيل: pip install edge-tts)</small>';
@@ -4650,11 +4682,76 @@ HTML_TEMPLATE = """
         return s;
     }
 
+    // ---- persisted JOC index settings ---------------------------------------
+    function applyIndexSettingsToUI(s) {
+        const set = (id, val) => { const el = document.getElementById(id); if (el) el.value = val; };
+        const setc = (id, val) => { const el = document.getElementById(id); if (el) el.checked = !!val; };
+        set('jocStart', s.joc_start);
+        set('jocLimit', s.joc_limit);
+        set('jocMode', s.joc_mode);
+        set('jocTemplate', s.joc_template);
+        set('jocFileName', s.joc_filename || '');
+        setc('jocStrip', s.joc_strip);
+        setc('jocDownloadTxt', s.joc_download_txt);
+        setc('jocReviewTxt', s.joc_review_txt);
+        setc('jocMp3Index', s.joc_mp3_index);
+        set('ttsRate', s.tts_rate);
+        if (s.mask_mode) setMaskMode(s.mask_mode);
+    }
+
+    function gatherIndexSettings() {
+        const g = (id) => { const el = document.getElementById(id); return el ? el.value : ''; };
+        const gc = (id) => { const el = document.getElementById(id); return el ? el.checked : false; };
+        return {
+            joc_start: g('jocStart'),
+            joc_limit: g('jocLimit'),
+            joc_mode: g('jocMode'),
+            joc_template: g('jocTemplate'),
+            joc_filename: g('jocFileName'),
+            joc_strip: gc('jocStrip'),
+            joc_download_txt: gc('jocDownloadTxt'),
+            joc_review_txt: gc('jocReviewTxt'),
+            joc_mp3_index: gc('jocMp3Index'),
+            tts_voice: g('ttsVoice'),
+            tts_rate: g('ttsRate'),
+            mask_mode: maskMode || 'noise',
+        };
+    }
+
+    function saveIndexSettings() {
+        if (!savedIndexSettings) savedIndexSettings = {};
+        Object.assign(savedIndexSettings, gatherIndexSettings());
+        if (indexSettingsDebounce) clearTimeout(indexSettingsDebounce);
+        indexSettingsDebounce = setTimeout(function() {
+            fetch('/api/index_settings', {
+                method: 'POST', headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(savedIndexSettings)
+            }).catch(function() {});
+            indexSettingsDebounce = null;
+        }, 800);
+    }
+
+    function bindIndexSettingsSaver() {
+        ['jocStart','jocLimit','jocMode','jocTemplate','jocFileName',
+         'jocStrip','jocDownloadTxt','jocReviewTxt','jocMp3Index',
+         'ttsVoice','ttsRate'].forEach(function(id) {
+            let el = document.getElementById(id);
+            if (el) el.addEventListener('change', saveIndexSettings);
+            let cb = document.getElementById(id);
+            if (cb && cb.type === 'checkbox') cb.addEventListener('change', saveIndexSettings);
+        });
+        document.querySelectorAll('#ttsOptions .seg.option').forEach(function(el) {
+            el.addEventListener('click', function() { saveIndexSettings(); });
+        });
+    }
+
     function openJocModal() {
         let dest = document.getElementById('custom_dest_path').value;
         if(!dest) return alert('يرجى تحديد مسار الوجهة أولاً.');
-        // Default name: random 5-char alphanumeric (kept if user typed one before)
-        document.getElementById('jocFileName').value = makeRandomName(5);
+        // Keep a name the user already typed (or that was persisted); only fall
+        // back to a random 5-char name when the field is empty.
+        let nameEl = document.getElementById('jocFileName');
+        if(!nameEl.value) nameEl.value = makeRandomName(5);
         loadTtsVoices();
         setMaskMode('noise');
         document.getElementById('jocModal').style.display = 'flex';
@@ -4663,6 +4760,9 @@ HTML_TEMPLATE = """
     let currentTtsFileName = null;
     let currentJocIndexText = null;
     let pendingJocActions = null;
+    // Persisted JOC index settings, loaded once from ~/.local/state/sdmp3/index_settings.json.
+    let savedIndexSettings = null;
+    let indexSettingsDebounce = null;
 
     function copyTextToClipboard(text, successMsg) {
         if(text === null || text === undefined || text === '') { showInlineError('لا يوجد محتوى لنسخه.'); return false; }
@@ -4694,6 +4794,8 @@ HTML_TEMPLATE = """
     }
 
     function submitJocIndex() {
+        // Persist the current index settings before creating the index.
+        saveIndexSettings();
         let dest = document.getElementById('custom_dest_path').value;
         let startX = document.getElementById('jocStart').value;
         let limit = document.getElementById('jocLimit').value;
@@ -5192,21 +5294,31 @@ def system_info():
 @app.route('/api/items')
 def get_items():
     req_path = request.args.get('path', '/sdcard')
+    sort_mode = request.args.get('sort', 'name')
+    if sort_mode not in ('name', 'date_desc', 'date_asc'):
+        sort_mode = 'name'
     items = []
     if os.path.exists(req_path) and os.path.isdir(req_path):
         try:
-            # One scandir pass gives name + type + size without extra stats.
+            # One scandir pass gives name + type + size + mtime without extra stats.
             with os.scandir(req_path) as it:
                 entries = list(it)
             for entry in entries:
                 try:
                     is_dir = entry.is_dir()
-                    size = 0 if is_dir else entry.stat().st_size
+                    st = entry.stat()
+                    size = 0 if is_dir else st.st_size
+                    mtime = st.st_mtime
                 except OSError:
                     continue
                 items.append({'name': entry.name, 'path': entry.path,
-                              'is_dir': is_dir, 'size': size})
-            items.sort(key=lambda i: (not i['is_dir'], i['name'].lower()))
+                              'is_dir': is_dir, 'size': size, 'mtime': mtime})
+            if sort_mode == 'date_desc':
+                items.sort(key=lambda i: (not i['is_dir'], -i.get('mtime', 0)))
+            elif sort_mode == 'date_asc':
+                items.sort(key=lambda i: (not i['is_dir'], i.get('mtime', 0)))
+            else:
+                items.sort(key=lambda i: (not i['is_dir'], i['name'].lower()))
         except OSError:
             items = []
     return jsonify({'items': items})
@@ -5281,6 +5393,7 @@ _cache_save_timer = {'handle': None}
 # ~/.local/state/sdmp3/ through sdmp3_state.py, and both are loaded in main() so
 # the page can be painted with them on the very first request.
 APP_SETTINGS = {'version': 1, 'theme': DEFAULT_THEME}
+APP_INDEX_SETTINGS = dict(DEFAULT_INDEX_SETTINGS)
 SEARCH_HISTORY = {'version': 1, 'items': [], 'queries': []}
 _settings_lock = threading.RLock()
 _history_lock = threading.RLock()
@@ -5615,6 +5728,31 @@ def api_settings():
         'theme_bg': theme_color(theme_id),
         'tokens': theme_tokens(theme_id),
     })
+
+
+@app.route('/api/index_settings', methods=['GET', 'POST'])
+def api_index_settings():
+    """Read or persist the JOC index settings.
+
+    Stored in ~/.local/state/sdmp3/index_settings.json so the user does not
+    have to reconfigure the index template on every run.
+    """
+    global APP_INDEX_SETTINGS
+    if request.method == 'GET':
+        return jsonify({'ok': True, 'settings': dict(APP_INDEX_SETTINGS)})
+
+    body = request.json or {}
+    if not isinstance(body, dict):
+        return jsonify({'error': 'بيانات غير صالحة'}), 400
+    with _settings_lock:
+        APP_INDEX_SETTINGS = dict(APP_INDEX_SETTINGS)
+        for key in DEFAULT_INDEX_SETTINGS:
+            if key in body:
+                APP_INDEX_SETTINGS[key] = body[key]
+        snapshot = dict(APP_INDEX_SETTINGS)
+    if not save_index_settings(snapshot):
+        return jsonify({'error': 'تعذر حفظ إعدادات الفهرس على الجهاز'}), 500
+    return jsonify({'ok': True, 'settings': snapshot})
 
 
 @app.route('/api/history')
@@ -6392,12 +6530,13 @@ def main(argv=None):
                 pass
 
     print(f"sdmp3 {get_app_version()} - serving on {args.host}:{args.port}", flush=True)
-    # Settings + search history: read once, here, so the first request is already
-    # painted with the saved theme and the previous searches are on screen.
+    # Settings + search history + index settings: read once, here, so the first
+    # request is already painted with the saved theme and previous searches.
     try:
-        global APP_SETTINGS, SEARCH_HISTORY
+        global APP_SETTINGS, SEARCH_HISTORY, APP_INDEX_SETTINGS
         APP_SETTINGS = load_settings(theme_ids(), DEFAULT_THEME)
         SEARCH_HISTORY = load_search_history()
+        APP_INDEX_SETTINGS = load_index_settings()
         # A pulled-out card leaves stale results behind. Prune them once at
         # startup instead of stat()-ing every saved path on each request.
         SEARCH_HISTORY = prune_history_to_roots(SEARCH_HISTORY, os.path.isdir)
