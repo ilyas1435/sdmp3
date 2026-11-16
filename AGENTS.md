@@ -57,10 +57,11 @@ Shizuku installed. Status is cached (`SHIZUKU_TTL`) and refreshed by a daemon
 thread so no HTTP request ever blocks on a shell call.
 
 ## Version + status in the UI
-`VERSION` is rendered into the header as `v{{ app_version }}` and also served by
-`/api/system` together with the Shizuku state and SD write access; the JS
-`loadSystemInfo()` fills the pills (version / `Shizuku` / `كتابة الكارت`). Bump
-`VERSION` for user-visible changes.
+`VERSION` is rendered into the header as `v{{ app_version }}` (`.pill.num`) and also
+served by `/api/system` together with the Shizuku state and SD write access; the JS
+`loadSystemInfo()` fills the three header items (version / `Shizuku` /
+`كتابة الكارت`) and sets `pill-ok`/`pill-warn`/`pill-kind-*`, which colour the
+status **dot** (see «Page layout»). Bump `VERSION` for user-visible changes.
 
 ## CRITICAL: escape handling inside HTML_TEMPLATE
 `HTML_TEMPLATE` is a **plain `"""..."""` Python string**, not raw and not an f-string. Python processes backslash escapes in the embedded JS at parse time. To emit a literal backslash sequence to the browser you must **double the backslash**:
@@ -208,13 +209,57 @@ Each storage dict carries `kind` + `icon` so the UI can label it honestly:
 
 `storage_kind()` looks the volume up in `/proc/mounts` as `/mnt/media_rw/<UUID>` and passes the device to `classify_volume_device()`. `df -h` alone cannot tell an SD card from a USB stick — both are `/storage/XXXX-XXXX`. The icons are one SVG sprite (`<symbol id="ico-*">` right after `<body>`) referenced with `<use href="#ico-...">`; the select-based pickers were replaced by `.storage-card` buttons (`chooseStorage()` / `syncStorageCards()`), and the same icons appear in the path picker badge.
 
-Theme = **Coffee Blues** (https://www.color-hex.com/color-palette/102595) is the default of the theme registry (see «Settings, themes and search history»): teal `#39918c`, sand `#d0b49f`, tan `#be9078`, clay `#ab6b51`, slate `#2f435a`. The darks are that slate warmed and softened — page `--bg #17222e`, card `--card #1f2c3a`, one lift `--card-2 #293847` — and the slate's coolness stays in `--border #2b3e52`. `--field #141d27` (a touch deeper than the page) is the recessed surface for inputs, the tree, storage rows and progress tracks. The character is **warm sand on cool slate** (`--text #ebe1d6` 11.0:1 on a card, muted `#aca19a` 5.6:1): do not neutralise either side, or the theme dies. `--radius` is 16px. These values live in `sdmp3_themes.py` now, not in the template.
+Theme = **Coffee Blues** (https://www.color-hex.com/color-palette/102595) is the default of the theme registry (see «Settings, themes and search history»): teal `#39918c`, sand `#d0b49f`, tan `#be9078`, clay `#ab6b51`, slate `#2f435a`. The darks are that slate warmed and softened — page `--bg #17222e`, card `--card #1f2c3a`, one lift `--card-2 #293847` — and the slate's coolness stays in `--border #2b3e52`. `--field #141d27` (a touch deeper than the page) is the recessed surface for inputs, the tree, storage rows and progress tracks. The character is **warm sand on cool slate** (`--text #ebe1d6` 11.0:1 on a card, muted `#aca19a` 5.6:1): do not neutralise either side, or the theme dies. `--radius` is 12px; `--rule` (translucent `--border`) is the hairline between sections, `--field-line` outlines inputs/cards, `--bar-bg`/`--bar-line` belong to the opaque action bar, and `--num-font` (`NUM_FONT_STACK`) is the Latin mono face used by `.num`. These values live in `sdmp3_themes.py` now, not in the template.
 
 Teal is the accent, with a split because the palette teal is light: `--accent #39918c` marks (icons, focus, checkbox, disk bar — 3.6:1, fine for marks but not for 11px text), while filled buttons use the darker palette teal `--accent-fill #2e7a75` with a white label (4.6:1; hover `--accent-fill-hover #276a66` 5.7:1). `--accent-ink #151e28` labels the warning/success/danger fills (7.8 / 7.4 / 4.6:1). Danger: `--danger #f43f5e` fill and `--danger-ink #fc8b9b` text (6.0:1 on a card, 5.2:1 raised). Success is the calm sage `--success #7fbf93` (6.6:1 as text on a card), not the old neon green. Nothing glows — no gradient, no coloured button shadow, no inset card sheen; secondary buttons stay neutral `btn-outline` so only the primary action wears teal.
 
 Each volume kind owns a hue: `.storage-card.kind-*` sets a local `--kind`/`--kind-ink`/`--kind-soft`/`--kind-tile` used by the card's start border, icon tile, active fill, active name and "الحالي/الوجهة" badge; `.pill-kind-*` and `.kind-border-*` reuse the same variables for the picker badge, the header `sdWritePill` and the path inputs. Internal = sand `#d0b49f`, SD = bright clay `#d98b63` (ink `#dda88c`), USB = blue `#8fa9c4` (ink `#a8bfd6`), unknown = olive `#a3b18a` (ink `#b7c39f`). The four are told apart by icon + label as well as hue — the palette only has so many warm earths — and `-ink` exists because the fill colours are too dark for 11px text. Only a writable card gets its kind hue in the header pill; a refusing card stays `pill-warn`.
 
 The spoofing button is `btn-sand` (`--sand-fill #d0b49f` on `--accent-ink`), not amber: `--warning` is reserved for text and warning pills, so no button introduces a hue the palette does not own.
+
+## Page layout (v1.8.0 — design, not features)
+
+One document, not a stack of boxes. The page is `<header class="app-header">`, then
+four `<section class="section">` blocks separated by a hairline (`.section + .section
+{ border-top: 1px solid var(--rule) }`), each with `.section-head` / `.section-title`
+/ `.section-kicker`. There is **no `.card`** and no `.card-title` any more.
+
+- **Header**: 36px badge, `h1` at 17px, no tagline; the status items (version,
+  Shizuku, card write) are one quiet `.pill-row`. State is carried by a 6px dot
+  (`.pill::before` plus `.pill-ok`/`.pill-warn`/`.pill-kind-*`), while the label
+  stays `--text-muted` so it clears 4.5:1 on every theme. Pills outside the header
+  (picker badge, group chip) keep the older tinted-chip look.
+- **Route section**: source (`.section-step` ١) → `.route-link` (hairline + arrow)
+  → destination (٢); each node holds its `.storage-grid` and one `.path-line`
+  (input + buttons). This is the only place the copy direction is chosen.
+- **Tools section**: spoofing lives in `<details class="tools">`, closed by
+  default — an occasional action must not out-weigh the copy.
+- **Action bar** (`#actionBar`, `.actionbar`): fixed, **opaque** `--bar-bg` with a
+  `--bar-line` top border (never `backdrop-filter`), and a 3px
+  `.actionbar-progress` line at its top edge. The left side is a button
+  (`.actionbar-summary` → `openSelectedModal()`) showing `#selectedCount`,
+  `#barSize`, `#barEta`; the primary «بدء النسخ» is the only filled control. Body
+  bottom padding is 112px (116px on phones) to clear it.
+- `#barSize` is filled by `scheduleSelectionSize()`: a 400ms debounced
+  `POST /api/sizes` whose signature (`selectionSignature()` = sorted selected keys
+  + excludes) also prevents refetches; `updateSizeDisplay()` writes it. «عرض
+  المحدد» is therefore optional, not the only way to see the copy size.
+- `#barEta` is a guess, so it is written with a tilde: it reads `sdmp3_last_mbps`
+  from `localStorage`, saved from `avg_mbps` when a copy finishes, and stays hidden
+  until a copy has measured that card. `mirrorProgressInBar(data)` is called from
+  `checkTransferStatus()` and paints the bar's line (a delete sweeps it,
+  verification uses `verify_progress`).
+- **Icons, not emoji**: `ico-check`/`ico-alert`/`ico-plus`/`ico-spark` joined the
+  sprite and `spriteIcon(id)` builds the inline `<svg><use>` for generated notices
+  (`showInlineDone`/`showInlineError`, JOC text notices). Emoji carry their own
+  colour and metrics and fight the theme.
+- **Esc** closes the front `.modal` (the `.modal-front` one, else the last visible)
+  but **never** `#progressModal`: that dialog owns a running copy and is closed
+  with its own button after the run ends.
+- `.num` (with `--num-font`, tabular figures, `direction:ltr`) is for counts, sizes,
+  speeds, timestamps and `.storage-path`. `#selectedCount`/`#barSize`/`#barEta` are
+  written with `textContent`, never `innerText` (jsdom has no `innerText`, and that
+  is the gate's environment).
 
 ## UI invariants
 
@@ -397,6 +442,10 @@ A theme is one dict of palette colours; **every** alpha variant (`--accent-soft`
   `project.py` changes. Run `python sdmp3_themes.py`: it prints every contrast
   ratio and the module **raises at import** if any theme breaks `CONTRAST_RULES`
   (text ≥ 7:1 on page/card, muted/labels/kind-inks ≥ 4.5:1).
+- The layout tokens `--rule`, `--field-line`, `--bar-bg`, `--bar-line` and
+  `--num-font` are derived in `build_tokens()` as well, so the `:root` block is
+  always complete (66 tokens per theme) and a theme dict still holds palette
+  colours only — never add one of these to a theme by hand.
 - Tokens are rendered **server-side** into `:root` (`theme_css_pairs`) plus
   `<html data-theme>` and `<meta name="theme-color">` (`theme_color` = `--bg`),
   so there is no flash of the default theme. The `/` route passes `active_theme`,

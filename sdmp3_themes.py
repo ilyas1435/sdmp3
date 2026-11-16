@@ -104,8 +104,16 @@ TOKEN_ORDER = (
     '--kind-card-tile', '--kind-card-line',
     '--pill-bg', '--shine', '--scrim', '--sheet',
     '--shadow-soft', '--shadow-strong', '--shadow-card',
+    '--rule', '--field-line', '--bar-bg', '--bar-line', '--num-font',
     '--radius',
 )
+
+# Monospace digits, Latin only. The Arabic UI keeps `--app-font`; this stack is
+# applied with `.num` to sizes, speeds, counts and paths so columns cannot jitter
+# (tabular figures) and a path reads as data, not prose. No webfont: every
+# platform has a mono face, and shipping one would be ~100 KB for digits.
+NUM_FONT_STACK = ("ui-monospace, 'SFMono-Regular', 'Roboto Mono', "
+                  "'DejaVu Sans Mono', monospace")
 
 
 def build_tokens(defn):
@@ -149,7 +157,18 @@ def build_tokens(defn):
         '--shadow-soft': rgba(defn['shadow'], 0.50),
         '--shadow-strong': rgba(defn['shadow'], 0.60),
         '--shadow-card': rgba(defn['shadow'], 0.50),
-        '--radius': defn.get('radius', '16px'),
+        # Separators instead of a box per section: a 1px rule carries the same
+        # grouping without five identical cards. Derived from the theme's own
+        # border, so a light theme keeps a light rule.
+        '--rule': rgba(defn['border'], 0.72),
+        '--field-line': defn['border'],
+        # The fixed action bar must be opaque: a translucent bar over a tree of
+        # filenames is unreadable while scrolling, and backdrop-filter costs a
+        # phone GPU for nothing.
+        '--bar-bg': defn['card'],
+        '--bar-line': rgba(defn['accent'], 0.30),
+        '--num-font': NUM_FONT_STACK,
+        '--radius': defn.get('radius', '12px'),
     }
 
     # Accent family: all four alphas come from the same hue.

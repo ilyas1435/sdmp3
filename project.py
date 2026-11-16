@@ -1990,37 +1990,74 @@ HTML_TEMPLATE = """
             --app-font: {{ app_font|safe }};
         }
         * { box-sizing: border-box; font-family: var(--app-font); -webkit-tap-highlight-color: transparent; }
-        body { background-color: var(--bg); color: var(--text); margin: 0; padding: 16px 14px 110px; font-size: calc(14px * var(--font-scale)); line-height: 1.55; -webkit-font-smoothing: antialiased; }
+        body { background-color: var(--bg); color: var(--text); margin: 0; padding: 16px 14px 112px; font-size: calc(14px * var(--font-scale)); line-height: 1.55; -webkit-font-smoothing: antialiased; }
         .container { max-width: 900px; margin: 0 auto; }
 
-        .app-header { display:flex; align-items:center; gap:13px; padding-bottom: 16px; margin-top: 4px; margin-bottom: 14px; border-bottom: 1px solid var(--border); }
-        .app-header .badge { width:44px; height:44px; border-radius:13px; background:var(--accent-soft); border:1px solid var(--accent-line); display:flex; align-items:center; justify-content:center; flex-shrink:0; }
-        .app-header .badge svg { stroke: var(--accent); width:22px; height:22px; }
-        .app-header h1 { font-size: calc(19px * var(--font-scale)); color: var(--text); margin:0; font-weight: 700; letter-spacing: -0.2px; }
-        .app-header p { margin: 3px 0 0; font-size: calc(12.5px * var(--font-scale)); color: var(--text-muted); }
-        .app-header .header-settings { margin-inline-start: auto; width:36px; height:36px; flex-shrink:0; }
-        .pill-row { display:flex; flex-wrap:wrap; gap:6px; margin-top:9px; }
-        .pill { font-size: calc(11px * var(--font-scale)); line-height: 1; padding: 6px 10px; border-radius: 999px; border: 1px solid var(--border); color: var(--text-muted); background: var(--pill-bg); white-space: nowrap; }
+        /* ---- header ---------------------------------------------------- */
+        /* Compact: the app name and one quiet status line. The status items are
+           text separated by hairlines, with a tiny coloured dot carrying the
+           state - a row of filled chips would out-shout the actual content. */
+        .app-header { display:flex; align-items:center; gap:11px; padding: 4px 0 12px; border-bottom:1px solid var(--rule); }
+        .app-header .badge { width:36px; height:36px; border-radius:11px; background:var(--accent-soft); border:1px solid var(--accent-line); display:flex; align-items:center; justify-content:center; flex-shrink:0; }
+        .app-header .badge svg { stroke: var(--accent); width:19px; height:19px; }
+        .app-header .header-text { min-width:0; }
+        .app-header h1 { font-size: calc(17px * var(--font-scale)); color: var(--text); margin:0; font-weight: 700; letter-spacing: -0.1px; line-height:1.3; }
+        .app-header .header-settings { margin-inline-start: auto; width:34px; height:34px; flex-shrink:0; }
+        .pill-row { display:flex; flex-wrap:wrap; align-items:center; row-gap:4px; margin-top:7px; }
+        .app-header .pill { display:inline-flex; align-items:center; gap:6px; padding:0; border:0; background:none; border-radius:0; color:var(--text-muted); font-size:calc(11px * var(--font-scale)); line-height:1.5; white-space:nowrap; }
+        .app-header .pill + .pill { border-inline-start:1px solid var(--rule); margin-inline-start:9px; padding-inline-start:9px; }
+        .app-header .pill::before { content:''; width:6px; height:6px; border-radius:50%; background:var(--border); flex-shrink:0; }
         /* The version is the app's signature, so it wears the accent. */
-        #appVersionPill { color: var(--accent-text); border-color: var(--accent-line); background: var(--accent-soft); font-weight: 600; }
+        .app-header #appVersionPill { color: var(--accent-text); font-weight:600; }
+        .app-header #appVersionPill::before { display:none; }
+        /* State lives in the dot, not the label: the label stays --text-muted,
+           which clears 4.5:1 on every theme's page background. */
+        .app-header .pill-ok::before { background: var(--success); }
+        .app-header .pill-warn::before { background: var(--warning); }
+        .app-header .pill-kind-internal::before { background: var(--kind-internal); }
+        .app-header .pill-kind-sdcard::before { background: var(--kind-sdcard); }
+        .app-header .pill-kind-usb::before { background: var(--kind-usb); }
+        .app-header .pill-kind-card::before { background: var(--kind-card); }
+        /* Pills used outside the header (picker badge, group chip) stay tinted by
+           volume type; text uses the -ink variant so 11px labels stay legible. */
+        .pill { font-size: calc(11px * var(--font-scale)); line-height: 1; padding: 6px 10px; border-radius: 999px; border: 1px solid var(--border); color: var(--text-muted); background: var(--pill-bg); white-space: nowrap; }
         .pill-ok { color: var(--success); border-color: var(--ok-line); background: var(--ok-soft); }
         .pill-warn { color: var(--warning); border-color: var(--warning-line); background: var(--warning-soft); }
-        /* Pills tinted by volume type: SD card / USB OTG / internal / unknown.
-           Text uses the -ink variant so 11px labels stay legible (4.5:1+). */
         .pill-kind-internal { color: var(--kind-internal-ink); border-color: var(--kind-internal-line); background: var(--kind-internal-soft); }
         .pill-kind-sdcard { color: var(--kind-sdcard-ink); border-color: var(--kind-sdcard-line); background: var(--kind-sdcard-soft); }
         .pill-kind-usb { color: var(--kind-usb-ink); border-color: var(--kind-usb-line); background: var(--kind-usb-soft); }
         .pill-kind-card { color: var(--kind-card-ink); border-color: var(--kind-card-line); background: var(--kind-card-soft); }
 
-        .card { background: var(--card); padding: 18px; border-radius: var(--radius); border: 1px solid var(--border); margin-bottom: 16px; }
-        @media (max-width: 480px) { .card { padding: 15px; } body { padding: 12px 10px 110px; } }
-        .card-title { display:flex; align-items:center; gap:9px; font-size: calc(14.5px * var(--font-scale)); font-weight:600; color: var(--text); margin: 0 0 15px; }
-        .card-title svg { width:17px; height:17px; stroke: var(--accent); }
+        /* ---- sections -------------------------------------------------- */
+        /* One document separated by hairlines instead of five identical boxes:
+           visual weight follows the task, and the route comes first. */
+        .section { padding: 20px 0 22px; }
+        .section + .section { border-top: 1px solid var(--rule); }
+        .section-head { display:flex; align-items:center; gap:9px; margin-bottom:14px; }
+        .section-head > .icon { width:16px; height:16px; color:var(--accent); flex-shrink:0; }
+        .section-title { margin:0; font-size:calc(13px * var(--font-scale)); font-weight:700; color:var(--text); letter-spacing:.2px; }
+        .section-kicker { display:inline-flex; align-items:center; gap:5px; margin-inline-start:auto; font-size:calc(10.5px * var(--font-scale)); color:var(--text-muted); letter-spacing:.04em; }
+        .inline-note { font-size:calc(11.5px * var(--font-scale)); color:var(--text-muted); }
+        @media (max-width: 480px) { .section { padding: 17px 0 19px; } body { padding: 12px 12px 116px; } }
+
+        /* Route: source above destination, joined by one connector and numbered
+           so the direction of the whole page reads at a glance. */
+        .route-node { min-width:0; }
+        .route-label { display:flex; align-items:center; gap:8px; margin-bottom:11px; font-size:calc(12px * var(--font-scale)); font-weight:600; color:var(--text-muted); }
+        .section-step { font-size:calc(10.5px * var(--font-scale)); color:var(--accent-text); border:1px solid var(--accent-line); background:var(--accent-soft); border-radius:6px; padding:0 5px; line-height:1.7; }
+        .route-link { position:relative; width:2px; height:20px; margin-inline-start:24px; background:var(--rule); }
+        .route-link::after { content:''; position:absolute; inset-inline-start:-3px; bottom:-2px; width:8px; height:8px; border-inline-end:2px solid var(--rule); border-bottom:2px solid var(--rule); transform:rotate(45deg); }
+        .path-line { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+        .path-line > input { margin-bottom:0; flex:1 1 170px; }
+        .path-line > .btn { white-space:nowrap; }
+
+        /* Monospace digits: counts and speeds must not jitter between polls. */
+        .num { font-family: var(--num-font); font-variant-numeric: tabular-nums; direction:ltr; unicode-bidi:isolate; }
 
         label { font-weight: 500; margin-bottom: 8px; display: block; color: var(--text-muted); font-size: calc(13px * var(--font-scale)); }
         select, input[type="text"], input[type="number"], input[type="datetime-local"] { width: 100%; padding: 12px 14px; border: 1px solid var(--border); border-radius: 10px; font-size: calc(14px * var(--font-scale)); background-color: var(--field); color: var(--text); outline: none; margin-bottom: 12px; transition: border-color 0.15s, box-shadow 0.15s; min-height: 46px; }
         select:focus, input[type="text"]:focus, input[type="number"]:focus, input[type="datetime-local"]:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
-        textarea { width: 100%; padding: 12px 14px; box-sizing: border-box; border: 1px solid var(--border); border-radius: 10px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: calc(14px * var(--font-scale)); line-height: 1.7; background-color: var(--field); color: var(--text); outline: none; resize: none; }
+        textarea { width: 100%; padding: 12px 14px; box-sizing: border-box; border: 1px solid var(--border); border-radius: 10px; font-family: var(--num-font); font-size: calc(14px * var(--font-scale)); line-height: 1.7; background-color: var(--field); color: var(--text); outline: none; resize: none; }
         textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
 
         .btn { padding: 11px 16px; min-height: 44px; border: none; border-radius: 10px; cursor: pointer; font-weight: 600; font-size: calc(13.5px * var(--font-scale)); color: var(--text); transition: transform 0.08s ease, filter 0.15s ease, background-color 0.15s ease, border-color 0.15s ease; display: inline-flex; align-items: center; justify-content: center; gap: 7px; }
@@ -2067,23 +2104,23 @@ HTML_TEMPLATE = """
         /* Storage picker: one card per volume, icon + Arabic label + real path.
            Each kind sets --kind/--kind-soft so the card is coloured by *what it
            is* (SD / USB / internal) instead of by the global accent. */
-        .storage-grid { display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px; }
-        .storage-card { display: flex; align-items: center; gap: 10px; width: 100%; padding: 10px 12px;
-            border: 1px solid var(--border); border-inline-start: 3px solid var(--kind, var(--border));
+        .storage-grid { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; }
+        .storage-card { display: flex; align-items: center; gap: 10px; width: 100%; padding: 8px 11px;
+            border: 1px solid var(--field-line); border-inline-start: 3px solid var(--kind, var(--border));
             border-radius: 10px; background: var(--field); color: var(--text);
             cursor: pointer; text-align: right; transition: border-color .15s, background .15s;
             font-family: inherit; appearance: none; -webkit-appearance: none; }
         .storage-card:hover { border-color: var(--kind, var(--accent)); }
         .storage-card.active { border-color: var(--kind, var(--accent)); background: var(--kind-soft, var(--accent-soft)); }
-        .storage-card .storage-ico { width: 36px; height: 36px; padding: 7px; flex-shrink: 0; box-sizing: border-box;
-            border-radius: 10px; background: var(--kind-tile, var(--accent-soft)); color: var(--kind, var(--text-muted)); }
+        .storage-card .storage-ico { width: 32px; height: 32px; padding: 6px; flex-shrink: 0; box-sizing: border-box;
+            border-radius: 9px; background: var(--kind-tile, var(--accent-soft)); color: var(--kind, var(--text-muted)); }
         .storage-card.kind-internal { --kind: var(--kind-internal); --kind-ink: var(--kind-internal-ink); --kind-soft: var(--kind-internal-soft); --kind-tile: var(--kind-internal-tile); }
         .storage-card.kind-sdcard { --kind: var(--kind-sdcard); --kind-ink: var(--kind-sdcard-ink); --kind-soft: var(--kind-sdcard-soft); --kind-tile: var(--kind-sdcard-tile); }
         .storage-card.kind-usb { --kind: var(--kind-usb); --kind-ink: var(--kind-usb-ink); --kind-soft: var(--kind-usb-soft); --kind-tile: var(--kind-usb-tile); }
         .storage-card.kind-card { --kind: var(--kind-card); --kind-ink: var(--kind-card-ink); --kind-soft: var(--kind-card-soft); --kind-tile: var(--kind-card-tile); }
         .storage-meta { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex-grow: 1; }
         .storage-name { font-size: calc(14px * var(--font-scale)); font-weight: 600; }
-        .storage-path { font-size: calc(11px * var(--font-scale)); color: var(--text-muted); direction: ltr; text-align: right;
+        .storage-path { font-family: var(--num-font); font-size: calc(11px * var(--font-scale)); color: var(--text-muted); direction: ltr; text-align: right;
             overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .storage-card.active .storage-name { color: var(--kind-ink, var(--accent)); }
         .storage-badge { display: none; margin-inline-start: auto; font-size: calc(10px * var(--font-scale)); padding: 3px 7px; border-radius: 999px;
@@ -2100,8 +2137,35 @@ HTML_TEMPLATE = """
         .icon-btn:hover { color: var(--accent); border-color: var(--accent); }
         .icon-btn.danger:hover { color: var(--danger-ink); border-color: var(--danger); }
 
-        .cart { position: fixed; bottom: 0; left: 0; width: 100%; background: var(--sheet); backdrop-filter: blur(6px); border-top: 1px solid var(--border); padding: 14px 18px calc(14px + env(safe-area-inset-bottom)); display: flex; justify-content: space-between; align-items: center; z-index: 50; box-shadow: 0 -8px 24px -8px var(--shadow-soft); }
-        .cart-buttons { display: flex; gap: 12px; }
+        /* ---- action bar ------------------------------------------------- */
+        /* Opaque on purpose: a translucent bar over a tree of filenames is
+           unreadable while scrolling, and backdrop-filter costs the phone GPU
+           for nothing. The copy's progress is mirrored here as a 3px line so
+           the user never has to open the progress dialog to know where it is. */
+        .actionbar { position: fixed; bottom: 0; left: 0; width: 100%; background: var(--bar-bg);
+            border-top: 1px solid var(--bar-line); padding: 9px 16px calc(9px + env(safe-area-inset-bottom));
+            z-index: 60; box-shadow: 0 -12px 30px -20px var(--shadow-strong); }
+        .actionbar-line { display:flex; align-items:center; gap:10px; max-width:900px; margin:0 auto; }
+        .actionbar-summary { display:flex; flex-direction:column; align-items:flex-start; gap:2px; flex:1 1 auto;
+            min-width:0; background:none; border:0; padding:2px 0; cursor:pointer; color:var(--text);
+            text-align:start; font-family:inherit; }
+        .actionbar-summary:focus-visible { outline:2px solid var(--accent); outline-offset:3px; border-radius:8px; }
+        .actionbar-label { font-size:calc(10px * var(--font-scale)); color:var(--text-muted); letter-spacing:.06em; }
+        .actionbar-nums { display:flex; align-items:baseline; gap:7px; flex-wrap:wrap; min-width:0; }
+        .actionbar-nums b { font-size:calc(18px * var(--font-scale)); font-weight:700; color:var(--accent-text); line-height:1.25; }
+        .actionbar-size, .actionbar-eta { font-size:calc(11.5px * var(--font-scale)); color:var(--text-muted); }
+        .actionbar-eta { color:var(--accent-text); }
+        .actionbar-go { flex-shrink:0; min-height:46px; padding:0 20px; font-size:calc(14px * var(--font-scale)); }
+        .actionbar .pill { max-width:34vw; overflow:hidden; text-overflow:ellipsis; }
+        .actionbar-progress { display:none; position:absolute; top:0; left:0; right:0; height:3px;
+            background:var(--rule); overflow:hidden; }
+        .actionbar-progress.on { display:block; }
+        .actionbar-fill { height:100%; width:0%; background:var(--accent); border-radius:2px; transition:width .3s ease; }
+        @media (max-width: 480px) {
+            .actionbar { padding: 8px 12px calc(8px + env(safe-area-inset-bottom)); }
+            .actionbar-go { padding:0 15px; }
+            .actionbar .pill { max-width:26vw; }
+        }
 
         .modal { display: none; position: fixed; inset: 0; width: 100%; height: 100%; background: var(--scrim); z-index: 1000; justify-content: center; align-items: safe center; padding: 16px; overflow: auto; -webkit-overflow-scrolling: touch; }
         /* The modal opened last must sit on top of any other open modal (e.g.
@@ -2219,7 +2283,7 @@ HTML_TEMPLATE = """
         /* A delete has no known total, so its bar sweeps instead of pretending
            to know a percentage. The solid fill keeps it readable when the user
            asked the system for reduced motion. */
-        .progress-fill.indeterminate {
+        .progress-fill.indeterminate, .actionbar-fill.indeterminate {
             width: 100% !important; background-color: var(--accent);
             background-image: linear-gradient(90deg, transparent 0%, var(--shine) 50%, transparent 100%);
             background-size: 40% 100%; background-repeat: no-repeat;
@@ -2229,7 +2293,7 @@ HTML_TEMPLATE = """
             0%   { background-position: -40% 0; }
             100% { background-position: 140% 0; }
         }
-        .ltr-input { direction: ltr; text-align: left; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: calc(12px * var(--font-scale)); }
+        .ltr-input { direction: ltr; text-align: left; font-family: var(--num-font); font-size: calc(12px * var(--font-scale)); }
 
         .disk-space-container { margin-bottom: 10px; font-size: calc(13px * var(--font-scale)); color: var(--text-muted); display: none;}
         .disk-bar { width: 100%; height: 6px; background: var(--field); border-radius: 3px; overflow: hidden; margin-top: 6px; border: 1px solid var(--border);}
@@ -2306,7 +2370,19 @@ HTML_TEMPLATE = """
         .group-editor-actions { display:flex; gap:7px; }
         .field-error { min-height:14px; font-size:calc(11.5px * var(--font-scale)); color:var(--danger-ink); }
 
-        .spoof-settings { background: var(--field); padding: 16px; border-radius: 10px; border: 1px dashed var(--border); margin-bottom: 10px; display:flex; flex-direction:column; gap:10px;}
+        /* ---- tools (collapsible) --------------------------------------- */
+        /* Spoofing is a deliberate, occasional action, so it does not deserve
+           the same weight as the copy itself: folded away, one line to open. */
+        .tools { border:1px dashed var(--rule); border-radius:12px; padding:0 14px; }
+        .tools[open] { padding-bottom:14px; border-style:solid; }
+        .tools > summary { list-style:none; cursor:pointer; padding:13px 0; display:flex; align-items:center;
+            gap:9px; font-size:calc(12.5px * var(--font-scale)); font-weight:600; color:var(--text); }
+        .tools > summary::-webkit-details-marker { display:none; }
+        .tools > summary .icon { width:15px; height:15px; color:var(--accent); flex-shrink:0; }
+        .tools > summary .tools-chev { margin-inline-start:auto; color:var(--text-muted); transition:transform .15s; }
+        .tools[open] > summary .tools-chev { transform:rotate(180deg); }
+        .tools-body { display:flex; flex-direction:column; gap:10px; }
+        .tools-body input[type="datetime-local"] { margin-bottom:0; }
 
         .truncate-text {
             white-space: nowrap;
@@ -2355,18 +2431,23 @@ HTML_TEMPLATE = """
         <circle cx="8" cy="15.5" r="1"></circle>
         <line x1="12" y1="15.5" x2="17" y2="15.5"></line>
     </symbol>
+    <!-- Small status glyphs. Generated notices use these instead of emoji: an
+         emoji gets its own colour and metrics and fights the theme. -->
+    <symbol id="ico-check" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"></polyline></symbol>
+    <symbol id="ico-alert" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"></circle><line x1="12" y1="8" x2="12" y2="13"></line><line x1="12" y1="16.5" x2="12.01" y2="16.5"></line></symbol>
+    <symbol id="ico-plus" viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></symbol>
+    <symbol id="ico-spark" viewBox="0 0 24 24"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"></path><path d="M18 16.5l.7 1.8 1.8.7-1.8.7-.7 1.8-.7-1.8-1.8-.7 1.8-.7z"></path></symbol>
 </svg>
 
 <div class="container">
-    <div class="app-header">
+    <header class="app-header">
         <div class="badge">
             <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8h1a4 4 0 0 1 0 8h-1"></path><path d="M2 8h16v9a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4V8z"></path><line x1="6" y1="1" x2="6" y2="4"></line><line x1="10" y1="1" x2="10" y2="4"></line><line x1="14" y1="1" x2="14" y2="4"></line></svg>
         </div>
-        <div>
+        <div class="header-text">
             <h1>SD Card Coffee</h1>
-            <p>نقل، تنظيم، وتمويه الملفات باحترافية</p>
             <div class="pill-row">
-                <span class="pill" id="appVersionPill">v{{ app_version }}</span>
+                <span class="pill num" id="appVersionPill">v{{ app_version }}</span>
                 <span class="pill" id="shizukuPill" title="Shizuku أداة اختيارية: تمنح Termux وصولاً كاملاً لكارت الذاكرة">Shizuku: جاري الفحص</span>
                 <span class="pill" id="sdWritePill" title="هل يمكن الكتابة على كارت الذاكرة الخارجي؟">كتابة الكارت: جاري الفحص</span>
             </div>
@@ -2374,102 +2455,106 @@ HTML_TEMPLATE = """
         <button type="button" class="icon-btn header-settings" onclick="openSettings()" aria-label="الإعدادات" title="الإعدادات والمظهر">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1.08-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1.08 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
         </button>
-    </div>
+    </header>
 
-    <div class="card">
-        <div class="card-title">
-            <svg class="icon" viewBox="0 0 24 24"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>
-            مصدر الملفات
+    <!-- The whole task in one block: where files come from, where they go.
+         Numbered and connected so the direction is never ambiguous. -->
+    <section class="section" id="routeSection">
+        <div class="section-head">
+            <svg class="icon" viewBox="0 0 24 24"><path d="M4 17h6l4-10h6"></path><polyline points="17 4 20 7 17 10"></polyline></svg>
+            <h2 class="section-title">المسار</h2>
+            <span class="section-kicker">من المصدر إلى الوجهة</span>
         </div>
-        <div class="storage-grid" id="source_storage_cards">
-            {% for st in storages %}
-            <button type="button" class="storage-card kind-{{ st.kind }}" data-path="{{ st.path }}" onclick="chooseStorage('source', this)">
-                <svg class="icon storage-ico"><use href="#{{ st.icon }}"></use></svg>
-                <span class="storage-meta">
-                    <span class="storage-name">{{ st.name }}</span>
-                    <span class="storage-path">{{ st.path }}</span>
-                </span>
-                <span class="storage-badge">الحالي</span>
-            </button>
-            {% endfor %}
-        </div>
-        <div style="display: flex; gap: 8px; align-items: center;">
-            <input type="text" id="custom_source_path" class="ltr-input" style="margin-bottom: 0; flex-grow: 1;" placeholder="/sdcard/..." readonly>
-            <button class="btn btn-outline btn-sm" style="white-space: nowrap;" onclick="openPathBrowser('source')">
-                <svg class="icon" viewBox="0 0 24 24"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>
-                تصفح
-            </button>
-        </div>
-        <div style="display:flex; gap:10px; align-items:center; margin-top:10px; flex-wrap:wrap;">
-            <button class="btn btn-outline btn-sm" id="cacheFolderBtn" style="white-space: nowrap;" onclick="cacheCurrentFolder()">
-                <svg class="icon" viewBox="0 0 24 24"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg>
-                تخزين الفهرس (بحث فوري)
-            </button>
-            <span id="cacheStatusText" style="font-size:calc(12px * var(--font-scale)); color:var(--text-muted);">جاري التحقق من الفهرس...</span>
-        </div>
-    </div>
-
-    <div class="card">
-        <div class="card-title">
-            <svg class="icon" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg>
-            وجهة النقل
-        </div>
-        <div class="storage-grid" id="dest_storage_cards">
-            {% for st in storages %}
-            <button type="button" class="storage-card kind-{{ st.kind }}" data-path="{{ st.path }}" onclick="chooseStorage('dest', this)">
-                <svg class="icon storage-ico"><use href="#{{ st.icon }}"></use></svg>
-                <span class="storage-meta">
-                    <span class="storage-name">{{ st.name }}</span>
-                    <span class="storage-path">{{ st.path }}</span>
-                </span>
-                <span class="storage-badge">الوجهة</span>
-            </button>
-            {% endfor %}
-        </div>
-
-        <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
-            <input type="text" id="custom_dest_path" class="ltr-input" style="margin-bottom: 0; flex-grow: 1;" placeholder="/storage/XXXX-XXXX/..." oninput="checkDiskSpace(this.value)">
-            <button class="btn btn-outline btn-sm" style="white-space: nowrap;" onclick="openPathBrowser('dest')">
-                <svg class="icon" viewBox="0 0 24 24"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>
-                تحديد
-            </button>
-            <button class="btn btn-outline btn-sm" style="white-space: nowrap;" onclick="runDiagnostic()">
-                <svg class="icon" viewBox="0 0 24 24"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline></svg>
-                فحص السرعة
-            </button>
-        </div>
-
-        <div class="disk-space-container" id="diskSpaceDiv" style="margin-top: 5px;">
-            <div style="display:flex; justify-content:space-between;">
-                <span id="diskText">جاري الحساب...</span>
-                <span id="diskPercent">0% مستخدم</span>
+        <div class="route">
+            <div class="route-node">
+                <div class="route-label"><span class="section-step">١</span> مصدر الملفات</div>
+                <div class="storage-grid" id="source_storage_cards">
+                    {% for st in storages %}
+                    <button type="button" class="storage-card kind-{{ st.kind }}" data-path="{{ st.path }}" onclick="chooseStorage('source', this)">
+                        <svg class="icon storage-ico"><use href="#{{ st.icon }}"></use></svg>
+                        <span class="storage-meta">
+                            <span class="storage-name">{{ st.name }}</span>
+                            <span class="storage-path">{{ st.path }}</span>
+                        </span>
+                        <span class="storage-badge">الحالي</span>
+                    </button>
+                    {% endfor %}
+                </div>
+                <div class="path-line">
+                    <input type="text" id="custom_source_path" class="ltr-input" placeholder="/sdcard/..." readonly aria-label="مسار المصدر">
+                    <button class="btn btn-outline btn-sm" onclick="openPathBrowser('source')">
+                        <svg class="icon" viewBox="0 0 24 24"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>
+                        تصفح
+                    </button>
+                </div>
+                <div class="path-line" style="margin-top:8px;">
+                    <button class="btn btn-outline btn-sm" id="cacheFolderBtn" onclick="cacheCurrentFolder()">
+                        <svg class="icon" viewBox="0 0 24 24"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg>
+                        تخزين الفهرس (بحث فوري)
+                    </button>
+                    <span id="cacheStatusText" class="inline-note">جاري التحقق من الفهرس...</span>
+                </div>
             </div>
-            <div class="disk-bar"><div class="disk-used" id="diskFill"></div></div>
+            <div class="route-link" aria-hidden="true"></div>
+            <div class="route-node">
+                <div class="route-label"><span class="section-step">٢</span> وجهة النقل</div>
+                <div class="storage-grid" id="dest_storage_cards">
+                    {% for st in storages %}
+                    <button type="button" class="storage-card kind-{{ st.kind }}" data-path="{{ st.path }}" onclick="chooseStorage('dest', this)">
+                        <svg class="icon storage-ico"><use href="#{{ st.icon }}"></use></svg>
+                        <span class="storage-meta">
+                            <span class="storage-name">{{ st.name }}</span>
+                            <span class="storage-path">{{ st.path }}</span>
+                        </span>
+                        <span class="storage-badge">الوجهة</span>
+                    </button>
+                    {% endfor %}
+                </div>
+                <div class="path-line">
+                    <input type="text" id="custom_dest_path" class="ltr-input" placeholder="/storage/XXXX-XXXX/..." oninput="checkDiskSpace(this.value)" aria-label="مسار الوجهة">
+                    <button class="btn btn-outline btn-sm" onclick="openPathBrowser('dest')">
+                        <svg class="icon" viewBox="0 0 24 24"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>
+                        تحديد
+                    </button>
+                    <button class="btn btn-outline btn-sm" onclick="runDiagnostic()">
+                        <svg class="icon" viewBox="0 0 24 24"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline></svg>
+                        فحص السرعة
+                    </button>
+                </div>
+
+                <div class="disk-space-container" id="diskSpaceDiv" style="margin-top: 10px;">
+                    <div style="display:flex; justify-content:space-between;">
+                        <span id="diskText">جاري الحساب...</span>
+                        <span id="diskPercent">0% مستخدم</span>
+                    </div>
+                    <div class="disk-bar"><div class="disk-used" id="diskFill"></div></div>
+                </div>
+
+                <label class="check-line" for="verifyAfterCopy">
+                    <input type="checkbox" id="verifyAfterCopy" class="checkbox"
+                           onchange="localStorage.setItem('sdmp3_verify_after_copy', this.checked ? '1' : '0')">
+                    <span>التحقق من الحجم الإجمالي بعد النسخ</span>
+                </label>
+                <small class="check-hint">جولة واحدة بعد النسخ: تقارن حجم كل ملف على الوجهة بما كُتب فعلاً، ولا تقرأ محتوى الملفات ولا تعدّل المصدر.</small>
+
+                <button class="btn btn-outline" style="margin-top:14px; width:100%;" onclick="openJocModal()">
+                    <svg class="icon" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path></svg>
+                    إنشاء فهرس JOC
+                </button>
+            </div>
         </div>
+    </section>
 
-        <label class="check-line" for="verifyAfterCopy">
-            <input type="checkbox" id="verifyAfterCopy" class="checkbox"
-                   onchange="localStorage.setItem('sdmp3_verify_after_copy', this.checked ? '1' : '0')">
-            <span>التحقق من الحجم الإجمالي بعد النسخ</span>
-        </label>
-        <small class="check-hint">جولة واحدة بعد النسخ: تقارن حجم كل ملف على الوجهة بما كُتب فعلاً، ولا تقرأ محتوى الملفات ولا تعدّل المصدر.</small>
-
-        <div class="grid-2" style="margin-top: 14px;">
-            <button class="btn btn-outline" onclick="openJocModal()">
-                <svg class="icon" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path></svg>
-                إنشاء فهرس JOC
-            </button>
-        </div>
-    </div>
-
-    <div class="card">
-        <div class="card-title">
+    <section class="section">
+        <div class="section-head">
             <svg class="icon" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
-            بحث عن مجلد أو ملف
-            <span id="searchSpeedBadge" style="display:none; font-size:calc(10.5px * var(--font-scale)); font-weight:600; color:var(--accent); background:var(--accent-soft); padding:2px 8px; border-radius:20px; margin-inline-start:4px;">⚡ فوري</span>
+            <h2 class="section-title">بحث عن مجلد أو ملف</h2>
+            <span id="searchSpeedBadge" class="section-kicker" style="display:none; color:var(--accent-text);">
+                <svg class="icon" style="width:12px;height:12px;" viewBox="0 0 24 24"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg> فوري
+            </span>
         </div>
-        <div style="display:flex; gap:8px; margin-bottom: 12px;">
-            <input type="text" id="searchInput" placeholder="اكتب اسم الملف للبحث..." style="margin-bottom:0;">
+        <div class="path-line" style="margin-bottom: 12px;">
+            <input type="text" id="searchInput" placeholder="اكتب اسم الملف للبحث..." style="margin-bottom:0; flex:1 1 160px;" aria-label="نص البحث">
             <button class="btn btn-primary" onclick="searchDeep(true)">بحث</button>
             <button type="button" class="btn btn-outline" id="historyToggleBtn" onclick="toggleHistoryBlock()" title="يعرض المجلدات التي حدّدتها سابقاً من البحث — اضغط عنصراً لإعادته إلى التحديد">السجل</button>
         </div>
@@ -2488,14 +2573,15 @@ HTML_TEMPLATE = """
             <div id="historyChips" class="history-chips"></div>
             <div id="historyRows" class="history-rows"></div>
         </div>
-    </div>
+    </section>
 
-    <div class="card">
-        <div class="card-title">
+    <section class="section">
+        <div class="section-head">
             <svg class="icon" viewBox="0 0 24 24"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>
-            متصفح الملفات (المصدر)
+            <h2 class="section-title">متصفح الملفات</h2>
+            <span class="section-kicker">المصدر</span>
         </div>
-        <div style="display:flex; align-items:center; gap:8px; padding:6px 11px; font-size:calc(12px * var(--font-scale)); color:var(--text-muted); border-bottom:1px solid var(--border); background:var(--field);">
+        <div style="display:flex; align-items:center; gap:8px; padding:6px 11px; font-size:calc(12px * var(--font-scale)); color:var(--text-muted); border:1px solid var(--field-line); border-bottom:0; border-radius:10px 10px 0 0; background:var(--field);">
             <span style="font-weight:600;">ترتيب حسب:</span>
             <select id="sourceSort" style="background:var(--bg); color:var(--text); border:1px solid var(--border); border-radius:6px; padding:3px 8px; font-size:calc(12px * var(--font-scale));">
                 <option value="name">الاسم</option>
@@ -2503,30 +2589,48 @@ HTML_TEMPLATE = """
                 <option value="date_asc">التاريخ (الأقدم أولاً)</option>
             </select>
         </div>
-        <div class="tree" id="treeContainer"></div>
-    </div>
+        <div class="tree" id="treeContainer" style="border-radius:0 0 10px 10px;"></div>
+    </section>
 
-    <div class="card spoof-settings">
-        <h4 style="margin:0 0 5px 0; font-size:calc(14px * var(--font-scale)); color:var(--text); font-weight: 500;">التمويه المستقل للتواريخ (على كامل الوجهة)</h4>
-        <label>تاريخ ووقت البدء العشوائي:</label>
-        <input type="datetime-local" id="spoofDateInput">
-        <small style="color:var(--text-muted); line-height: 1.5;">عملية مستقلة لتعديل تواريخ الملفات والمجلدات لإخفاء آثار النقل. <br>في حال ترك الوجهة فارغة سيتم تطبيق التمويه على كامل الذاكرة (/sdcard).</small>
-        <button class="btn btn-sand" style="margin-top:10px; width:100%;" onclick="startSpoofOnly()">
-            تطبيق التمويه
-        </button>
-    </div>
-
-    <div class="cart">
-        <div style="display: flex; align-items: center; gap: 12px;">
-            <div style="font-size: calc(14px * var(--font-scale)); font-weight: 500; color:var(--text-muted);">محدد: <b id="selectedCount" style="color:var(--text); font-size:calc(16px * var(--font-scale));">0</b></div>
-            <button class="btn btn-outline" style="padding: 8px 14px; font-size: calc(13px * var(--font-scale));" onclick="openSelectedModal()">
-                <svg class="icon" viewBox="0 0 24 24"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg>
-                عرض المحدد
-            </button>
-            <span id="cartGroupPill" class="pill" role="button" tabindex="0" onclick="openSelectedModal()" onkeydown="if(event.key==='Enter')openSelectedModal()" style="display:none; max-width:170px; overflow:hidden; text-overflow:ellipsis; cursor:pointer;"></span>
+    <section class="section">
+        <div class="section-head">
+            <svg class="icon" viewBox="0 0 24 24"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"></path></svg>
+            <h2 class="section-title">أدوات</h2>
+            <span class="section-kicker">اختياري</span>
         </div>
-        <div class="cart-buttons">
-            <button class="btn btn-primary" style="font-size: calc(14px * var(--font-scale)); padding: 10px 24px;" onclick="startTransfer()">
+        <details class="tools">
+            <summary>
+                <svg class="icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"></circle><polyline points="12 7 12 12 16 14"></polyline></svg>
+                <span>تمويه تواريخ الملفات</span>
+                <svg class="icon tools-chev" viewBox="0 0 24 24" aria-hidden="true"><polyline points="6 9 12 15 18 9"></polyline></svg>
+            </summary>
+            <div class="tools-body">
+                <label>تاريخ ووقت البدء العشوائي:</label>
+                <input type="datetime-local" id="spoofDateInput">
+                <small class="check-hint" style="margin:0;">عملية مستقلة لتعديل تواريخ الملفات والمجلدات لإخفاء آثار النقل، تُطبَّق على كامل الوجهة. في حال ترك الوجهة فارغة سيتم التمويه على كامل الذاكرة (/sdcard).</small>
+                <button class="btn btn-sand" onclick="startSpoofOnly()">
+                    تطبيق التمويه
+                </button>
+            </div>
+        </details>
+    </section>
+
+    <!-- The one persistent control: what is selected, how big, how long it will
+         take, and the single primary action. The progress of a running copy is
+         mirrored on the 3px line above it. -->
+    <div class="actionbar" id="actionBar">
+        <div class="actionbar-progress" id="barProgressWrap" aria-hidden="true"><div class="actionbar-fill" id="barProgressFill"></div></div>
+        <div class="actionbar-line">
+            <button type="button" class="actionbar-summary" onclick="openSelectedModal()" aria-label="عرض الملفات المحددة" title="عرض الملفات المحددة وتنظيمها">
+                <span class="actionbar-label">المحدد</span>
+                <span class="actionbar-nums">
+                    <b id="selectedCount" class="num">0</b>
+                    <span class="actionbar-size num" id="barSize">—</span>
+                    <span class="actionbar-eta" id="barEta" style="display:none;"></span>
+                </span>
+            </button>
+            <span id="cartGroupPill" class="pill group-chip" role="button" tabindex="0" onclick="openSelectedModal()" onkeydown="if(event.key==='Enter')openSelectedModal()" style="display:none; cursor:pointer;"></span>
+            <button class="btn btn-primary actionbar-go" onclick="startTransfer()">
                 <svg class="icon" viewBox="0 0 24 24"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
                 بدء النسخ
             </button>
@@ -2617,8 +2721,8 @@ HTML_TEMPLATE = """
                         <span>المجلدات الأب</span>
                     </div>
                     <div style="display:flex; gap:6px; flex-wrap:wrap;">
-                        <button type="button" class="btn btn-outline btn-sm" onclick="smartOrganizeGroups()" title="ينشئ مجلداً أب باسم المجلد المشترك في المصدر (مثل «الصف الأول») ويدخل فيه كل المحدد">✨ تنظيم ذكي</button>
-                        <button type="button" class="btn btn-outline btn-sm" onclick="startNewGroup()">＋ مجموعة جديدة</button>
+                        <button type="button" class="btn btn-outline btn-sm" onclick="smartOrganizeGroups()" title="ينشئ مجلداً أب باسم المجلد المشترك في المصدر (مثل «الصف الأول») ويدخل فيه كل المحدد"><svg class="icon" aria-hidden="true"><use href="#ico-spark"></use></svg> تنظيم ذكي</button>
+                        <button type="button" class="btn btn-outline btn-sm" onclick="startNewGroup()"><svg class="icon" aria-hidden="true"><use href="#ico-plus"></use></svg> مجموعة جديدة</button>
                     </div>
                 </div>
                 <div id="groupStatusHint" class="check-hint" style="display:none; margin:6px 0 0;"></div>
@@ -2654,7 +2758,7 @@ HTML_TEMPLATE = """
             <div id="assignHint" class="check-hint" style="margin:0;"></div>
             <div id="assignGroups" class="assign-groups"></div>
             <div id="assignNewWrap">
-                <button type="button" class="btn btn-outline btn-sm" onclick="beginGroupEditor()">＋ اسم جديد</button>
+                <button type="button" class="btn btn-outline btn-sm" onclick="beginGroupEditor()"><svg class="icon" aria-hidden="true"><use href="#ico-plus"></use></svg> اسم جديد</button>
             </div>
             <div id="groupEditor" class="group-editor" style="display:none;">
                 <input type="text" id="groupNameInput" maxlength="180" autocomplete="off" placeholder="اسم المجلد الأب"
@@ -2953,6 +3057,8 @@ HTML_TEMPLATE = """
     let nextGroupId = 1;
     let pickPaths = new Set();   // rows checked in the "selected" window
     let selectedSizes = {};      // path -> {bytes, formatted, owner}
+    let selectionSizeTimer = null;   // debounce for the action bar's size
+    let selectionSizeSig = '';       // selection the cached sizes belong to
     let currentDestFreeBytes = 0; 
     let statusTimeout = null;
     let currentSourceRoot = localStorage.getItem('joc_source_root') || '/sdcard';
@@ -3023,16 +3129,58 @@ HTML_TEMPLATE = """
 
     function refreshCheckboxStates() {
         document.querySelectorAll('.checkbox').forEach(cb => { if(cb.value && cb.value.startsWith('/')) cb.checked = isPathSelected(cb.value); });
-        document.getElementById('selectedCount').innerText = selectedPaths.size;
+        document.getElementById('selectedCount').textContent = String(selectedPaths.size);
         if (selectedPaths.size === 0) {
             // A group only means something for the current selection.
             copyGroups = [];
             pickPaths = new Set();
             selectedSizes = {};
+            // The bar must not keep the previous selection's size or ETA.
+            selectionSizeSig = '';
+            updateSizeDisplay(0);
         } else {
             syncGroupsWithSelection();
+            // The bar repeats the size, and the picker window is closed most of
+            // the time: ask for it here, not only from «عرض المحدد».
+            scheduleSelectionSize();
         }
         renderGroupUI();
+    }
+
+    // ---- selection size behind the action bar -------------------------
+    // One debounced request for the whole selection, reusing /api/sizes (the
+    // server walks each tree once and drops nested duplicates). Checking twenty
+    // boxes must not fire twenty requests, and an unchanged signature is skipped.
+    function selectionSignature() {
+        return Array.from(selectedPaths.keys()).sort().join('\\n') + '|' +
+               Array.from(excludedPaths).sort().join('\\n');
+    }
+
+    function scheduleSelectionSize() {
+        if (selectionSizeTimer) { clearTimeout(selectionSizeTimer); selectionSizeTimer = null; }
+        if (!selectedPaths.size) return;
+        let sig = selectionSignature();
+        if (sig === selectionSizeSig) { updateSelectedTotal(Array.from(selectedPaths.keys())); return; }
+        selectionSizeTimer = setTimeout(function() { fetchSelectionSize(sig); }, 400);
+    }
+
+    function fetchSelectionSize(sig) {
+        selectionSizeTimer = null;
+        if (!selectedPaths.size) return;
+        let pathsArray = Array.from(selectedPaths.keys());
+        fetch('/api/sizes', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({paths: pathsArray, excludes: Array.from(excludedPaths)})
+        }).then(function(r) { return r.json(); }).then(function(data) {
+            // A newer selection may have landed while this was in flight.
+            if (selectionSignature() !== sig) return;
+            selectionSizeSig = sig;
+            let sizes = data.sizes || {};
+            pathsArray.forEach(function(path) {
+                selectedSizes[path] = sizes[path] || {bytes: 0, formatted: '0 B', owner: path};
+            });
+            updateSelectedTotal(pathsArray);
+        }).catch(function() {});
     }
 
     // ---- Copy groups: named parent folders created at copy time only ----
@@ -3204,7 +3352,7 @@ HTML_TEMPLATE = """
                 '</div>' +
                 '<div class="group-card-actions">' +
                     '<button type="button" class="btn btn-outline btn-sm" data-act="add"' + addDisabled + '>إضافة المؤشَّر</button>' +
-                    '<button type="button" class="btn btn-outline btn-sm" data-act="child"' + (depth >= GROUP_MAX_DEPTH ? ' disabled title="أقصى تداخل 3 مستويات"' : '') + '>＋ فرع</button>' +
+                    '<button type="button" class="btn btn-outline btn-sm" data-act="child"' + (depth >= GROUP_MAX_DEPTH ? ' disabled title="أقصى تداخل 3 مستويات"' : '') + '><svg class="icon" aria-hidden="true"><use href="#ico-plus"></use></svg> فرع</button>' +
                     '<button type="button" class="btn btn-outline btn-sm" data-act="rename">تعديل الاسم</button>' +
                     '<button type="button" class="btn btn-outline btn-sm btn-ghost-danger" data-act="delete">حذف</button>' +
                 '</div>' +
@@ -4074,7 +4222,7 @@ HTML_TEMPLATE = """
         if (!text) return;
         let done = function() {
             let btn = document.getElementById('copyDeleteErrBtn');
-            if (btn) { btn.textContent = 'تم النسخ ✔'; setTimeout(function(){ btn.textContent = 'نسخ التفاصيل'; }, 1800); }
+            if (btn) { btn.textContent = 'تم النسخ ✓'; setTimeout(function(){ btn.textContent = 'نسخ التفاصيل'; }, 1800); }
         };
         if (navigator.clipboard && navigator.clipboard.writeText) {
             navigator.clipboard.writeText(text).then(done).catch(function(){ fallbackCopyDeleteErrors(text, done); });
@@ -4147,7 +4295,7 @@ HTML_TEMPLATE = """
         fetch('/api/search?q=' + encodeURIComponent(q) + '&folders_only=' + foldersOnly + '&root=' + encodeURIComponent(currentSourceRoot) + (committed ? '&remember=1' : ''))
             .then(r=>r.json()).then(data=>{
             if (myToken !== searchRequestToken) return; 
-            document.getElementById('searchSpeedBadge').style.display = data.from_cache ? 'inline-block' : 'none';
+            document.getElementById('searchSpeedBadge').style.display = data.from_cache ? 'inline-flex' : 'none';
             resBox.innerHTML = '';
             if(data.results.length === 0) { resBox.innerHTML = '<div style="padding:10px;color:var(--text-muted);">لم يتم العثور على نتائج.</div>'; }
             else data.results.forEach(item => {
@@ -4431,13 +4579,51 @@ HTML_TEMPLATE = """
         }).catch(function() {});
     }
 
+    // Remembered throughput (avg_mbps of the last completed copy) drives a rough
+    // ETA in the action bar. It is a guess, so it is written with a tilde and
+    // stays hidden until a copy has actually measured this card.
+    let lastSelectionBytes = 0;
+    const LAST_SPEED_KEY = 'sdmp3_last_mbps';
+
+    function rememberedSpeed() {
+        let v = parseFloat(localStorage.getItem(LAST_SPEED_KEY) || '0');
+        return (isFinite(v) && v > 0) ? v : 0;
+    }
+
+    function formatDuration(seconds) {
+        if (!isFinite(seconds) || seconds <= 0) return '';
+        if (seconds < 60) return '~' + Math.max(1, Math.round(seconds)) + ' ث';
+        let m = Math.round(seconds / 60);
+        if (m < 60) return '~' + m + ' د';
+        return '~' + Math.floor(m / 60) + ' س ' + (m % 60) + ' د';
+    }
+
+    function updateBarEta() {
+        let etaEl = document.getElementById('barEta');
+        if (!etaEl) return;
+        let mbps = rememberedSpeed();
+        if (!mbps || lastSelectionBytes <= 0) {
+            etaEl.style.display = 'none';
+            return;
+        }
+        etaEl.textContent = '· ' + formatDuration(lastSelectionBytes / (mbps * 1024 * 1024));
+        etaEl.style.display = 'inline';
+    }
+
     function updateSizeDisplay(totalBytes) {
         let formattedSize = '';
         let mbThreshold = 1000 * 1024 * 1024; 
         if (totalBytes >= mbThreshold) formattedSize = (totalBytes / (1024*1024*1024)).toFixed(2) + ' GB';
         else formattedSize = (totalBytes / (1024*1024)).toFixed(2) + ' MB';
-        
-        let sizeHtml = `إجمالي الحجم المحدد: <span style="color:var(--text); font-size:calc(14px * var(--font-scale)); font-weight:600;">${formattedSize}</span>`;
+
+        // The action bar repeats the selection size: the dialog is closed most
+        // of the time, and "how much am I copying" must stay one glance away.
+        lastSelectionBytes = totalBytes || 0;
+        let barSizeEl = document.getElementById('barSize');
+        if (barSizeEl) barSizeEl.textContent = totalBytes > 0 ? formattedSize : '—';
+        updateBarEta();
+
+        let sizeHtml = `إجمالي الحجم المحدد: <span class="num" style="color:var(--text); font-size:calc(14px * var(--font-scale)); font-weight:600;">${formattedSize}</span>`;
         if (currentDestFreeBytes > 0) {
             let diff = currentDestFreeBytes - totalBytes;
             if (diff >= 0) {
@@ -4492,6 +4678,8 @@ HTML_TEMPLATE = """
             });
             renderSelectedRows();
             updateSelectedTotal(pathsArray);
+            // The dialog just paid for these numbers; the bar need not ask again.
+            selectionSizeSig = selectionSignature();
         } catch (e) {
             if (!list.querySelector('.selected-row')) {
                 list.innerHTML = '<div style="padding:20px; color:var(--danger-ink);">تعذر حساب الحجم — تحقق من الاتصال.</div>';
@@ -5157,7 +5345,7 @@ HTML_TEMPLATE = """
     }
 
     function showJocSuccessNotify(txtName) {
-        showInlineNotify('<span>✔</span> تم إنشاء الفهرس النصي <b>' + esc(txtName) + '</b> بنجاح.'
+        showInlineNotify(spriteIcon('ico-check') + ' تم إنشاء الفهرس النصي <b>' + esc(txtName) + '</b> بنجاح.'
             + '<div style="display:flex; flex-wrap:wrap; gap:8px; margin-top:8px;">'
             + '<button class="btn btn-primary btn-sm" style="flex:1;" onclick="copyJocIndex()">'
             + '<svg class="icon" viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>'
@@ -5216,7 +5404,7 @@ HTML_TEMPLATE = """
         let where = savedPath
             ? 'تم حفظ MP3 الصوتي <b>' + esc(mp3Name) + '</b> في الوجهة:<div class="ltr-input" style="margin-top:6px; font-size:calc(11.5px * var(--font-scale));">' + esc(savedPath) + '</div>'
             : 'تم إنشاء وتحميل MP3 الصوتي <b>' + esc(mp3Name) + '</b>، وكذا الفهرس النصي <b>' + esc(currentJocTxtName || '') + '</b>.';
-        showInlineNotify('<span>✔</span> ' + where
+        showInlineNotify(spriteIcon('ico-check') + ' ' + where
             + '<div style="display:flex; flex-wrap:wrap; gap:8px; margin-top:8px;">'
             + '<button class="btn btn-primary btn-sm" style="flex:1;" onclick="copyJocIndex()">'
             + '<svg class="icon" viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>'
@@ -5296,8 +5484,13 @@ HTML_TEMPLATE = """
         document.getElementById('cancelProgressBtn').style.display = 'none';
         document.getElementById('closeProgressBtn').style.display = 'block';
     }
-    function showInlineDone(msg) { showInlineNotify('<span>✔</span> ' + msg, 'success'); }
-    function showInlineError(msg) { showInlineNotify('<span>⚠</span> ' + esc(msg), 'error'); }
+    // Small inline sprite icons for generated notices: emoji would carry their
+    // own colour and metrics into a themed panel.
+    function spriteIcon(id) {
+        return '<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#' + id + '"></use></svg>';
+    }
+    function showInlineDone(msg) { showInlineNotify(spriteIcon('ico-check') + ' ' + msg, 'success'); }
+    function showInlineError(msg) { showInlineNotify(spriteIcon('ico-alert') + ' ' + esc(msg), 'error'); }
 
     function cancelTransfer() {
         if(confirm('متأكد من الإيقاف؟')) {
@@ -5307,6 +5500,30 @@ HTML_TEMPLATE = """
                 document.getElementById('currentFile').innerText = 'جاري الإيقاف بشكل آمن...';
             }).catch(()=>{ document.getElementById('cancelProgressBtn').disabled = false; });
         }
+    }
+
+    // The 3px line in the action bar repeats the running copy, so the progress
+    // dialog is optional. A delete has no known total, so it sweeps like the
+    // modal's bar instead of pretending to know a percentage.
+    function mirrorProgressInBar(data) {
+        let wrap = document.getElementById('barProgressWrap');
+        let fill = document.getElementById('barProgressFill');
+        if (!wrap || !fill) return;
+        if (data.status !== 'copying') {
+            wrap.classList.remove('on');
+            fill.classList.remove('indeterminate');
+            fill.style.width = '0%';
+            return;
+        }
+        wrap.classList.add('on');
+        if (data.action === 'delete') {
+            fill.classList.add('indeterminate');
+            fill.style.width = '100%';
+            return;
+        }
+        fill.classList.remove('indeterminate');
+        let pct = (data.phase === 'verifying') ? (data.verify_progress || 0) : (data.progress || 0);
+        fill.style.width = pct + '%';
     }
 
     function checkTransferStatus() {
@@ -5376,6 +5593,7 @@ HTML_TEMPLATE = """
                     currentEl.style.color = 'var(--text-muted)';
                 }
                 document.getElementById('failedText').innerText = data.failed ? ('فشل: ' + data.failed) : '';
+                mirrorProgressInBar(data);
 
                 // Live throughput + remaining time, so "slow" is a number.
                 let speedEl = document.getElementById('speedText');
@@ -5462,6 +5680,12 @@ HTML_TEMPLATE = """
                             + (data.avg_mbps ? ' • متوسط السرعة: ' + data.avg_mbps + ' MB/s' : '')
                             + (data.verify_seconds ? ' • التحقق ' + data.verify_seconds + ' ث' : '')
                             + verifyNote;
+                        // Remember this card's measured throughput: it is the only
+                        // honest basis for the action bar's ETA next time.
+                        if (data.action === 'copy' && data.avg_mbps > 0) {
+                            try { localStorage.setItem(LAST_SPEED_KEY, String(data.avg_mbps)); } catch (e) {}
+                            updateBarEta();
+                        }
                         // The parent folders belonged to the copy that just ran.
                         if (data.action === 'copy' && copyGroups.length) {
                             copyGroups = [];
@@ -5521,6 +5745,20 @@ HTML_TEMPLATE = """
         });
     }
     
+    // Esc closes the modal on top, never the progress dialog: that one owns a
+    // running copy and must be closed with its own button after the run ends.
+    document.addEventListener('keydown', function(e) {
+        if (e.key !== 'Escape') return;
+        let open = Array.from(document.querySelectorAll('.modal')).filter(function(m) {
+            return m.style.display === 'flex';
+        });
+        if (!open.length) return;
+        let front = open.filter(function(m) { return m.classList.contains('modal-front'); })[0]
+            || open[open.length - 1];
+        if (!front || front.id === 'progressModal') return;
+        front.style.display = 'none';
+    });
+
     function resetTransfer() {
         fetch('/transfer/reset').then(() => {
             checkDiskSpace(document.getElementById('custom_dest_path').value);
