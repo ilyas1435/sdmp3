@@ -24,9 +24,9 @@ SETTINGS_FILE = 'settings.json'
 SEARCH_HISTORY_FILE = 'search_history.json'
 INDEX_SETTINGS_FILE = 'index_settings.json'
 
-SETTINGS_VERSION = 1
+SETTINGS_VERSION = 2
 HISTORY_VERSION = 1
-INDEX_SETTINGS_VERSION = 1
+INDEX_SETTINGS_VERSION = 2
 
 # "the last 25" is the product decision; keep it in one place.
 HISTORY_ITEM_LIMIT = 25
@@ -34,18 +34,19 @@ HISTORY_QUERY_LIMIT = 25
 
 # Default JOC / index settings. Kept in one place so the server and the page
 # agree on the shape. Nothing here raises: unknown or missing keys fall back to
-# these defaults.
+# these defaults. The output *name* is deliberately absent - it is generated and
+# edited in the create dialog, never remembered between runs.
 DEFAULT_INDEX_SETTINGS = {
     'version': INDEX_SETTINGS_VERSION,
     'joc_start': 1,
     'joc_limit': 93,
     'joc_mode': '1',
     'joc_template': '4',
-    'joc_filename': '',
     'joc_strip': True,
     'joc_download_txt': False,
     'joc_review_txt': False,
     'joc_mp3_index': False,
+    'mp3_to_dest': True,
     'tts_voice': 'ar-AE-HamdanNeural',
     'tts_rate': '+0%',
     'mask_mode': 'noise',
@@ -116,20 +117,31 @@ def save_json(path, payload, mode=0o600):
 # settings
 # --------------------------------------------------------------------------
 
-def load_settings(valid_theme_ids, default_theme):
+def load_settings(valid_theme_ids, default_theme,
+                  valid_font_ids=None, default_font='system',
+                  valid_font_size_ids=None, default_font_size='normal'):
     """Return the saved settings, with every unknown value replaced.
 
     Unknown keys are dropped on purpose: the file is user-editable and a typo
-    must not end up echoed into the page.
+    must not end up echoed into the page. `font` and `font_size` are validated
+    against the registries in sdmp3_fonts.py, the same way themes are validated
+    against sdmp3_themes.py.
     """
     raw = load_json(state_file(SETTINGS_FILE), {})
     theme = raw.get('theme')
     if theme not in valid_theme_ids:
         theme = default_theme
-    settings = {'version': SETTINGS_VERSION, 'theme': theme}
+    font = raw.get('font')
+    if font not in (valid_font_ids or []):
+        font = default_font
+    font_size = raw.get('font_size')
+    if font_size not in (valid_font_size_ids or []):
+        font_size = default_font_size
+    settings = {'version': SETTINGS_VERSION, 'theme': theme,
+                'font': font, 'font_size': font_size}
     raw_version = raw.get('version')
     if isinstance(raw_version, int) and raw_version > SETTINGS_VERSION:
-        # A newer app wrote this file. Keep the theme if we know it, but do not
+        # A newer app wrote this file. Keep what we understand, but do not
         # pretend to understand the rest.
         settings['version'] = raw_version
     return settings
@@ -139,6 +151,8 @@ def save_settings(settings):
     payload = {
         'version': SETTINGS_VERSION,
         'theme': settings.get('theme'),
+        'font': settings.get('font'),
+        'font_size': settings.get('font_size'),
         'updated': int(time.time()),
     }
     return save_json(state_file(SETTINGS_FILE), payload)
@@ -254,9 +268,15 @@ if __name__ == '__main__':  # pragma: no cover - manual report
     real_dir = STATE_DIR
     STATE_DIR = tmpdir
     try:
-        assert load_settings(['a', 'b'], 'a') == {'version': 1, 'theme': 'a'}
-        assert save_settings({'theme': 'b'}) is True
-        assert load_settings(['a', 'b'], 'a')['theme'] == 'b'
+        # settings: theme + font + font size, all validated against registries
+        assert load_settings(['a', 'b'], 'a') == {
+            'version': SETTINGS_VERSION, 'theme': 'a',
+            'font': 'system', 'font_size': 'normal'}
+        assert save_settings({'theme': 'b', 'font': 'f1', 'font_size': 'big'}) is True
+        saved = load_settings(['a', 'b'], 'a', ['f1', 'f2'], 'system', ['big', 'small'], 'normal')
+        assert saved['theme'] == 'b' and saved['font'] == 'f1' and saved['font_size'] == 'big', saved
+        bad = load_settings(['a'], 'a', ['other-font'], 'system', ['huge'], 'normal')
+        assert bad['font'] == 'system' and bad['font_size'] == 'normal', bad
         rows = []
         for i in range(40):
             rows = upsert_recent(rows, {'path': '/p/{}'.format(i)}, 'path', 25)
@@ -279,6 +299,12 @@ if __name__ == '__main__':  # pragma: no cover - manual report
         assert loaded['joc_limit'] == 200
         assert loaded['tts_rate'] == '+20%'
         assert loaded['joc_start'] == DEFAULT_INDEX_SETTINGS['joc_start']
+        # the MP3 destination flag is part of the saved contract
+        assert loaded['mp3_to_dest'] is True
+        # the output name is never persisted (generated per creation)
+        custom['joc_filename'] = 'stale.txt'
+        save_index_settings(custom)
+        assert 'joc_filename' not in load_index_settings()
     finally:
         STATE_DIR = real_dir
     print('sdmp3_state: all checks passed')

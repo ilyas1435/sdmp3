@@ -26,11 +26,14 @@ from sdmp3_themes import (THEMES, DEFAULT_THEME, theme_ids, get_theme,
 from sdmp3_state import (state_file, load_settings, save_settings,
                          load_search_history, save_search_history,
                          load_index_settings, save_index_settings,
-                         DEFAULT_INDEX_SETTINGS,
+                         DEFAULT_INDEX_SETTINGS, SETTINGS_VERSION,
                          upsert_recent, prune_history_to_roots,
                          HISTORY_ITEM_LIMIT, HISTORY_QUERY_LIMIT)
 from sdmp3_groups import (prepare_copy_groups, group_segments, group_dir_chain,
                           validate_group_path)
+from sdmp3_fonts import (DEFAULT_FONT, DEFAULT_FONT_SIZE, FONT_SIZES,
+                         font_face_css, font_ids, font_scale, font_size_ids,
+                         font_stack, get_font, catalog as font_catalog)
 
 try:
     import edge_tts
@@ -146,7 +149,11 @@ DEFAULT_STATE = {
     'start_time': 0,
     'time_taken': '',
     'delete_failures': [],
-    'card_damage': False
+    'card_damage': False,
+    # TTS result: the file name, and where it went. `tts_saved_path` is set only
+    # when the MP3 was written into the destination instead of the temp cache.
+    'tts_name': '',
+    'tts_saved_path': ''
 }
 transfer_state = dict(DEFAULT_STATE)
 
@@ -1799,6 +1806,8 @@ TTS_VOICES = {
     "en-US-AndrewMultilingualNeural": "متعدد اللغات – أندرو (رجل)",
 }
 TTS_DEFAULT_VOICE = "ar-AE-HamdanNeural"
+# The rate presets the UI offers; also the whitelist used when saving settings.
+TTS_RATES = ('+0%', '-10%', '-20%', '+10%', '+20%')
 # Edge TTS is network-bound. Chunks are independent and are written to numbered
 # files, so synthesising several at once cannot change the merge order.
 TTS_PARALLEL_CHUNKS = 4
@@ -1920,6 +1929,9 @@ def combine_mp3_chunks(chunk_files, final_path, bitrate="64k", obfuscate=False, 
     only begins after it. The masking segment is:
       - 'file' mode  -> the user's custom_audio_path (whole file, as-is), or
       - noise mode   -> 'static_seconds' of subtle generated noise."""
+    # The concat list lives in the temp cache; make sure it exists even when
+    # this is called outside a TTS run (tests, a future merge endpoint).
+    setup_tts_cache()
     concat_list = os.path.join(TTS_CACHE_DIR, "concat_list.txt")
     entries = []
     if obfuscate:
@@ -1952,13 +1964,17 @@ def combine_mp3_chunks(chunk_files, final_path, bitrate="64k", obfuscate=False, 
 # ------------------ HTML & JS Template ---------------------
 HTML_TEMPLATE = """
 <!DOCTYPE html>
-<html dir="rtl" lang="ar" data-theme="{{ active_theme.id }}">
+<html dir="rtl" lang="ar" data-theme="{{ active_theme.id }}" style="--font-scale: {{ font_scale }};">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>SD Card Coffee</title>
     <meta name="theme-color" content="{{ theme_bg }}">
     <style>
+        /* Self-hosted Arabic fonts (static/fonts/). They are declared here but
+           only downloaded when the selected --app-font actually uses one, so the
+           default `system` face still paints with zero font requests. */
+{{ font_css|safe }}
         :root {
             /* Theme tokens. The palette lives in sdmp3_themes.py (a registry with
                a WCAG contrast contract) and is rendered here from the theme saved
@@ -1968,19 +1984,23 @@ HTML_TEMPLATE = """
 {% for name, value in theme_css %}
             {{ name }}: {{ value }};
 {% endfor %}
+            /* Typography: the family comes from sdmp3_fonts.py, the scale from
+               the size preset. Both are rendered server-side so the first paint
+               is already correct. */
+            --app-font: {{ app_font|safe }};
         }
-        * { box-sizing: border-box; font-family: system-ui, -apple-system, 'Segoe UI', Roboto, 'Noto Sans Arabic', 'IBM Plex Sans Arabic', sans-serif; -webkit-tap-highlight-color: transparent; }
-        body { background-color: var(--bg); color: var(--text); margin: 0; padding: 16px 14px 110px; font-size: 14px; line-height: 1.55; -webkit-font-smoothing: antialiased; }
+        * { box-sizing: border-box; font-family: var(--app-font); -webkit-tap-highlight-color: transparent; }
+        body { background-color: var(--bg); color: var(--text); margin: 0; padding: 16px 14px 110px; font-size: calc(14px * var(--font-scale)); line-height: 1.55; -webkit-font-smoothing: antialiased; }
         .container { max-width: 900px; margin: 0 auto; }
 
         .app-header { display:flex; align-items:center; gap:13px; padding-bottom: 16px; margin-top: 4px; margin-bottom: 14px; border-bottom: 1px solid var(--border); }
         .app-header .badge { width:44px; height:44px; border-radius:13px; background:var(--accent-soft); border:1px solid var(--accent-line); display:flex; align-items:center; justify-content:center; flex-shrink:0; }
         .app-header .badge svg { stroke: var(--accent); width:22px; height:22px; }
-        .app-header h1 { font-size: 19px; color: var(--text); margin:0; font-weight: 700; letter-spacing: -0.2px; }
-        .app-header p { margin: 3px 0 0; font-size: 12.5px; color: var(--text-muted); }
+        .app-header h1 { font-size: calc(19px * var(--font-scale)); color: var(--text); margin:0; font-weight: 700; letter-spacing: -0.2px; }
+        .app-header p { margin: 3px 0 0; font-size: calc(12.5px * var(--font-scale)); color: var(--text-muted); }
         .app-header .header-settings { margin-inline-start: auto; width:36px; height:36px; flex-shrink:0; }
         .pill-row { display:flex; flex-wrap:wrap; gap:6px; margin-top:9px; }
-        .pill { font-size: 11px; line-height: 1; padding: 6px 10px; border-radius: 999px; border: 1px solid var(--border); color: var(--text-muted); background: var(--pill-bg); white-space: nowrap; }
+        .pill { font-size: calc(11px * var(--font-scale)); line-height: 1; padding: 6px 10px; border-radius: 999px; border: 1px solid var(--border); color: var(--text-muted); background: var(--pill-bg); white-space: nowrap; }
         /* The version is the app's signature, so it wears the accent. */
         #appVersionPill { color: var(--accent-text); border-color: var(--accent-line); background: var(--accent-soft); font-weight: 600; }
         .pill-ok { color: var(--success); border-color: var(--ok-line); background: var(--ok-soft); }
@@ -1994,16 +2014,16 @@ HTML_TEMPLATE = """
 
         .card { background: var(--card); padding: 18px; border-radius: var(--radius); border: 1px solid var(--border); margin-bottom: 16px; }
         @media (max-width: 480px) { .card { padding: 15px; } body { padding: 12px 10px 110px; } }
-        .card-title { display:flex; align-items:center; gap:9px; font-size: 14.5px; font-weight:600; color: var(--text); margin: 0 0 15px; }
+        .card-title { display:flex; align-items:center; gap:9px; font-size: calc(14.5px * var(--font-scale)); font-weight:600; color: var(--text); margin: 0 0 15px; }
         .card-title svg { width:17px; height:17px; stroke: var(--accent); }
 
-        label { font-weight: 500; margin-bottom: 8px; display: block; color: var(--text-muted); font-size: 13px; }
-        select, input[type="text"], input[type="number"], input[type="datetime-local"] { width: 100%; padding: 12px 14px; border: 1px solid var(--border); border-radius: 10px; font-size: 14px; background-color: var(--field); color: var(--text); outline: none; margin-bottom: 12px; transition: border-color 0.15s, box-shadow 0.15s; min-height: 46px; }
+        label { font-weight: 500; margin-bottom: 8px; display: block; color: var(--text-muted); font-size: calc(13px * var(--font-scale)); }
+        select, input[type="text"], input[type="number"], input[type="datetime-local"] { width: 100%; padding: 12px 14px; border: 1px solid var(--border); border-radius: 10px; font-size: calc(14px * var(--font-scale)); background-color: var(--field); color: var(--text); outline: none; margin-bottom: 12px; transition: border-color 0.15s, box-shadow 0.15s; min-height: 46px; }
         select:focus, input[type="text"]:focus, input[type="number"]:focus, input[type="datetime-local"]:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
-        textarea { width: 100%; padding: 12px 14px; box-sizing: border-box; border: 1px solid var(--border); border-radius: 10px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 14px; line-height: 1.7; background-color: var(--field); color: var(--text); outline: none; resize: none; }
+        textarea { width: 100%; padding: 12px 14px; box-sizing: border-box; border: 1px solid var(--border); border-radius: 10px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: calc(14px * var(--font-scale)); line-height: 1.7; background-color: var(--field); color: var(--text); outline: none; resize: none; }
         textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
 
-        .btn { padding: 11px 16px; min-height: 44px; border: none; border-radius: 10px; cursor: pointer; font-weight: 600; font-size: 13.5px; color: var(--text); transition: transform 0.08s ease, filter 0.15s ease, background-color 0.15s ease, border-color 0.15s ease; display: inline-flex; align-items: center; justify-content: center; gap: 7px; }
+        .btn { padding: 11px 16px; min-height: 44px; border: none; border-radius: 10px; cursor: pointer; font-weight: 600; font-size: calc(13.5px * var(--font-scale)); color: var(--text); transition: transform 0.08s ease, filter 0.15s ease, background-color 0.15s ease, border-color 0.15s ease; display: inline-flex; align-items: center; justify-content: center; gap: 7px; }
         .btn:active { transform: scale(0.97); }
         .btn:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
         .btn:focus-visible, .icon-btn:focus-visible, .storage-card:focus-visible, .toggle-btn:focus-visible {
@@ -2019,7 +2039,7 @@ HTML_TEMPLATE = """
         .btn-outline { background: var(--card-2); border: 1px solid var(--border); color: var(--text); }
         .btn-outline.is-open { background: var(--accent-soft); border-color: var(--accent); color: var(--accent-text); }
         .btn-outline:hover { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent-soft); }
-        .btn-sm { padding: 8px 12px; min-height: 38px; font-size: 12.5px; }
+        .btn-sm { padding: 8px 12px; min-height: 38px; font-size: calc(12.5px * var(--font-scale)); }
 
         .tree { max-height: 62vh; overflow: auto; background: var(--field); border: 1px solid var(--border); border-radius: 10px; padding: 8px; scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
         .tree::-webkit-scrollbar, .modal-content .modal-body::-webkit-scrollbar { width: 8px; height: 8px; }
@@ -2028,10 +2048,10 @@ HTML_TEMPLATE = """
         .item-row { display: flex; align-items: center; padding: 9px 8px; border-radius: 8px; border-bottom: 1px solid var(--border); min-width: max-content; transition: background-color 0.15s; }
         .item-row:last-child { border-bottom: none; }
         .item-row:hover { background: var(--card-2); }
-        .toggle-btn { background: none; border: none; color: var(--text-muted); cursor: pointer; font-size: 12px; width: 26px; height: 26px; padding: 0; flex-shrink:0; }
-        .excluded-badge { color: var(--warning); font-size: 11px; margin-right: 8px; background: var(--warning-soft); border: 1px solid var(--warning-line); padding: 2px 6px; border-radius: 6px;}
+        .toggle-btn { background: none; border: none; color: var(--text-muted); cursor: pointer; font-size: calc(12px * var(--font-scale)); width: 26px; height: 26px; padding: 0; flex-shrink:0; }
+        .excluded-badge { color: var(--warning); font-size: calc(11px * var(--font-scale)); margin-right: 8px; background: var(--warning-soft); border: 1px solid var(--warning-line); padding: 2px 6px; border-radius: 6px;}
         .checkbox { accent-color: var(--accent); width: 18px; height: 18px; margin: 0 10px; flex-shrink: 0; cursor: pointer;}
-        .item-name { cursor: pointer; display: flex; align-items: center; gap: 8px; white-space: nowrap; padding-right: 6px; color: var(--text); font-size:14px;}
+        .item-name { cursor: pointer; display: flex; align-items: center; gap: 8px; white-space: nowrap; padding-right: 6px; color: var(--text); font-size:calc(14px * var(--font-scale));}
         .children { margin-right: 24px; display: none; border-right: 1px solid var(--border); padding-right: 12px; }
         .children.open { display: block; }
 
@@ -2062,11 +2082,11 @@ HTML_TEMPLATE = """
         .storage-card.kind-usb { --kind: var(--kind-usb); --kind-ink: var(--kind-usb-ink); --kind-soft: var(--kind-usb-soft); --kind-tile: var(--kind-usb-tile); }
         .storage-card.kind-card { --kind: var(--kind-card); --kind-ink: var(--kind-card-ink); --kind-soft: var(--kind-card-soft); --kind-tile: var(--kind-card-tile); }
         .storage-meta { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex-grow: 1; }
-        .storage-name { font-size: 14px; font-weight: 600; }
-        .storage-path { font-size: 11px; color: var(--text-muted); direction: ltr; text-align: right;
+        .storage-name { font-size: calc(14px * var(--font-scale)); font-weight: 600; }
+        .storage-path { font-size: calc(11px * var(--font-scale)); color: var(--text-muted); direction: ltr; text-align: right;
             overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .storage-card.active .storage-name { color: var(--kind-ink, var(--accent)); }
-        .storage-badge { display: none; margin-inline-start: auto; font-size: 10px; padding: 3px 7px; border-radius: 999px;
+        .storage-badge { display: none; margin-inline-start: auto; font-size: calc(10px * var(--font-scale)); padding: 3px 7px; border-radius: 999px;
             border: 1px solid var(--border); color: var(--text-muted); white-space: nowrap; }
         .storage-card.active .storage-badge { display: inline-block; color: var(--kind-ink, var(--accent)); border-color: var(--kind, var(--accent)); }
         /* Path box in the picker: border says which volume you are browsing. */
@@ -2074,9 +2094,9 @@ HTML_TEMPLATE = """
         .kind-border-sdcard { border-color: var(--kind-sdcard) !important; }
         .kind-border-usb { border-color: var(--kind-usb) !important; }
         .kind-border-card { border-color: var(--kind-card) !important; }
-        .picker-hint { font-size: 11.5px; color: var(--text-muted); margin: 6px 2px 8px; }
+        .picker-hint { font-size: calc(11.5px * var(--font-scale)); color: var(--text-muted); margin: 6px 2px 8px; }
         .picker-file-row .item-name { color: var(--text-muted); cursor: default; }
-        .file-size { margin-inline-start: auto; font-size: 11px; color: var(--text-muted); direction: ltr; padding-inline-start: 10px; }
+        .file-size { margin-inline-start: auto; font-size: calc(11px * var(--font-scale)); color: var(--text-muted); direction: ltr; padding-inline-start: 10px; }
         .icon-btn:hover { color: var(--accent); border-color: var(--accent); }
         .icon-btn.danger:hover { color: var(--danger-ink); border-color: var(--danger); }
 
@@ -2102,7 +2122,7 @@ HTML_TEMPLATE = """
         .modal-content.modal-settings { height: min(84vh, 760px); max-height: 84vh; }
         .settings-tabs { display:flex; gap:6px; margin: 2px 0 14px; flex-shrink:0; }
         .settings-tab { flex:1; padding:9px 10px; border-radius:10px; border:1px solid var(--border);
-            background:var(--field); color:var(--text-muted); font-size:12.5px; font-weight:600;
+            background:var(--field); color:var(--text-muted); font-size:calc(12.5px * var(--font-scale)); font-weight:600;
             cursor:pointer; font-family:inherit; transition: border-color .15s, color .15s, background .15s; }
         .settings-tab.active { color:var(--accent-text); border-color:var(--accent); background:var(--accent-soft); }
         .settings-tab:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
@@ -2116,37 +2136,74 @@ HTML_TEMPLATE = """
         .theme-card:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
         .theme-swatches { display:flex; height:26px; border-radius:7px; overflow:hidden; border:1px solid var(--border); }
         .theme-swatches i { flex:1; display:block; }
-        .theme-card-name { font-size:12.5px; font-weight:600; display:flex; align-items:center; gap:6px; }
-        .theme-card-name .theme-check { margin-inline-start:auto; color:var(--accent-text); font-size:12px; opacity:0; }
+        .theme-card-name { font-size:calc(12.5px * var(--font-scale)); font-weight:600; display:flex; align-items:center; gap:6px; }
+        .theme-card-name .theme-check { margin-inline-start:auto; color:var(--accent-text); font-size:calc(12px * var(--font-scale)); opacity:0; }
         .theme-card.active .theme-card-name .theme-check { opacity:1; }
-        .theme-card-desc { font-size:10.5px; color:var(--text-muted); line-height:1.5; }
-        .settings-note { font-size:10.5px; color:var(--text-muted); line-height:1.6; }
-        .settings-save-state { font-size:11.5px; min-height:16px; color:var(--text-muted); }
+        .theme-card-desc { font-size:calc(10.5px * var(--font-scale)); color:var(--text-muted); line-height:1.5; }
+        .settings-note { font-size:calc(10.5px * var(--font-scale)); color:var(--text-muted); line-height:1.6; }
+        .settings-save-state { font-size:calc(11.5px * var(--font-scale)); min-height:16px; color:var(--text-muted); }
         .settings-save-state.ok { color:var(--success); }
         .settings-save-state.err { color:var(--danger-ink); }
+
+        /* ---- font picker (General settings) ---------------------------- */
+        /* Each card is rendered *in its own family* so the choice is visible
+           before it is applied. Nothing downloads here: an @font-face is only
+           fetched when text actually uses the family. */
+        .font-grid { display:grid; grid-template-columns: repeat(auto-fill, minmax(146px, 1fr)); gap:9px; }
+        .font-card { display:flex; flex-direction:column; gap:4px; padding:10px 11px; border-radius:12px;
+            border:1px solid var(--border); background:var(--field); cursor:pointer; text-align:right;
+            color:var(--text); transition: border-color .15s, background .15s; }
+        .font-card:hover { border-color:var(--accent); }
+        .font-card.active { border-color:var(--accent); background:var(--accent-soft); }
+        .font-card:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+        .font-card-name { font-size:calc(16px * var(--font-scale)); font-weight:600;
+            display:flex; align-items:center; gap:6px; line-height:1.5; }
+        .font-card-name .theme-check { margin-inline-start:auto; color:var(--accent-text);
+            font-size:calc(11px * var(--font-scale)); opacity:0; }
+        .font-card.active .font-card-name .theme-check { opacity:1; }
+        .font-card-desc { font-size:calc(10.5px * var(--font-scale)); color:var(--text-muted); line-height:1.5; }
+
+        /* Size presets: same segmented shape as the mask picker, one row. */
+        .size-seg { display:flex; gap:6px; background:var(--field); border:1px solid var(--border); border-radius:10px; padding:4px; }
+        .size-option { flex:1; text-align:center; padding:9px 6px; border-radius:7px; border:0;
+            background:transparent; cursor:pointer; color:var(--text-muted);
+            font-size:calc(12.5px * var(--font-scale)); transition: background .15s, color .15s; }
+        .size-option.active { background:var(--accent-fill); color:var(--on-accent); font-weight:600; }
+        .size-option:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+
+        /* The index pane is the old JOC form, so it keeps block flow: labels and
+           inputs already carry their own margins there. */
+        .index-form { display:block; }
+        .index-form .grid-2 > div { min-width:0; }
+        .joc-summary { background:var(--field); border:1px solid var(--border); border-radius:12px;
+            padding:12px 14px; font-size:calc(12px * var(--font-scale)); color:var(--text-muted);
+            line-height:1.9; }
+        .joc-summary b { color:var(--text); font-weight:600; }
+        .joc-summary .summary-title { display:flex; align-items:center; gap:7px; color:var(--text);
+            font-weight:600; margin-bottom:6px; font-size:calc(12.5px * var(--font-scale)); }
 
         /* ---- search history ------------------------------------------- */
         .search-history { margin-top:14px; border-top:1px solid var(--border); padding-top:12px; }
         .history-head { display:flex; align-items:center; gap:8px; margin-bottom:9px; }
-        .history-title { font-size:12px; font-weight:600; color:var(--text-muted); }
-        .history-head .btn { margin-inline-start:auto; padding:4px 9px; font-size:11px; }
+        .history-title { font-size:calc(12px * var(--font-scale)); font-weight:600; color:var(--text-muted); }
+        .history-head .btn { margin-inline-start:auto; padding:4px 9px; font-size:calc(11px * var(--font-scale)); }
         .history-chips { display:flex; flex-wrap:wrap; gap:6px; margin-bottom:10px; }
         .history-chip { display:inline-flex; align-items:center; gap:6px; padding:5px 11px;
             border-radius:999px; border:1px solid var(--border); background:var(--field);
-            color:var(--text); font-family:inherit; font-size:11.5px; cursor:pointer; }
+            color:var(--text); font-family:inherit; font-size:calc(11.5px * var(--font-scale)); cursor:pointer; }
         .history-chip:hover, .history-chip:focus-visible { border-color:var(--accent); color:var(--accent-text); outline:none; }
-        .history-chip small { font-size:9.5px; color:var(--text-muted); }
+        .history-chip small { font-size:calc(9.5px * var(--font-scale)); color:var(--text-muted); }
         .history-rows { display:flex; flex-direction:column; gap:6px; max-height:280px; overflow-y:auto; scrollbar-width:thin; }
         .history-row { display:flex; align-items:center; gap:8px; padding:8px 10px;
             border:1px solid var(--border); background:var(--field); border-radius:11px; }
         .history-row-main { flex:1; min-width:0; cursor:pointer; display:flex; flex-direction:column; gap:3px; }
         .history-row-main:hover .history-row-name { color:var(--accent-text); }
-        .history-row-name { font-size:12.5px; color:var(--text); display:flex; align-items:center; gap:6px; }
+        .history-row-name { font-size:calc(12.5px * var(--font-scale)); color:var(--text); display:flex; align-items:center; gap:6px; }
         .history-row-name svg { width:13px; height:13px; flex-shrink:0; }
-        .history-row-path { font-size:10.5px; color:var(--text-muted); direction:ltr; text-align:left;
+        .history-row-path { font-size:calc(10.5px * var(--font-scale)); color:var(--text-muted); direction:ltr; text-align:left;
             white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-        .history-row-meta { font-size:10px; color:var(--text-muted); white-space:nowrap; flex-shrink:0; }
-        .history-empty { padding:10px 2px; font-size:11.5px; color:var(--text-muted); line-height:1.7; }
+        .history-row-meta { font-size:calc(10px * var(--font-scale)); color:var(--text-muted); white-space:nowrap; flex-shrink:0; }
+        .history-empty { padding:10px 2px; font-size:calc(11.5px * var(--font-scale)); color:var(--text-muted); line-height:1.7; }
         .history-row.added { border-color:var(--accent); background:var(--accent-soft); }
         @media (max-width: 480px) {
             .modal { padding: 8px; align-items: stretch; }
@@ -2172,16 +2229,16 @@ HTML_TEMPLATE = """
             0%   { background-position: -40% 0; }
             100% { background-position: 140% 0; }
         }
-        .ltr-input { direction: ltr; text-align: left; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
+        .ltr-input { direction: ltr; text-align: left; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: calc(12px * var(--font-scale)); }
 
-        .disk-space-container { margin-bottom: 10px; font-size: 13px; color: var(--text-muted); display: none;}
+        .disk-space-container { margin-bottom: 10px; font-size: calc(13px * var(--font-scale)); color: var(--text-muted); display: none;}
         .disk-bar { width: 100%; height: 6px; background: var(--field); border-radius: 3px; overflow: hidden; margin-top: 6px; border: 1px solid var(--border);}
         .disk-used { height: 100%; background: var(--accent); width: 0%; transition: width 0.3s ease; }
 
         /* Copy options and the optional parent folders ("groups"). */
-        .check-line { display:flex; align-items:center; gap:9px; cursor:pointer; color:var(--text); font-size:13px; margin:12px 0 0; font-weight:500; }
+        .check-line { display:flex; align-items:center; gap:9px; cursor:pointer; color:var(--text); font-size:calc(13px * var(--font-scale)); margin:12px 0 0; font-weight:500; }
         .check-line .checkbox { width:17px; height:17px; margin:0; flex-shrink:0; }
-        .check-hint { display:block; color:var(--text-muted); font-size:11.5px; line-height:1.55; margin:5px 0 0; }
+        .check-hint { display:block; color:var(--text-muted); font-size:calc(11.5px * var(--font-scale)); line-height:1.55; margin:5px 0 0; }
 
         /* The selected-items window keeps one height: the list scrolls while the
            group cards and the pick bar stay put, so the action cannot move under
@@ -2194,7 +2251,7 @@ HTML_TEMPLATE = """
         .group-section { display:flex; flex-direction:column; gap:8px; padding:10px 11px; border-radius:12px;
             background:var(--field); border:1px solid var(--border); max-height:34vh; overflow-y:auto; }
         .group-section-head { display:flex; align-items:center; justify-content:space-between; gap:8px; flex-wrap:wrap; }
-        .group-section-title { display:flex; align-items:center; gap:8px; font-size:12.5px; font-weight:600; color:var(--text); }
+        .group-section-title { display:flex; align-items:center; gap:8px; font-size:calc(12.5px * var(--font-scale)); font-weight:600; color:var(--text); }
         .group-section-title .icon { color:var(--accent); width:16px; height:16px; }
         .group-cards { display:flex; flex-direction:column; gap:7px; }
         .group-card { display:flex; flex-direction:column; gap:7px; padding:9px 10px; border-radius:10px; border:1px solid var(--accent-line); background:var(--accent-soft); }
@@ -2202,24 +2259,24 @@ HTML_TEMPLATE = """
         .group-card-main { display:flex; align-items:center; gap:9px; min-width:0; }
         .group-card-main .icon { color:var(--accent-text); flex-shrink:0; }
         .group-card-text { min-width:0; flex:1; }
-        .group-card-name { font-size:13px; font-weight:600; color:var(--text); }
+        .group-card-name { font-size:calc(13px * var(--font-scale)); font-weight:600; color:var(--text); }
         .group-card-name .group-crumb-sep { color:var(--accent-text); margin:0 3px; font-weight:400; }
-        .group-card-meta { font-size:10.5px; color:var(--text-muted); margin-top:2px; }
+        .group-card-meta { font-size:calc(10.5px * var(--font-scale)); color:var(--text-muted); margin-top:2px; }
         .group-card-actions { display:flex; flex-wrap:wrap; gap:6px; }
-        .group-card-actions .btn { min-height:32px; padding:5px 9px; font-size:11.5px; }
+        .group-card-actions .btn { min-height:32px; padding:5px 9px; font-size:calc(11.5px * var(--font-scale)); }
         .btn-ghost-danger { color:var(--danger-ink); border-color:var(--danger-line); }
-        .group-empty-hint { font-size:11px; color:var(--text-muted); line-height:1.55; }
+        .group-empty-hint { font-size:calc(11px * var(--font-scale)); color:var(--text-muted); line-height:1.55; }
 
         .selected-row { display:flex; align-items:center; gap:10px; padding:10px 11px; border-radius:10px; background:var(--field); border:1px solid var(--border); }
         .selected-row.is-dragging { opacity:.5; }
         .selected-row.is-picked { border-color:var(--accent-line); background:var(--accent-soft); }
         .selected-row-main { min-width:0; flex:1; display:flex; flex-direction:column; gap:4px; }
         .selected-row-top { display:flex; align-items:center; gap:8px; min-width:0; }
-        .selected-row-name { font-size:13px; font-weight:500; color:var(--text); }
+        .selected-row-name { font-size:calc(13px * var(--font-scale)); font-weight:500; color:var(--text); }
         .selected-row-top .icon { color:var(--text-muted); flex-shrink:0; }
         .selected-row-right { display:flex; align-items:center; gap:8px; flex-shrink:0; }
-        .selected-row-size { font-size:11px; color:var(--text-muted); min-width:52px; text-align:left; direction:ltr; }
-        .group-chip { align-self:flex-start; max-width:100%; font-size:10.5px; padding:2px 8px; border-radius:20px;
+        .selected-row-size { font-size:calc(11px * var(--font-scale)); color:var(--text-muted); min-width:52px; text-align:left; direction:ltr; }
+        .group-chip { align-self:flex-start; max-width:100%; font-size:calc(10.5px * var(--font-scale)); padding:2px 8px; border-radius:20px;
             background:var(--accent-soft); border:1px solid var(--accent-line); color:var(--accent-text);
             white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
         .group-chip.none { background:transparent; border-color:var(--border); color:var(--text-muted); }
@@ -2228,26 +2285,26 @@ HTML_TEMPLATE = """
         .pick-bar { display:flex; align-items:center; justify-content:space-between; gap:8px; flex-wrap:wrap;
             flex-shrink:0; margin-top:10px; padding:9px 11px; border-radius:12px;
             background:var(--card-2); border:1px solid var(--accent-line); }
-        .pick-count { font-size:12px; color:var(--text); }
+        .pick-count { font-size:calc(12px * var(--font-scale)); color:var(--text); }
         .pick-count b { color:var(--accent-text); }
         .pick-bar-actions { display:flex; flex-wrap:wrap; gap:6px; }
-        .pick-bar-actions .btn { min-height:36px; padding:7px 11px; font-size:12px; }
+        .pick-bar-actions .btn { min-height:36px; padding:7px 11px; font-size:calc(12px * var(--font-scale)); }
 
         .assign-sheet { position:absolute; left:14px; right:14px; bottom:14px; z-index:6;
             display:flex; flex-direction:column; gap:9px; padding:12px; border-radius:14px;
             background:var(--card-2); border:1px solid var(--accent-line);
             box-shadow:0 18px 40px var(--shadow-card); }
-        .assign-sheet-head { display:flex; align-items:center; justify-content:space-between; gap:8px; font-size:12.5px; color:var(--text); }
+        .assign-sheet-head { display:flex; align-items:center; justify-content:space-between; gap:8px; font-size:calc(12.5px * var(--font-scale)); color:var(--text); }
         .assign-groups { display:flex; flex-wrap:wrap; gap:7px; max-height:30vh; overflow-y:auto; }
         .assign-group { display:flex; align-items:center; gap:7px; max-width:100%; padding:7px 11px;
             border-radius:10px; background:var(--accent-soft); border:1px solid var(--accent-line);
-            color:var(--accent-text); font-size:12px; font-weight:600; cursor:pointer; }
+            color:var(--accent-text); font-size:calc(12px * var(--font-scale)); font-weight:600; cursor:pointer; }
         .assign-group:hover { border-color:var(--accent); }
-        .assign-group-count { font-size:10.5px; font-weight:500; color:var(--text-muted); background:var(--field); border-radius:20px; padding:1px 7px; }
+        .assign-group-count { font-size:calc(10.5px * var(--font-scale)); font-weight:500; color:var(--text-muted); background:var(--field); border-radius:20px; padding:1px 7px; }
         .group-editor { display:flex; flex-direction:column; gap:7px; }
         .group-editor input { margin:0; }
         .group-editor-actions { display:flex; gap:7px; }
-        .field-error { min-height:14px; font-size:11.5px; color:var(--danger-ink); }
+        .field-error { min-height:14px; font-size:calc(11.5px * var(--font-scale)); color:var(--danger-ink); }
 
         .spoof-settings { background: var(--field); padding: 16px; border-radius: 10px; border: 1px dashed var(--border); margin-bottom: 10px; display:flex; flex-direction:column; gap:10px;}
 
@@ -2348,7 +2405,7 @@ HTML_TEMPLATE = """
                 <svg class="icon" viewBox="0 0 24 24"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg>
                 تخزين الفهرس (بحث فوري)
             </button>
-            <span id="cacheStatusText" style="font-size:12px; color:var(--text-muted);">جاري التحقق من الفهرس...</span>
+            <span id="cacheStatusText" style="font-size:calc(12px * var(--font-scale)); color:var(--text-muted);">جاري التحقق من الفهرس...</span>
         </div>
     </div>
 
@@ -2409,14 +2466,14 @@ HTML_TEMPLATE = """
         <div class="card-title">
             <svg class="icon" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
             بحث عن مجلد أو ملف
-            <span id="searchSpeedBadge" style="display:none; font-size:10.5px; font-weight:600; color:var(--accent); background:var(--accent-soft); padding:2px 8px; border-radius:20px; margin-inline-start:4px;">⚡ فوري</span>
+            <span id="searchSpeedBadge" style="display:none; font-size:calc(10.5px * var(--font-scale)); font-weight:600; color:var(--accent); background:var(--accent-soft); padding:2px 8px; border-radius:20px; margin-inline-start:4px;">⚡ فوري</span>
         </div>
         <div style="display:flex; gap:8px; margin-bottom: 12px;">
             <input type="text" id="searchInput" placeholder="اكتب اسم الملف للبحث..." style="margin-bottom:0;">
             <button class="btn btn-primary" onclick="searchDeep(true)">بحث</button>
             <button type="button" class="btn btn-outline" id="historyToggleBtn" onclick="toggleHistoryBlock()" title="يعرض المجلدات التي حدّدتها سابقاً من البحث — اضغط عنصراً لإعادته إلى التحديد">السجل</button>
         </div>
-        <label style="display:flex; align-items:center; gap:8px; cursor:pointer; color: var(--text-muted); font-size:13px; margin-bottom:0;">
+        <label style="display:flex; align-items:center; gap:8px; cursor:pointer; color: var(--text-muted); font-size:calc(13px * var(--font-scale)); margin-bottom:0;">
             <input type="checkbox" id="foldersOnlyCheck" class="checkbox" checked style="width:16px; height:16px; margin:0;">
             بحث في أسماء المجلدات فقط
         </label>
@@ -2438,9 +2495,9 @@ HTML_TEMPLATE = """
             <svg class="icon" viewBox="0 0 24 24"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>
             متصفح الملفات (المصدر)
         </div>
-        <div style="display:flex; align-items:center; gap:8px; padding:6px 11px; font-size:12px; color:var(--text-muted); border-bottom:1px solid var(--border); background:var(--field);">
+        <div style="display:flex; align-items:center; gap:8px; padding:6px 11px; font-size:calc(12px * var(--font-scale)); color:var(--text-muted); border-bottom:1px solid var(--border); background:var(--field);">
             <span style="font-weight:600;">ترتيب حسب:</span>
-            <select id="sourceSort" style="background:var(--bg); color:var(--text); border:1px solid var(--border); border-radius:6px; padding:3px 8px; font-size:12px;">
+            <select id="sourceSort" style="background:var(--bg); color:var(--text); border:1px solid var(--border); border-radius:6px; padding:3px 8px; font-size:calc(12px * var(--font-scale));">
                 <option value="name">الاسم</option>
                 <option value="date_desc">التاريخ (الأحدث أولاً)</option>
                 <option value="date_asc">التاريخ (الأقدم أولاً)</option>
@@ -2450,7 +2507,7 @@ HTML_TEMPLATE = """
     </div>
 
     <div class="card spoof-settings">
-        <h4 style="margin:0 0 5px 0; font-size:14px; color:var(--text); font-weight: 500;">التمويه المستقل للتواريخ (على كامل الوجهة)</h4>
+        <h4 style="margin:0 0 5px 0; font-size:calc(14px * var(--font-scale)); color:var(--text); font-weight: 500;">التمويه المستقل للتواريخ (على كامل الوجهة)</h4>
         <label>تاريخ ووقت البدء العشوائي:</label>
         <input type="datetime-local" id="spoofDateInput">
         <small style="color:var(--text-muted); line-height: 1.5;">عملية مستقلة لتعديل تواريخ الملفات والمجلدات لإخفاء آثار النقل. <br>في حال ترك الوجهة فارغة سيتم تطبيق التمويه على كامل الذاكرة (/sdcard).</small>
@@ -2461,15 +2518,15 @@ HTML_TEMPLATE = """
 
     <div class="cart">
         <div style="display: flex; align-items: center; gap: 12px;">
-            <div style="font-size: 14px; font-weight: 500; color:var(--text-muted);">محدد: <b id="selectedCount" style="color:var(--text); font-size:16px;">0</b></div>
-            <button class="btn btn-outline" style="padding: 8px 14px; font-size: 13px;" onclick="openSelectedModal()">
+            <div style="font-size: calc(14px * var(--font-scale)); font-weight: 500; color:var(--text-muted);">محدد: <b id="selectedCount" style="color:var(--text); font-size:calc(16px * var(--font-scale));">0</b></div>
+            <button class="btn btn-outline" style="padding: 8px 14px; font-size: calc(13px * var(--font-scale));" onclick="openSelectedModal()">
                 <svg class="icon" viewBox="0 0 24 24"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg>
                 عرض المحدد
             </button>
             <span id="cartGroupPill" class="pill" role="button" tabindex="0" onclick="openSelectedModal()" onkeydown="if(event.key==='Enter')openSelectedModal()" style="display:none; max-width:170px; overflow:hidden; text-overflow:ellipsis; cursor:pointer;"></span>
         </div>
         <div class="cart-buttons">
-            <button class="btn btn-primary" style="font-size: 14px; padding: 10px 24px;" onclick="startTransfer()">
+            <button class="btn btn-primary" style="font-size: calc(14px * var(--font-scale)); padding: 10px 24px;" onclick="startTransfer()">
                 <svg class="icon" viewBox="0 0 24 24"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
                 بدء النسخ
             </button>
@@ -2480,7 +2537,7 @@ HTML_TEMPLATE = """
 <!-- Modals -->
 <div class="modal" id="destBrowserModal">
     <div class="modal-content modal-picker">
-        <h3 id="pathBrowserTitle" style="margin-top:0; font-size: 16px; border-bottom: 1px solid var(--border); padding-bottom: 15px;">اختر مجلد</h3>
+        <h3 id="pathBrowserTitle" style="margin-top:0; font-size: calc(16px * var(--font-scale)); border-bottom: 1px solid var(--border); padding-bottom: 15px;">اختر مجلد</h3>
         <div style="display:flex; gap: 8px; margin-bottom: 12px; margin-top: 10px;">
             <button class="btn btn-outline btn-sm" style="padding: 10px 14px;" onclick="goUpDest()">
                 <svg class="icon" viewBox="0 0 24 24"><line x1="12" y1="19" x2="12" y2="5"></line><polyline points="5 12 12 5 19 12"></polyline></svg>
@@ -2489,7 +2546,7 @@ HTML_TEMPLATE = """
         </div>
         <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:4px; min-height:22px;">
             <span id="pickerStorageBadge" class="pill" style="display:none;"></span>
-            <span id="pickerCounts" style="font-size:11.5px; color:var(--text-muted);"></span>
+            <span id="pickerCounts" style="font-size:calc(11.5px * var(--font-scale)); color:var(--text-muted);"></span>
         </div>
         <div class="picker-hint">المجلدات قابلة للاختيار • الملفات يمكن حذفها أو إعادة تسميتها</div>
         <div id="destTree" class="tree" style="flex: 1 1 auto; min-height: 0;"></div>
@@ -2505,7 +2562,7 @@ HTML_TEMPLATE = """
 
 <div class="modal" id="inputModal">
     <div class="modal-content" style="max-width: 420px;">
-        <h3 id="inputModalTitle" style="margin-top:0; font-size: 16px; border-bottom: 1px solid var(--border); padding-bottom: 15px; display:flex; align-items:center; gap:8px;">
+        <h3 id="inputModalTitle" style="margin-top:0; font-size: calc(16px * var(--font-scale)); border-bottom: 1px solid var(--border); padding-bottom: 15px; display:flex; align-items:center; gap:8px;">
             <svg class="icon" style="color:var(--accent);" viewBox="0 0 24 24"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path></svg>
             <span id="inputModalTitleText">إعادة تسمية</span>
         </h3>
@@ -2521,8 +2578,8 @@ HTML_TEMPLATE = """
 
 <div class="modal" id="confirmModal">
     <div class="modal-content" style="max-width: 420px;">
-        <h3 style="margin-top:0; font-size: 16px; border-bottom: 1px solid var(--border); padding-bottom: 15px;">تأكيد الإجراء</h3>
-        <p id="confirmMessage" style="color: var(--text); font-size: 14px; line-height: 1.6; margin: 4px 0 6px;"></p>
+        <h3 style="margin-top:0; font-size: calc(16px * var(--font-scale)); border-bottom: 1px solid var(--border); padding-bottom: 15px;">تأكيد الإجراء</h3>
+        <p id="confirmMessage" style="color: var(--text); font-size: calc(14px * var(--font-scale)); line-height: 1.6; margin: 4px 0 6px;"></p>
         <div style="display:flex; gap:10px; margin-top:14px;">
             <button class="btn btn-outline" style="flex:1;" onclick="cancelConfirm()">إلغاء</button>
             <button class="btn btn-danger" id="confirmActionBtn" style="flex:1;" onclick="submitConfirm()">تأكيد</button>
@@ -2532,8 +2589,8 @@ HTML_TEMPLATE = """
 
 <div class="modal" id="deleteErrorModal">
     <div class="modal-content" style="max-width: 460px;">
-        <h3 style="margin-top:0; font-size: 16px; border-bottom: 1px solid var(--border); padding-bottom: 15px;">تعذر إكمال الحذف</h3>
-        <p id="deleteErrorSummary" style="color: var(--text); font-size: 13.5px; line-height: 1.6; margin: 4px 0 10px; white-space: pre-line;"></p>
+        <h3 style="margin-top:0; font-size: calc(16px * var(--font-scale)); border-bottom: 1px solid var(--border); padding-bottom: 15px;">تعذر إكمال الحذف</h3>
+        <p id="deleteErrorSummary" style="color: var(--text); font-size: calc(13.5px * var(--font-scale)); line-height: 1.6; margin: 4px 0 10px; white-space: pre-line;"></p>
         <div id="deleteErrorList" style="display:flex; flex-direction:column; gap:6px; overflow-y:auto; max-height: 36vh;"></div>
         <div style="display:flex; gap:10px; margin-top:14px;">
             <button class="btn btn-outline" style="flex:1;" onclick="document.getElementById('deleteErrorModal').style.display='none'">إغلاق</button>
@@ -2546,12 +2603,12 @@ HTML_TEMPLATE = """
     <div class="modal-content modal-selected" onclick="event.stopPropagation()">
         <div class="selected-head">
             <div style="display:flex; justify-content:space-between; align-items:center;">
-                <h3 style="margin:0; font-size: 16px;">الملفات المحددة</h3>
+                <h3 style="margin:0; font-size: calc(16px * var(--font-scale));">الملفات المحددة</h3>
                 <button class="btn btn-outline" style="padding: 6px 10px; border:none; box-shadow: none;" aria-label="إغلاق" onclick="document.getElementById('selectedModal').style.display='none'">
                     <svg class="icon" viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
                 </button>
             </div>
-            <div id="totalSizeSelected" style="font-size:13px; font-weight:500; background:var(--field); padding:12px; border-radius:10px; border: 1px solid var(--border);">جاري حساب المساحة...</div>
+            <div id="totalSizeSelected" style="font-size:calc(13px * var(--font-scale)); font-weight:500; background:var(--field); padding:12px; border-radius:10px; border: 1px solid var(--border);">جاري حساب المساحة...</div>
 
             <div class="group-section">
                 <div class="group-section-head">
@@ -2622,6 +2679,8 @@ HTML_TEMPLATE = """
         </h3>
         <div class="settings-tabs">
             <button type="button" class="settings-tab active" data-tab="appearance" onclick="showSettingsTab('appearance')">المظهر</button>
+            <button type="button" class="settings-tab" data-tab="general" onclick="showSettingsTab('general')">عام</button>
+            <button type="button" class="settings-tab" data-tab="index" onclick="showSettingsTab('index')">الفهرس</button>
             <button type="button" class="settings-tab" data-tab="about" onclick="showSettingsTab('about')">حول</button>
         </div>
         <div class="modal-body">
@@ -2643,6 +2702,153 @@ HTML_TEMPLATE = """
                 </div>
                 <div id="settingsSaveState" class="settings-save-state"></div>
             </div>
+
+            <!-- General settings. Starts with typography; future options go in
+                 their own block here, nothing else in the page has to change. -->
+            <div class="settings-pane" id="settingsPaneGeneral" style="display:none;">
+                <div class="settings-note">الخط وحجمه. كل الخطوط مضمّنة في التطبيق وتعمل دون إنترنت.</div>
+                <label style="margin-bottom:0;">خط الموقع (10 خطوط عربية)</label>
+                <div class="font-grid" id="fontGrid">
+                    {% for f in fonts %}
+                    <button type="button" class="font-card{% if f.id == active_font %} active{% endif %}" data-font-id="{{ f.id }}" onclick="pickFont('{{ f.id }}')" style="font-family: {{ f.css_stack }};">
+                        <span class="font-card-name">
+                            {{ f.name }}
+                            <span class="theme-check">✓</span>
+                        </span>
+                        <span class="font-card-desc">{{ f.desc }}</span>
+                    </button>
+                    {% endfor %}
+                </div>
+                <label style="margin-bottom:0;">حجم الخط</label>
+                <div class="size-seg" id="sizeSeg">
+                    {% for s in font_sizes %}
+                    <button type="button" class="size-option{% if s.id == active_font_size %} active{% endif %}" data-size-id="{{ s.id }}" onclick="pickFontSize('{{ s.id }}')">{{ s.name }}</button>
+                    {% endfor %}
+                </div>
+                <div id="generalSaveState" class="settings-save-state"></div>
+            </div>
+
+            <!-- Index settings. These are the *saved* values: the create dialog
+                 only names the file and shows a summary of this pane. -->
+            <div class="settings-pane" id="settingsPaneIndex" style="display:none;">
+                <div class="settings-note">إعدادات إنشاء الفهرس (JOC). تُحفظ مرة واحدة هنا وتُستخدم في كل إنشاء.</div>
+                <div class="index-form">
+                    <div class="grid-2">
+                        <div>
+                            <label>رقم البداية (يبدأ من):</label>
+                            <input type="number" id="jocStart" value="1" min="1">
+                        </div>
+                        <div>
+                            <label>الحد الأقصى للحروف:</label>
+                            <input type="number" id="jocLimit" value="93" min="10">
+                        </div>
+                    </div>
+
+                    <label>الوضع (Mode):</label>
+                    <select id="jocMode">
+                        <option value="1">مجلدات فقط (فهرس رئيسي)</option>
+                        <option value="2">مجلدات وملفات (الوضع الشامل)</option>
+                        <option value="3">المجلد الحالي فقط (ملفات بدون تفرع)</option>
+                    </select>
+
+                    <label>تنسيق الإخراج (Template):</label>
+                    <select id="jocTemplate">
+                        <option value="4">الاسم : الرقم.</option>
+                        <option value="1">الرقم : الاسم . (مثال: 1 : سورة البقرة .)</option>
+                        <option value="2">الاسم من الرقم (مثال: سورة البقرة من 1)</option>
+                        <option value="3">الاسم من رقم الرقم . (مثال: سورة البقرة من رقم 1 .)</option>
+                    </select>
+
+                    <label style="display:flex; align-items:center; gap:8px; cursor:pointer; color: var(--text); margin-top: 6px; margin-bottom: 10px;">
+                        <input type="checkbox" id="jocStrip" class="checkbox" checked style="margin:0;">
+                        حذف الحروف الإنجليزية والأرقام والرموز
+                    </label>
+
+                    <label style="display:flex; align-items:center; gap:8px; cursor:pointer; color: var(--text); margin-bottom: 10px;">
+                        <input type="checkbox" id="jocDownloadTxt" class="checkbox" style="margin:0;">
+                        تحميل ملف النص (.txt) بعد الإنشاء
+                    </label>
+                    <small class="settings-note" style="margin-top:-6px; display:block; margin-bottom:14px;">يُولّد الفهرس نصياً دائماً، لكنه لا يُحمَّل إلا عند تفعيل هذا الخيار.</small>
+
+                    <label style="display:flex; align-items:center; gap:8px; cursor:pointer; color: var(--text); margin-bottom: 10px;">
+                        <input type="checkbox" id="jocReviewTxt" class="checkbox" style="margin:0;">
+                        مراجعة وتحرير الفهرس النصي قبل متابعة العملية
+                    </label>
+                    <small class="settings-note" style="margin-top:-6px; display:block; margin-bottom:14px;">يفتح محرر النص بعد إنشاء الفهرس للسماح بالتعديل قبل التحميل/النسخ/التحويل إلى MP3.</small>
+
+                    <div style="background:var(--accent-soft); border:1px solid var(--accent); border-radius:10px; padding:14px; margin-bottom:14px;">
+                        <label style="display:flex; align-items:center; gap:10px; cursor:pointer; color:var(--text); font-size:calc(14px * var(--font-scale)); margin-bottom:8px;">
+                            <input type="checkbox" id="jocMp3Index" class="checkbox" style="margin:0; width:18px; height:18px;" onchange="toggleMp3Index()">
+                            تحويل الفهرس إلى MP3 صوتي (Edge TTS) 64kbps
+                        </label>
+                        <div id="ttsNotice"></div>
+                        <small class="settings-note" style="display:block; margin-bottom:10px;">يتم توليد MP3 من نص الفهرس تلقائياً (أجزاء تُدمج)، ويتطلب اتصالاً بالإنترنت.</small>
+                        <div id="ttsOptions" style="display:none; gap:10px; flex-direction:column;">
+                            <label style="display:flex; align-items:flex-start; gap:10px; cursor:pointer; color:var(--text); margin-bottom:2px;">
+                                <input type="checkbox" id="jocMp3ToDest" class="checkbox" style="margin:2px 0 0;">
+                                <span>حفظ MP3 في الوجهة المحددة مباشرةً
+                                    <small class="settings-note" style="display:block; margin-top:4px;">عند التفعيل يُكتب الملف داخل مجلد الوجهة (بدل تنزيله على الجهاز).</small>
+                                </span>
+                            </label>
+                            <div class="grid-2">
+                                <div>
+                                    <label>الصوت (اللكنة):</label>
+                                    <select id="ttsVoice"></select>
+                                </div>
+                                <div>
+                                    <label>السرعة:</label>
+                                    <select id="ttsRate">
+                                        <option value="+0%">عادية (+0%)</option>
+                                        <option value="-10%">أبطأ (-10%)</option>
+                                        <option value="-20%">أبطأ بكثير (-20%)</option>
+                                        <option value="+10%">أسرع (+10%)</option>
+                                        <option value="+20%">أسرع بكثير (+20%)</option>
+                                    </select>
+                                </div>
+                            </div>
+
+                            <div style="margin-top:6px;">
+                                <div style="display:flex; align-items:center; gap:8px; color:var(--text); font-size:calc(13.5px * var(--font-scale)); font-weight:600; margin-bottom:8px;">
+                                    <svg class="icon" style="width:16px;height:16px;" viewBox="0 0 24 24"><path d="M11 5 6 9H2v6h4l5 4V5z"></path><path d="M15.54 8.46a5 5 0 0 1 0 7.07"></path><path d="M19.07 4.93a10 10 0 0 1 0 14.14"></path></svg>
+                                    إخفاء الملف الصوتي (تمويه)
+                                </div>
+                                <div style="display:flex; gap:6px; background:var(--field); border:1px solid var(--border); border-radius:10px; padding:4px;">
+                                    <label class="seg option" data-mode="none" style="flex:1; text-align:center; padding:9px 6px; border-radius:7px; cursor:pointer; font-size:calc(12.5px * var(--font-scale)); color:var(--text-muted); display:flex; align-items:center; justify-content:center; gap:5px;">
+                                        <svg class="icon" style="width:15px;height:15px;" viewBox="0 0 24 24"><path d="M11 5 6 9H2v6h4l5 4V5z"></path></svg>
+                                        بدون
+                                    </label>
+                                    <label class="seg option" data-mode="noise" style="flex:1; text-align:center; padding:9px 6px; border-radius:7px; cursor:pointer; font-size:calc(12.5px * var(--font-scale)); color:var(--text-muted); display:flex; align-items:center; justify-content:center; gap:5px;">
+                                        <svg class="icon" style="width:15px;height:15px;" viewBox="0 0 24 24"><line x1="1" y1="12" x2="6" y2="12"></line><line x1="23" y1="12" x2="18" y2="12"></line><line x1="9" y1="9" x2="15" y2="15"></line><line x1="15" y1="9" x2="9" y2="15"></line></svg>
+                                        ضوضاء خفيفة
+                                    </label>
+                                    <label class="seg option" data-mode="file" style="flex:1; text-align:center; padding:9px 6px; border-radius:7px; cursor:pointer; font-size:calc(12.5px * var(--font-scale)); color:var(--text-muted); display:flex; align-items:center; justify-content:center; gap:5px;">
+                                        <svg class="icon" style="width:15px;height:15px;" viewBox="0 0 24 24"><path d="M9 18V5l12-2v13"></path><circle cx="6" cy="18" r="3"></circle><circle cx="18" cy="16" r="3"></circle></svg>
+                                        ملف مخصص
+                                    </label>
+                                </div>
+                                <small id="maskHint" class="settings-note" style="display:block; margin-top:6px;">إضافة ضوضاء منخفضة وغير مزعجة لمدة دقيقتين قبل بدء الفهرس الصوتي.</small>
+
+                                <div id="customFileBox" style="display:none; margin-top:8px;">
+                                    <div style="display:flex; align-items:center; gap:10px; background:var(--field); border:1px dashed var(--border); border-radius:10px; padding:10px 12px;">
+                                        <input type="file" id="jocCustomAudio" accept=".mp3,audio/mpeg" hidden>
+                                        <button class="btn btn-outline btn-sm" style="white-space:nowrap; flex-shrink:0;" onclick="document.getElementById('jocCustomAudio').click()">
+                                            <svg class="icon" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg>
+                                            اختر ملف MP3
+                                        </button>
+                                        <span id="customAudioName" style="flex:1; font-size:calc(12.5px * var(--font-scale)); color:var(--text-muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">لم يتم اختيار ملف بعد</span>
+                                    </div>
+                                    <small class="settings-note" style="display:block; margin-top:6px;">يُضاف ملف MP3 المختار كاملاً في بداية الفهرس الصوتي.</small>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div style="display:flex; gap:10px; align-items:center;">
+                    <button type="button" class="btn btn-primary" style="flex:1;" onclick="saveIndexSettingsNow()">حفظ إعدادات الفهرس</button>
+                </div>
+                <div id="indexSaveState" class="settings-save-state"></div>
+            </div>
+
             <div class="settings-pane" id="settingsPaneAbout" style="display:none;">
                 <div class="settings-note">
                     SD Card Coffee — نسخة <span class="ltr-input" style="display:inline-block; padding:1px 6px;">v{{ app_version }}</span>
@@ -2661,125 +2867,28 @@ HTML_TEMPLATE = """
     </div>
 </div>
 
-<!-- JOC Settings Modal -->
+<!-- JOC create dialog. The *settings* live in الإعدادات › الفهرس, so this is
+     only the output name plus a read-out of what the saved settings will do. -->
 <div class="modal" id="jocModal">
     <div class="modal-content">
         <h3 style="margin-top:0; border-bottom: 1px solid var(--border); padding-bottom: 15px; display:flex; align-items:center; gap:8px; flex-shrink:0;">
             <svg class="icon" style="color:var(--accent);" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path></svg>
-            إعدادات فهرس JOC
+            إنشاء فهرس JOC
         </h3>
         <div class="modal-body">
-        
-        <div style="display: flex; gap: 10px;">
-            <div style="flex: 1;">
-                <label>رقم البداية (يبدأ من):</label>
-                <input type="number" id="jocStart" value="1" min="1">
-            </div>
-            <div style="flex: 1;">
-                <label>الحد الأقصى للحروف:</label>
-                <input type="number" id="jocLimit" value="93" min="10">
-            </div>
-        </div>
-        
-        <label>الوضع (Mode):</label>
-        <select id="jocMode">
-            <option value="1">مجلدات فقط (فهرس رئيسي)</option>
-            <option value="2">مجلدات وملفات (الوضع الشامل)</option>
-            <option value="3">المجلد الحالي فقط (ملفات بدون تفرع)</option>
-        </select>
-        
-        <label>تنسيق الإخراج (Template):</label>
-        <select id="jocTemplate">
-            <option value="4">الاسم : الرقم.</option>
-            <option value="1">الرقم : الاسم . (مثال: 1 : سورة البقرة .)</option>
-            <option value="2">الاسم من الرقم (مثال: سورة البقرة من 1)</option>
-            <option value="3">الاسم من رقم الرقم . (مثال: سورة البقرة من رقم 1 .)</option>
-        </select>
-        
         <label>اسم الملف الناتج (نفس الاسم للنص والصوت):</label>
-        <input type="text" id="jocFileName" class="ltr-input" placeholder="يتم توليد اسم عشوائي تلقائياً...">
-        <small style="color:var(--text-muted); display:block; margin-top:-6px; margin-bottom:10px;">سيتم توليد: <span class="ltr-input" style="display:inline;">XXX.txt</span> (النص، يُحمَّل اختيارياً) و <span class="ltr-input" style="display:inline;">XXX.mp3</span> (الصوت) بنفس الاسم.<br>يُحبَّذ تركه فارغاً لإنشاء اسم عشوائي من 5 أحرف.</small>
-        
-        <label style="display:flex; align-items:center; gap:8px; cursor:pointer; color: var(--text); margin-top: 10px; margin-bottom: 10px;">
-            <input type="checkbox" id="jocStrip" class="checkbox" checked style="margin:0;">
-            حذف الحروف الإنجليزية والأرقام والرموز
-        </label>
+        <input type="text" id="jocFileName" class="ltr-input" placeholder="اسم الملف...">
+        <small style="color:var(--text-muted); display:block; margin-top:-6px; margin-bottom:14px;">يُولَّد اسم عشوائي من 5 أحرف عند كل فتح، ويمكن تعديله الآن. لا يُحفظ بين المرات.</small>
 
-        <label style="display:flex; align-items:center; gap:8px; cursor:pointer; color: var(--text); margin-bottom: 10px;">
-            <input type="checkbox" id="jocDownloadTxt" class="checkbox" style="margin:0;">
-            تحميل ملف النص (.txt) بعد الإنشاء
-        </label>
-        <small style="color:var(--text-muted); line-height:1.6; display:block; margin-top:-6px; margin-bottom:14px;">يُولّد الفهرس نصياً دائماً في الخلفية، لكنه لا يُحمَّل إلا عند تفعيل هذا الخيار (التحميل ليس ضرورياً في كل مرة).</small>
-
-        <label style="display:flex; align-items:center; gap:8px; cursor:pointer; color: var(--text); margin-bottom: 10px;">
-            <input type="checkbox" id="jocReviewTxt" class="checkbox" style="margin:0;">
-            مراجعة وتحرير الفهرس النصي قبل متابعة العملية
-        </label>
-        <small style="color:var(--text-muted); line-height:1.6; display:block; margin-top:-6px; margin-bottom:14px;">يفتح محرر النص بعد إنشاء الفهرس للسماح بالتعديل قبل التحميل/النسخ/التحويل إلى MP3.</small>
-
-        <div style="background:var(--accent-soft); border:1px solid var(--accent); border-radius:10px; padding:14px; margin-bottom:14px;">
-            <label style="display:flex; align-items:center; gap:10px; cursor:pointer; color:var(--text); font-size:14px; margin-bottom:8px;">
-                <input type="checkbox" id="jocMp3Index" class="checkbox" style="margin:0; width:18px; height:18px;" onchange="toggleMp3Index()">
-                تحويل الفهرس إلى MP3 صوتي (Edge TTS) 64kbps
-            </label>
-            <small style="color:var(--text-muted); line-height:1.6; display:block; margin-bottom:10px;">يتم توليد MP3 من نص الفهرس بشكل تلقائي (مقسم لأجزاء ثم يُدمج)، ويتطلب اتصال بالإنترنت. يتم حذف الملفات المؤقتة عند إغلاق الخادم.</small>
-            <div id="ttsOptions" style="display:none; gap:10px; flex-direction:column;">
-                <div class="grid-2">
-                    <div>
-                        <label>الصوت (اللكنة):</label>
-                        <select id="ttsVoice"></select>
-                    </div>
-                    <div>
-                        <label>السرعة:</label>
-                        <select id="ttsRate">
-                            <option value="+0%">عادية (+0%)</option>
-                            <option value="-10%">أبطأ (-10%)</option>
-                            <option value="-20%">أبطأ بكثير (-20%)</option>
-                            <option value="+10%">أسرع (+10%)</option>
-                            <option value="+20%">أسرع بكثير (+20%)</option>
-                        </select>
-                    </div>
-                </div>
-
-                <div style="margin-top:6px;">
-                    <div style="display:flex; align-items:center; gap:8px; color:var(--text); font-size:13.5px; font-weight:600; margin-bottom:8px;">
-                        <svg class="icon" style="width:16px;height:16px;" viewBox="0 0 24 24"><path d="M11 5 6 9H2v6h4l5 4V5z"></path><path d="M15.54 8.46a5 5 0 0 1 0 7.07"></path><path d="M19.07 4.93a10 10 0 0 1 0 14.14"></path></svg>
-                        إخفاء الملف الصوتي (تمويه)
-                    </div>
-                    <div style="display:flex; gap:6px; background:var(--field); border:1px solid var(--border); border-radius:10px; padding:4px;">
-                        <label class="seg option" data-mode="none" style="flex:1; text-align:center; padding:9px 6px; border-radius:7px; cursor:pointer; font-size:12.5px; color:var(--text-muted); display:flex; align-items:center; justify-content:center; gap:5px;">
-                            <svg class="icon" style="width:15px;height:15px;" viewBox="0 0 24 24"><path d="M11 5 6 9H2v6h4l5 4V5z"></path></svg>
-                            بدون
-                        </label>
-                        <label class="seg option" data-mode="noise" style="flex:1; text-align:center; padding:9px 6px; border-radius:7px; cursor:pointer; font-size:12.5px; color:var(--text-muted); display:flex; align-items:center; justify-content:center; gap:5px;">
-                            <svg class="icon" style="width:15px;height:15px;" viewBox="0 0 24 24"><line x1="1" y1="12" x2="6" y2="12"></line><line x1="23" y1="12" x2="18" y2="12"></line><line x1="9" y1="9" x2="15" y2="15"></line><line x1="15" y1="9" x2="9" y2="15"></line></svg>
-                            ضوضاء خفيفة
-                        </label>
-                        <label class="seg option" data-mode="file" style="flex:1; text-align:center; padding:9px 6px; border-radius:7px; cursor:pointer; font-size:12.5px; color:var(--text-muted); display:flex; align-items:center; justify-content:center; gap:5px;">
-                            <svg class="icon" style="width:15px;height:15px;" viewBox="0 0 24 24"><path d="M9 18V5l12-2v13"></path><circle cx="6" cy="18" r="3"></circle><circle cx="18" cy="16" r="3"></circle></svg>
-                            ملف مخصص
-                        </label>
-                    </div>
-                    <small id="maskHint" style="color:var(--text-muted); line-height:1.6; display:block; margin-top:6px;">إضافة ضوضاء منخفضة وغير مزعجة لمدة دقيقتين قبل بدء الفهرس الصوتي.</small>
-
-                    <div id="customFileBox" style="display:none; margin-top:8px;">
-                        <div style="display:flex; align-items:center; gap:10px; background:var(--field); border:1px dashed var(--border); border-radius:10px; padding:10px 12px;">
-                            <input type="file" id="jocCustomAudio" accept=".mp3,audio/mpeg" hidden>
-                            <button class="btn btn-outline btn-sm" style="white-space:nowrap; flex-shrink:0;" onclick="document.getElementById('jocCustomAudio').click()">
-                                <svg class="icon" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg>
-                                اختر ملف MP3
-                            </button>
-                            <span id="customAudioName" style="flex:1; font-size:12.5px; color:var(--text-muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">لم يتم اختيار ملف بعد</span>
-                        </div>
-                        <small style="color:var(--text-muted); line-height:1.5; display:block; margin-top:6px;">يُضاف ملف MP3 المختار كاملاً في بداية الفهرس الصوتي.</small>
-                    </div>
-                </div>
-            </div>
-        </div>
+        <div class="joc-summary" id="jocSummary"></div>
         </div>
         <div class="modal-footer">
+            <button class="btn btn-outline" style="flex:1;" onclick="openIndexSettings()">
+                <svg class="icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1.08-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1.08 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
+                الإعدادات
+            </button>
             <button class="btn btn-outline" style="flex:1;" onclick="document.getElementById('jocModal').style.display='none'">إلغاء</button>
-            <button class="btn btn-primary" style="flex:2;" onclick="submitJocIndex()">إنشاء</button>
+            <button class="btn btn-primary" style="flex:1.4;" onclick="submitJocIndex()">إنشاء</button>
         </div>
     </div>
 </div>
@@ -2812,21 +2921,21 @@ HTML_TEMPLATE = """
 
 <div class="modal" id="progressModal">
     <div class="modal-content" style="max-height: max-content;">
-        <h2 id="modalTitle" style="margin-top:0; font-size:16px; border-bottom: 1px solid var(--border); padding-bottom: 15px;">العملية قيد التنفيذ...</h2>
-        <div style="display:flex; justify-content:space-between; font-size:13px; color:var(--text-muted); font-weight: 500; margin-top: 10px;">
+        <h2 id="modalTitle" style="margin-top:0; font-size:calc(16px * var(--font-scale)); border-bottom: 1px solid var(--border); padding-bottom: 15px;">العملية قيد التنفيذ...</h2>
+        <div style="display:flex; justify-content:space-between; font-size:calc(13px * var(--font-scale)); color:var(--text-muted); font-weight: 500; margin-top: 10px;">
             <span id="progressText">0%</span>
             <span id="countText">0 / 0</span>
         </div>
         <div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
-        <div id="currentFile" class="ltr-input truncate-text" style="font-size:12px; color:var(--text-muted); background:transparent; border:none; padding:0; width: 100%;">جاري التحضير...</div>
-        <div style="display:flex; justify-content:space-between; font-size:12px; color:var(--text-muted); margin-top:8px;">
+        <div id="currentFile" class="ltr-input truncate-text" style="font-size:calc(12px * var(--font-scale)); color:var(--text-muted); background:transparent; border:none; padding:0; width: 100%;">جاري التحضير...</div>
+        <div style="display:flex; justify-content:space-between; font-size:calc(12px * var(--font-scale)); color:var(--text-muted); margin-top:8px;">
             <span id="speedText" style="color:var(--accent); font-weight:500;"></span>
             <span id="failedText"></span>
         </div>
-        <div id="cardWarningBox" style="display:none; margin-top:10px; padding:10px 12px; border-radius:10px; font-size:12px; line-height:1.7; background:var(--warning-soft); border:1px solid var(--warning-line); color:var(--warning);"></div>
-        <div id="errorsBox" style="display:none; max-height:200px; overflow:auto; background:var(--field); border:1px solid var(--border); border-radius:6px; padding:10px; margin-top:10px; font-size:12px; color:var(--danger-ink);"></div>
-        <div id="timeTakenDiv" style="display:none; color:var(--success); font-weight:500; margin-top:15px; font-size:13px; text-align:center;"></div>
-        <div id="inlineNotify" style="display:none; flex-wrap:wrap; margin-top:14px; padding:12px 14px; border-radius:10px; font-size:13.5px; line-height:1.7; text-align:center; font-weight:600; border:1px solid; align-items:center; justify-content:center; gap:8px;"></div>
+        <div id="cardWarningBox" style="display:none; margin-top:10px; padding:10px 12px; border-radius:10px; font-size:calc(12px * var(--font-scale)); line-height:1.7; background:var(--warning-soft); border:1px solid var(--warning-line); color:var(--warning);"></div>
+        <div id="errorsBox" style="display:none; max-height:200px; overflow:auto; background:var(--field); border:1px solid var(--border); border-radius:6px; padding:10px; margin-top:10px; font-size:calc(12px * var(--font-scale)); color:var(--danger-ink);"></div>
+        <div id="timeTakenDiv" style="display:none; color:var(--success); font-weight:500; margin-top:15px; font-size:calc(13px * var(--font-scale)); text-align:center;"></div>
+        <div id="inlineNotify" style="display:none; flex-wrap:wrap; margin-top:14px; padding:12px 14px; border-radius:10px; font-size:calc(13.5px * var(--font-scale)); line-height:1.7; text-align:center; font-weight:600; border:1px solid; align-items:center; justify-content:center; gap:8px;"></div>
         <div style="display:flex; gap:12px; margin-top:20px;">
             <button class="btn btn-danger" id="cancelProgressBtn" style="width:100%; padding: 12px;" onclick="cancelTransfer()">إيقاف وإلغاء</button>
             <button class="btn btn-primary" id="closeProgressBtn" style="display:none; width:100%; padding: 12px;" onclick="resetTransfer()">تم وإغلاق</button>
@@ -3946,7 +4055,7 @@ HTML_TEMPLATE = """
             reasonEl.style.cssText = 'color:var(--danger-ink); margin-top:2px;';
             reasonEl.textContent = f.reason || '';
             let pathEl = document.createElement('div');
-            pathEl.style.cssText = 'color:var(--text-muted); margin-top:2px; font-size:11px;';
+            pathEl.style.cssText = 'color:var(--text-muted); margin-top:2px; font-size:calc(11px * var(--font-scale));';
             pathEl.textContent = f.path || '';
             row.appendChild(nameEl); row.appendChild(reasonEl); row.appendChild(pathEl);
             list.appendChild(row);
@@ -4046,7 +4155,7 @@ HTML_TEMPLATE = """
                 resBox.innerHTML += `<div class="item-row"><input type="checkbox" class="checkbox" value="${esc(item.path)}" data-name="${esc(item.name)}" ${isChecked} onchange="toggleSearchResultSelect(this, ${item.is_dir})">
                     <div class="item-name" style="flex-direction:column;align-items:start;gap:4px;" onclick="this.previousElementSibling.click()">
                         <div style="display:flex;gap:6px;">${item.is_dir?iconDir:iconFile}${esc(item.name)}</div>
-                        <div class="ltr-input truncate-text" style="font-size:11px;color:var(--text-muted); width: 100%;">${esc(item.path)}</div>
+                        <div class="ltr-input truncate-text" style="font-size:calc(11px * var(--font-scale));color:var(--text-muted); width: 100%;">${esc(item.path)}</div>
                     </div>${rowActionsHtml(item.path, item.name, item.is_dir)}</div>`;
             });
             // The search that just ran is now the newest history entry.
@@ -4191,6 +4300,9 @@ HTML_TEMPLATE = """
 
     // ---- settings + themes ---------------------------------------------
     let activeThemeId = document.documentElement.getAttribute('data-theme') || '';
+    // Server-rendered so the pickers already show the saved choice.
+    let activeFontId = '{{ active_font }}';
+    let activeFontSizeId = '{{ active_font_size }}';
 
     function openSettings() {
         document.getElementById('settingsModal').style.display = 'flex';
@@ -4201,10 +4313,19 @@ HTML_TEMPLATE = """
         document.querySelectorAll('.settings-tab').forEach(function(btn) {
             btn.classList.toggle('active', btn.getAttribute('data-tab') === tab);
         });
-        let appearance = document.getElementById('settingsPaneAppearance');
-        let about = document.getElementById('settingsPaneAbout');
-        if (appearance) appearance.style.display = (tab === 'appearance') ? 'flex' : 'none';
-        if (about) about.style.display = (tab === 'about') ? 'flex' : 'none';
+        // One pane per tab, all in the DOM: switching only toggles display, so
+        // no form value is ever rebuilt or lost.
+        document.querySelectorAll('.settings-pane').forEach(function(pane) {
+            let want = (pane.id === 'settingsPane' + tab.charAt(0).toUpperCase() + tab.slice(1));
+            pane.style.display = want ? 'flex' : 'none';
+        });
+    }
+
+    // Open the settings dialog on a specific tab (the create dialog links here).
+    function openIndexSettings() {
+        document.getElementById('jocModal').style.display = 'none';
+        document.getElementById('settingsModal').style.display = 'flex';
+        showSettingsTab('index');
     }
 
     // Applying a theme is only token assignment: the whole palette is a set of
@@ -4228,11 +4349,53 @@ HTML_TEMPLATE = """
         });
     }
 
-    function setSettingsState(text, kind) {
-        let el = document.getElementById('settingsSaveState');
+    function setSettingsState(text, kind, elementId) {
+        let el = document.getElementById(elementId || 'settingsSaveState');
         if (!el) return;
         el.className = 'settings-save-state' + (kind ? ' ' + kind : '');
         el.textContent = text || '';
+    }
+
+    // Typography is two CSS variables: `--app-font` (a font stack) and
+    // `--font-scale` (a multiplier). Applying them is a property write - no
+    // re-render, no reload, and the fonts not in use are never downloaded.
+    function applyFont(appFont, scale) {
+        if (appFont) document.documentElement.style.setProperty('--app-font', appFont);
+        if (scale) document.documentElement.style.setProperty('--font-scale', scale);
+    }
+
+    // Save one font/size choice. The server validates the id against the
+    // registry, so an unknown value can never end up in settings.json.
+    function saveTypography(payload, stateId) {
+        setSettingsState('جارٍ الحفظ...', '', stateId);
+        return fetch('/api/settings', { method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(payload) })
+            .then(function(r) { return r.json().then(function(d) { return { ok: r.ok, data: d }; }); })
+            .then(function(res) {
+                if (!res.ok) { setSettingsState(res.data.error || 'تعذر الحفظ', 'err', stateId); return; }
+                applyFont(res.data.app_font, res.data.font_scale);
+                setSettingsState('تم الحفظ.', 'ok', stateId);
+                setTimeout(function() { setSettingsState('', '', stateId); }, 2000);
+            })
+            .catch(function() { setSettingsState('تعذر الاتصال بالخادم', 'err', stateId); });
+    }
+
+    function pickFont(id) {
+        if (!id || id === activeFontId) return;
+        document.querySelectorAll('.font-card').forEach(function(card) {
+            card.classList.toggle('active', card.getAttribute('data-font-id') === id);
+        });
+        activeFontId = id;
+        saveTypography({ font: id }, 'generalSaveState');
+    }
+
+    function pickFontSize(id) {
+        if (!id || id === activeFontSizeId) return;
+        document.querySelectorAll('.size-option').forEach(function(btn) {
+            btn.classList.toggle('active', btn.getAttribute('data-size-id') === id);
+        });
+        activeFontSizeId = id;
+        saveTypography({ font_size: id }, 'generalSaveState');
     }
 
     function pickTheme(id) {
@@ -4274,18 +4437,18 @@ HTML_TEMPLATE = """
         if (totalBytes >= mbThreshold) formattedSize = (totalBytes / (1024*1024*1024)).toFixed(2) + ' GB';
         else formattedSize = (totalBytes / (1024*1024)).toFixed(2) + ' MB';
         
-        let sizeHtml = `إجمالي الحجم المحدد: <span style="color:var(--text); font-size:14px; font-weight:600;">${formattedSize}</span>`;
+        let sizeHtml = `إجمالي الحجم المحدد: <span style="color:var(--text); font-size:calc(14px * var(--font-scale)); font-weight:600;">${formattedSize}</span>`;
         if (currentDestFreeBytes > 0) {
             let diff = currentDestFreeBytes - totalBytes;
             if (diff >= 0) {
                 let diffFmt = diff >= mbThreshold ? (diff/(1024*1024*1024)).toFixed(2) + ' GB' : (diff/(1024*1024)).toFixed(2) + ' MB';
-                sizeHtml += `<br><span style="color:var(--success); font-size:12px; margin-top:4px; display:block;">المساحة كافية (المتبقي: ${diffFmt})</span>`;
+                sizeHtml += `<br><span style="color:var(--success); font-size:calc(12px * var(--font-scale)); margin-top:4px; display:block;">المساحة كافية (المتبقي: ${diffFmt})</span>`;
             } else {
                 let absDiff = Math.abs(diff);
                 let diffFmt = absDiff >= mbThreshold ? (absDiff/(1024*1024*1024)).toFixed(2) + ' GB' : (absDiff/(1024*1024)).toFixed(2) + ' MB';
-                sizeHtml += `<br><span style="color:var(--danger-ink); font-size:12px; margin-top:4px; display:block;">المساحة لا تكفي (عجز: -${diffFmt})</span>`;
+                sizeHtml += `<br><span style="color:var(--danger-ink); font-size:calc(12px * var(--font-scale)); margin-top:4px; display:block;">المساحة لا تكفي (عجز: -${diffFmt})</span>`;
             }
-        } else { sizeHtml += `<br><span style="color:var(--text-muted); font-size:12px; margin-top:4px; display:block;">يرجى تحديد الوجهة لمعرفة المساحة.</span>`; }
+        } else { sizeHtml += `<br><span style="color:var(--text-muted); font-size:calc(12px * var(--font-scale)); margin-top:4px; display:block;">يرجى تحديد الوجهة لمعرفة المساحة.</span>`; }
         document.getElementById('totalSizeSelected').innerHTML = sizeHtml;
     }
 
@@ -4421,7 +4584,7 @@ HTML_TEMPLATE = """
             let removeBtn = document.createElement('button');
             removeBtn.type = 'button';
             removeBtn.className = 'btn btn-outline';
-            removeBtn.style.cssText = 'padding: 6px 10px; font-size: 12px; color:var(--danger-ink); border-color:var(--danger-ink);';
+            removeBtn.style.cssText = 'padding: 6px 10px; font-size: calc(12px * var(--font-scale)); color:var(--danger-ink); border-color:var(--danger-ink);';
             removeBtn.textContent = 'إزالة';
             removeBtn.onclick = function () { unselectFromModal(path); };
             right.appendChild(sizeEl);
@@ -4435,7 +4598,7 @@ HTML_TEMPLATE = """
 
         if (excludedPaths.size > 0) {
             let head = document.createElement('div');
-            head.style.cssText = 'margin:12px 0 2px; font-size:13px; color:var(--warning); font-weight:500;';
+            head.style.cssText = 'margin:12px 0 2px; font-size:calc(13px * var(--font-scale)); color:var(--warning); font-weight:500;';
             head.textContent = 'عناصر مستثناة (' + excludedPaths.size + '):';
             list.appendChild(head);
             Array.from(excludedPaths).forEach(function(path) {
@@ -4445,12 +4608,12 @@ HTML_TEMPLATE = """
                 row.style.cssText = 'background: var(--warning-soft); border-style: dashed; border-color: var(--warning-line);';
                 let nameEl = document.createElement('div');
                 nameEl.className = 'truncate-text';
-                nameEl.style.cssText = 'font-size:13px; color:var(--danger-ink); flex:1; min-width:0;';
+                nameEl.style.cssText = 'font-size:calc(13px * var(--font-scale)); color:var(--danger-ink); flex:1; min-width:0;';
                 nameEl.title = path;
                 nameEl.textContent = itemName;
                 let addBtn = document.createElement('button');
                 addBtn.className = 'btn btn-outline';
-                addBtn.style.cssText = 'padding: 6px 10px; font-size: 12px; flex-shrink: 0;';
+                addBtn.style.cssText = 'padding: 6px 10px; font-size: calc(12px * var(--font-scale)); flex-shrink: 0;';
                 addBtn.textContent = 'إرجاع';
                 addBtn.onclick = function () { reincludeFromModal(path, false); };
                 row.appendChild(nameEl);
@@ -4568,6 +4731,9 @@ HTML_TEMPLATE = """
 
     let maskMode = 'noise';   // 'none' | 'noise' | 'file'
     let customUploaded = null;  // original filename of uploaded custom mask
+    // False once /api/tts/voices says edge-tts is not installed: the MP3 switch
+    // is then disabled, so nothing silently fails at creation time.
+    let ttsAvailable = true;
 
     function toggleMp3Index() {
         let on = document.getElementById('jocMp3Index').checked;
@@ -4653,14 +4819,20 @@ HTML_TEMPLATE = """
                 loadSubFolders(currentSourceRoot, document.getElementById('treeContainer'));
             });
         }
-        // Load persisted JOC index settings and bind the auto-saver.
+        // Load the saved index settings once, then fill the voice list (which
+        // needs them to restore the chosen voice).
         fetch('/api/index_settings').then(function(r) { return r.json(); }).then(function(data) {
             if (data.ok && data.settings) {
                 savedIndexSettings = data.settings;
                 applyIndexSettingsToUI(savedIndexSettings);
             }
-            bindIndexSettingsSaver();
-        }).catch(function() {});
+            loadTtsVoices();
+        }).catch(function() {
+            toggleMp3Index();
+            setMaskMode(maskMode);
+            renderJocSummary();
+            loadTtsVoices();
+        });
         loadSystemInfo(false, false);
         setInterval(function(){ loadSystemInfo(false, true); }, 120000);
     });
@@ -4681,7 +4853,10 @@ HTML_TEMPLATE = """
                 if (visible && visibleSeq[m.id] > frontSeq) { frontSeq = visibleSeq[m.id]; frontId = m.id; }
             });
             document.querySelectorAll('.modal').forEach(function(m) {
-                if (m.id === frontId) m.classList.add('modal-front');
+                // Toggle (not add): a modal that was front and is still visible
+                // must lose the class, otherwise two dialogs share z-index 1001
+                // and DOM order decides - which puts the *older* one on top.
+                m.classList.toggle('modal-front', m.id === frontId);
             });
         }
         const obs = new MutationObserver(syncModalFront);
@@ -4706,9 +4881,18 @@ HTML_TEMPLATE = """
                 sel.value = savedIndexSettings.tts_voice;
             }
             if(!data.available) {
+                // Do NOT replace #ttsOptions' content: its controls are part of
+                // the saved form, and destroying them made «إنشاء» throw when
+                // edge-tts was missing. Disable the switch instead and say why.
+                ttsAvailable = false;
                 sel.disabled = true;
-                document.getElementById('ttsOptions').innerHTML = '<small style="color:var(--danger-ink);">حزمة edge-tts غير مثبتة (يرجى تشغيل: pip install edge-tts)</small>';
+                let notice = document.getElementById('ttsNotice');
+                if (notice) notice.innerHTML = '<small style="color:var(--danger-ink); display:block; margin-bottom:8px;">حزمة edge-tts غير مثبتة (يرجى تشغيل: pip install edge-tts)</small>';
+                let cb = document.getElementById('jocMp3Index');
+                if (cb) { cb.checked = false; cb.disabled = true; }
+                toggleMp3Index();
             }
+            renderJocSummary();
         }).catch(()=>{});
     }
 
@@ -4719,7 +4903,10 @@ HTML_TEMPLATE = """
         return s;
     }
 
-    // ---- persisted JOC index settings ---------------------------------------
+    // ---- persisted index settings -------------------------------------------
+    // These belong to الإعدادات › الفهرس and are written by its save button only.
+    // The create dialog reads them; it never writes them (that was the old,
+    // confusing behaviour where pressing "إنشاء" silently saved settings).
     function applyIndexSettingsToUI(s) {
         const set = (id, val) => { const el = document.getElementById(id); if (el) el.value = val; };
         const setc = (id, val) => { const el = document.getElementById(id); if (el) el.checked = !!val; };
@@ -4727,13 +4914,15 @@ HTML_TEMPLATE = """
         set('jocLimit', s.joc_limit);
         set('jocMode', s.joc_mode);
         set('jocTemplate', s.joc_template);
-        set('jocFileName', s.joc_filename || '');
         setc('jocStrip', s.joc_strip);
         setc('jocDownloadTxt', s.joc_download_txt);
         setc('jocReviewTxt', s.joc_review_txt);
-        setc('jocMp3Index', s.joc_mp3_index);
+        setc('jocMp3Index', s.joc_mp3_index && ttsAvailable);
+        setc('jocMp3ToDest', s.mp3_to_dest);
         set('ttsRate', s.tts_rate);
         if (s.mask_mode) setMaskMode(s.mask_mode);
+        toggleMp3Index();
+        renderJocSummary();
     }
 
     function gatherIndexSettings() {
@@ -4744,62 +4933,90 @@ HTML_TEMPLATE = """
             joc_limit: g('jocLimit'),
             joc_mode: g('jocMode'),
             joc_template: g('jocTemplate'),
-            joc_filename: g('jocFileName'),
             joc_strip: gc('jocStrip'),
             joc_download_txt: gc('jocDownloadTxt'),
             joc_review_txt: gc('jocReviewTxt'),
             joc_mp3_index: gc('jocMp3Index'),
+            mp3_to_dest: gc('jocMp3ToDest'),
             tts_voice: g('ttsVoice'),
             tts_rate: g('ttsRate'),
             mask_mode: maskMode || 'noise',
         };
     }
 
-    function saveIndexSettings() {
-        if (!savedIndexSettings) savedIndexSettings = {};
-        Object.assign(savedIndexSettings, gatherIndexSettings());
-        if (indexSettingsDebounce) clearTimeout(indexSettingsDebounce);
-        indexSettingsDebounce = setTimeout(function() {
-            fetch('/api/index_settings', {
-                method: 'POST', headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify(savedIndexSettings)
-            }).catch(function() {});
-            indexSettingsDebounce = null;
-        }, 800);
+    function saveIndexSettingsNow() {
+        setSettingsState('جارٍ الحفظ...', '', 'indexSaveState');
+        fetch('/api/index_settings', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(gatherIndexSettings())
+        })
+            .then(function(r) { return r.json().then(function(d) { return { ok: r.ok, data: d }; }); })
+            .then(function(res) {
+                if (!res.ok) { setSettingsState(res.data.error || 'تعذر حفظ إعدادات الفهرس', 'err', 'indexSaveState'); return; }
+                // The server echoes the canonical shape, so the form shows what
+                // was actually written (clamped numbers, validated booleans).
+                savedIndexSettings = res.data.settings;
+                applyIndexSettingsToUI(savedIndexSettings);
+                setSettingsState('تم حفظ إعدادات الفهرس.', 'ok', 'indexSaveState');
+                setTimeout(function() { setSettingsState('', '', 'indexSaveState'); }, 2500);
+            })
+            .catch(function() { setSettingsState('تعذر الاتصال بالخادم', 'err', 'indexSaveState'); });
     }
 
-    function bindIndexSettingsSaver() {
-        ['jocStart','jocLimit','jocMode','jocTemplate','jocFileName',
-         'jocStrip','jocDownloadTxt','jocReviewTxt','jocMp3Index',
-         'ttsVoice','ttsRate'].forEach(function(id) {
-            let el = document.getElementById(id);
-            if (el) el.addEventListener('change', saveIndexSettings);
-            let cb = document.getElementById(id);
-            if (cb && cb.type === 'checkbox') cb.addEventListener('change', saveIndexSettings);
-        });
-        document.querySelectorAll('#ttsOptions .seg.option').forEach(function(el) {
-            el.addEventListener('click', function() { saveIndexSettings(); });
-        });
+    // A read-out of the saved settings in the create dialog, so the user does
+    // not have to open settings to remember what the index will look like.
+    const JOC_MODE_LABELS = {'1': 'مجلدات فقط', '2': 'مجلدات وملفات', '3': 'المجلد الحالي فقط'};
+    const JOC_TEMPLATE_LABELS = {'4': 'الاسم : الرقم.', '1': 'الرقم : الاسم .', '2': 'الاسم من الرقم', '3': 'الاسم من رقم الرقم .'};
+    const MASK_LABELS = {none: 'بدون', noise: 'ضوضاء خفيفة', file: 'ملف مخصص'};
+
+    function renderJocSummary() {
+        let el = document.getElementById('jocSummary');
+        if (!el) return;
+        const g = (id) => { const e = document.getElementById(id); return e ? e.value : ''; };
+        const gc = (id) => { const e = document.getElementById(id); return !!(e && e.checked); };
+        let rows = [];
+        rows.push('الوضع: <b>' + esc(JOC_MODE_LABELS[g('jocMode')] || '—') + '</b>');
+        rows.push('التنسيق: <b>' + esc(JOC_TEMPLATE_LABELS[g('jocTemplate')] || '—') + '</b>');
+        rows.push('البداية: <b>' + esc(g('jocStart')) + '</b> • الحد الأقصى للحروف: <b>' + esc(g('jocLimit')) + '</b>');
+        if (gc('jocStrip')) rows.push('يُحذف الإنجليزي والأرقام والرموز من الأسماء.');
+        if (gc('jocDownloadTxt')) rows.push('سيُحمَّل ملف <b>.txt</b> بعد الإنشاء.');
+        if (gc('jocReviewTxt')) rows.push('ستُفتح مراجعة النص قبل المتابعة.');
+        if (gc('jocMp3Index')) {
+            let voiceSel = document.getElementById('ttsVoice');
+            let voiceLabel = (voiceSel && voiceSel.selectedIndex >= 0)
+                ? voiceSel.options[voiceSel.selectedIndex].textContent.split(' — ')[0]
+                : g('ttsVoice');
+            let line = 'سيُولَّد <b>MP3</b> بصوت <b>' + esc(voiceLabel) + '</b>';
+            line += gc('jocMp3ToDest') ? ' ويُحفظ في <b>الوجهة</b> مباشرة.' : ' ويُحمَّل على الجهاز.';
+            rows.push(line);
+            if (maskMode && maskMode !== 'none') rows.push('مع تمويه: <b>' + esc(MASK_LABELS[maskMode] || maskMode) + '</b>.');
+        } else {
+            rows.push('بدون تحويل صوتي.');
+        }
+        el.innerHTML = '<div class="summary-title">'
+            + '<svg class="icon" style="width:15px;height:15px;color:var(--accent);" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="12"></line><line x1="12" y1="8" x2="12.01" y2="8"></line></svg>'
+            + 'ما سيتم إنشاؤه'
+            + '</div>' + rows.map(function(r) { return '<div>' + r + '</div>'; }).join('');
     }
 
     function openJocModal() {
         let dest = document.getElementById('custom_dest_path').value;
         if(!dest) return alert('يرجى تحديد مسار الوجهة أولاً.');
-        // Keep a name the user already typed (or that was persisted); only fall
-        // back to a random 5-char name when the field is empty.
-        let nameEl = document.getElementById('jocFileName');
-        if(!nameEl.value) nameEl.value = makeRandomName(5);
-        loadTtsVoices();
-        setMaskMode('noise');
+        // The name is generated per creation and never remembered. It is the one
+        // field this dialog owns, and it stays editable until "إنشاء".
+        document.getElementById('jocFileName').value = makeRandomName(5);
+        renderJocSummary();
         document.getElementById('jocModal').style.display = 'flex';
     }
 
     let currentTtsFileName = null;
     let currentJocIndexText = null;
     let pendingJocActions = null;
-    // Persisted JOC index settings, loaded once from ~/.local/state/sdmp3/index_settings.json.
+    // Persisted index settings, loaded once from ~/.local/state/sdmp3/index_settings.json.
     let savedIndexSettings = null;
-    let indexSettingsDebounce = null;
+    // Name of the .txt the current index was created with (the create field may
+    // be re-generated before the user copies the text).
+    let currentJocTxtName = '';
 
     function copyTextToClipboard(text, successMsg) {
         if(text === null || text === undefined || text === '') { showInlineError('لا يوجد محتوى لنسخه.'); return false; }
@@ -4821,7 +5038,7 @@ HTML_TEMPLATE = """
     }
 
     function copyJocIndex() {
-        copyTextToClipboard(currentJocIndexText, 'تم نسخ الفهرس بنجاح <b>' + esc((document.getElementById('jocFileName').value || '') + '.txt') + '</b> — الصقه في أي مكان.');
+        copyTextToClipboard(currentJocIndexText, 'تم نسخ الفهرس بنجاح <b>' + esc((currentJocTxtName || 'index.txt')) + '</b> — الصقه في أي مكان.');
     }
 
     function copyEditTxt() {
@@ -4831,8 +5048,8 @@ HTML_TEMPLATE = """
     }
 
     function submitJocIndex() {
-        // Persist the current index settings before creating the index.
-        saveIndexSettings();
+        // Settings are NOT saved here: they are saved by the save button in
+        // الإعدادات › الفهرس. This dialog only creates.
         let dest = document.getElementById('custom_dest_path').value;
         let startX = document.getElementById('jocStart').value;
         let limit = document.getElementById('jocLimit').value;
@@ -4855,9 +5072,13 @@ HTML_TEMPLATE = """
             }
         }
         let mp3Name = nameBase + '.mp3';
+        let saveToDest = document.getElementById('jocMp3ToDest').checked;
         let voice = document.getElementById('ttsVoice').value || 'ar-AE-HamdanNeural';
         let rate = document.getElementById('ttsRate').value || '+0%';
-        pendingJocActions = { txtName: txtName, downloadTxt: downloadTxt, doMp3: doMp3, mp3Name: mp3Name, voice: voice, rate: rate, obfuscate: obfuscate };
+        currentJocTxtName = txtName;
+        pendingJocActions = { txtName: txtName, downloadTxt: downloadTxt, doMp3: doMp3, mp3Name: mp3Name,
+                              voice: voice, rate: rate, obfuscate: obfuscate,
+                              saveToDest: saveToDest, saveDir: dest };
         
         document.getElementById('jocModal').style.display = 'none';
         
@@ -4979,7 +5200,9 @@ HTML_TEMPLATE = """
                     rate: a.rate,
                     filename: a.mp3Name,
                     chunk_size: 3000,
-                    obfuscate: a.obfuscate
+                    obfuscate: a.obfuscate,
+                    save_to_dest: !!a.saveToDest,
+                    save_dir: a.saveDir || ''
                 })
             }).then(r=>r.json()).then(r2=>{
                 if(r2.error) { showInlineError(r2.error); resetTransfer(); return; }
@@ -4987,16 +5210,13 @@ HTML_TEMPLATE = """
         }
     }
 
-    function downloadTtsFile() {
-        if(!currentTtsFileName) return;
-        let d = document.createElement('a');
-        d.href = '/api/tts/download?name=' + encodeURIComponent(currentTtsFileName);
-        d.download = currentTtsFileName;
-        document.body.appendChild(d);
-        d.click();
-        document.body.removeChild(d);
-        let txtName = currentTtsFileName.replace(/\\.mp3$/i, '') + '.txt';
-        showInlineNotify('<span>✔</span> تم إنشاء وتحميل MP3 الصوتي <b>' + esc(currentTtsFileName) + '</b>، وكذا الفهرس النصي <b>' + esc(txtName) + '</b>.'
+    // Success card, shared by both outcomes (saved into the destination or
+    // downloaded to the phone) so the buttons never diverge.
+    function showTtsSuccessNotify(mp3Name, savedPath) {
+        let where = savedPath
+            ? 'تم حفظ MP3 الصوتي <b>' + esc(mp3Name) + '</b> في الوجهة:<div class="ltr-input" style="margin-top:6px; font-size:calc(11.5px * var(--font-scale));">' + esc(savedPath) + '</div>'
+            : 'تم إنشاء وتحميل MP3 الصوتي <b>' + esc(mp3Name) + '</b>، وكذا الفهرس النصي <b>' + esc(currentJocTxtName || '') + '</b>.';
+        showInlineNotify('<span>✔</span> ' + where
             + '<div style="display:flex; flex-wrap:wrap; gap:8px; margin-top:8px;">'
             + '<button class="btn btn-primary btn-sm" style="flex:1;" onclick="copyJocIndex()">'
             + '<svg class="icon" viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>'
@@ -5005,6 +5225,31 @@ HTML_TEMPLATE = """
             + '<svg class="icon" viewBox="0 0 24 24"><path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"></path></svg>'
             + 'تحرير النص</button>'
             + '</div>', 'success');
+    }
+
+    // Called once the TTS run reports success. `snapshot` is the poll payload:
+    // `tts_saved_path` is set when the server wrote the MP3 into the destination.
+    function downloadTtsFile(snapshot) {
+        let savedPath = (snapshot && snapshot.tts_saved_path) || '';
+        let mp3Name = (snapshot && snapshot.tts_name) || currentTtsFileName;
+        if (savedPath) {
+            // Nothing to download: refresh the destination listing so the new
+            // file appears where the user expects it.
+            if (pendingJocActions && pendingJocActions.saveDir === document.getElementById('currentDestView').value) {
+                loadDestBrowser(pendingJocActions.saveDir);
+            }
+            showTtsSuccessNotify(mp3Name, savedPath);
+            currentTtsFileName = null;
+            return;
+        }
+        if(!currentTtsFileName) return;
+        let d = document.createElement('a');
+        d.href = '/api/tts/download?name=' + encodeURIComponent(currentTtsFileName);
+        d.download = currentTtsFileName;
+        document.body.appendChild(d);
+        d.click();
+        document.body.removeChild(d);
+        showTtsSuccessNotify(currentTtsFileName, '');
         currentTtsFileName = null;
     }
 
@@ -5178,7 +5423,7 @@ HTML_TEMPLATE = """
 
                     // Trigger MP3 download once TTS finishes successfully.
                     if (data.status === 'done' && data.action === 'tts') {
-                        downloadTtsFile();
+                        downloadTtsFile(data);
                     }
 
                     // Delete finished (or was stopped half-way): the row may no
@@ -5295,13 +5540,16 @@ HTML_TEMPLATE = """
 
 @app.route('/')
 def index():
-    """The whole page, painted with the saved theme on the first byte.
+    """The whole page, painted with the saved theme and font on the first byte.
 
-    The token block and `theme-color` are rendered server-side from
-    settings.json: a client-side apply would flash the default theme on every
-    load, which is exactly what a phone user notices.
+    The token block, the font stacks and `theme-color` are rendered server-side
+    from settings.json: a client-side apply would flash the default theme or
+    the wrong typeface on every load, which is exactly what a phone user
+    notices.
     """
     theme_id = APP_SETTINGS.get('theme') or DEFAULT_THEME
+    font_id = APP_SETTINGS.get('font') or DEFAULT_FONT
+    size_id = APP_SETTINGS.get('font_size') or DEFAULT_FONT_SIZE
     active = get_theme(theme_id)
     return render_template_string(
         HTML_TEMPLATE,
@@ -5311,6 +5559,15 @@ def index():
         theme_css=theme_css_pairs(active['id']),
         theme_bg=theme_color(active['id']),
         themes=catalog(),
+        # Typography: the @font-face rules are inert until a family is used, so
+        # the default `system` choice still paints with zero font requests.
+        font_css=font_face_css(get_app_version()),
+        app_font=font_stack(font_id),
+        font_scale=font_scale(size_id),
+        fonts=[dict(f, css_stack=font_stack(f['id'])) for f in font_catalog()],
+        font_sizes=FONT_SIZES,
+        active_font=font_id,
+        active_font_size=size_id,
     )
 
 @app.route('/api/system')
@@ -5429,7 +5686,8 @@ _cache_save_timer = {'handle': None}
 # User settings (currently: the theme) and the last searches. Both files live in
 # ~/.local/state/sdmp3/ through sdmp3_state.py, and both are loaded in main() so
 # the page can be painted with them on the very first request.
-APP_SETTINGS = {'version': 1, 'theme': DEFAULT_THEME}
+APP_SETTINGS = {'version': 2, 'theme': DEFAULT_THEME,
+                'font': DEFAULT_FONT, 'font_size': DEFAULT_FONT_SIZE}
 APP_INDEX_SETTINGS = dict(DEFAULT_INDEX_SETTINGS)
 SEARCH_HISTORY = {'version': 1, 'items': [], 'queries': []}
 _settings_lock = threading.RLock()
@@ -5732,11 +5990,13 @@ def remember_search(query, root, results):
 
 @app.route('/api/settings', methods=['GET', 'POST'])
 def api_settings():
-    """Read or update the theme.
+    """Read or update the appearance + typography settings.
 
-    The only writable key is `theme`, checked against the registry: a bad id
-    falls back to the default instead of being stored, so the page can always
-    render.
+    POST accepts any subset of `theme`, `font`, `font_size`: each id is checked
+    against its registry (sdmp3_themes.py / sdmp3_fonts.py) and an unknown id is
+    refused with a 400, so settings.json can never hold a value the page cannot
+    render. Only the keys present in the body change - the General pane saves a
+    font without touching the theme, and vice versa.
     """
     global APP_SETTINGS
     if request.method == 'GET':
@@ -5746,16 +6006,28 @@ def api_settings():
                         'dark': t['dark'], 'swatches': t['swatches'],
                         'tokens': t['tokens'] if request.args.get('tokens') == '1' else None}
                        for t in catalog()],
+            'fonts': [dict(f, css_stack=font_stack(f['id'])) for f in font_catalog()],
+            'font_sizes': FONT_SIZES,
+            'app_font': font_stack(APP_SETTINGS.get('font') or DEFAULT_FONT),
+            'font_scale': font_scale(APP_SETTINGS.get('font_size') or DEFAULT_FONT_SIZE),
             'default': DEFAULT_THEME,
         })
 
     body = request.json or {}
-    theme_id = body.get('theme')
+    if not isinstance(body, dict):
+        return jsonify({'error': 'بيانات غير صالحة'}), 400
+    theme_id = body.get('theme', APP_SETTINGS.get('theme') or DEFAULT_THEME)
+    font_id = body.get('font', APP_SETTINGS.get('font') or DEFAULT_FONT)
+    size_id = body.get('font_size', APP_SETTINGS.get('font_size') or DEFAULT_FONT_SIZE)
     if theme_id not in THEMES:
         return jsonify({'error': 'سمة غير معروفة'}), 400
+    if font_id not in font_ids():
+        return jsonify({'error': 'خط غير معروف'}), 400
+    if size_id not in font_size_ids():
+        return jsonify({'error': 'حجم خط غير معروف'}), 400
     with _settings_lock:
-        APP_SETTINGS = dict(APP_SETTINGS)
-        APP_SETTINGS['theme'] = theme_id
+        APP_SETTINGS = {'version': SETTINGS_VERSION, 'theme': theme_id,
+                        'font': font_id, 'font_size': size_id}
         settings = dict(APP_SETTINGS)
     if not save_settings(settings):
         return jsonify({'error': 'تعذر حفظ الإعدادات على الجهاز'}), 500
@@ -5764,7 +6036,54 @@ def api_settings():
         'settings': settings,
         'theme_bg': theme_color(theme_id),
         'tokens': theme_tokens(theme_id),
+        'app_font': font_stack(font_id),
+        'font_scale': font_scale(size_id),
     })
+
+
+def _coerce_index_settings(body):
+    """Validate an index-settings payload into the canonical shape.
+
+    Values that do not fit are dropped (the previous value is kept): the file is
+    user-editable, and one bad number must not make the whole form unreadable.
+    """
+    out = {}
+
+    def as_int(key, lo, hi):
+        try:
+            out[key] = max(lo, min(hi, int(body.get(key))))
+        except (TypeError, ValueError):
+            pass
+
+    def as_choice(key, allowed):
+        val = str(body.get(key))
+        if val in allowed:
+            out[key] = val
+
+    def as_bool(key):
+        val = body.get(key)
+        if isinstance(val, bool):
+            out[key] = val
+        elif isinstance(val, (int, float)):
+            out[key] = bool(val)
+        elif isinstance(val, str) and val.lower() in ('1', 'true', 'on', 'yes'):
+            out[key] = True
+        elif isinstance(val, str) and val.lower() in ('0', 'false', 'off', 'no'):
+            out[key] = False
+
+    as_int('joc_start', 1, 999999)
+    as_int('joc_limit', 10, 5000)
+    as_choice('joc_mode', ('1', '2', '3'))
+    as_choice('joc_template', ('1', '2', '3', '4'))
+    as_choice('tts_rate', TTS_RATES)
+    as_choice('mask_mode', ('none', 'noise', 'file'))
+    voice = body.get('tts_voice')
+    if isinstance(voice, str) and 0 < len(voice) <= 64:
+        out['tts_voice'] = voice
+    for key in ('joc_strip', 'joc_download_txt', 'joc_review_txt',
+                'joc_mp3_index', 'mp3_to_dest'):
+        as_bool(key)
+    return out
 
 
 @app.route('/api/index_settings', methods=['GET', 'POST'])
@@ -5772,7 +6091,9 @@ def api_index_settings():
     """Read or persist the JOC index settings.
 
     Stored in ~/.local/state/sdmp3/index_settings.json so the user does not
-    have to reconfigure the index template on every run.
+    have to reconfigure the index template on every run. The *output name* is
+    deliberately not part of this shape: it is generated in the create dialog
+    for each run and never remembered.
     """
     global APP_INDEX_SETTINGS
     if request.method == 'GET':
@@ -5781,11 +6102,10 @@ def api_index_settings():
     body = request.json or {}
     if not isinstance(body, dict):
         return jsonify({'error': 'بيانات غير صالحة'}), 400
+    updates = _coerce_index_settings(body)
     with _settings_lock:
         APP_INDEX_SETTINGS = dict(APP_INDEX_SETTINGS)
-        for key in DEFAULT_INDEX_SETTINGS:
-            if key in body:
-                APP_INDEX_SETTINGS[key] = body[key]
+        APP_INDEX_SETTINGS.update(updates)
         snapshot = dict(APP_INDEX_SETTINGS)
     if not save_index_settings(snapshot):
         return jsonify({'error': 'تعذر حفظ إعدادات الفهرس على الجهاز'}), 500
@@ -6225,7 +6545,14 @@ def generate_joc_index():
 def tts_voices():
     return jsonify({'voices': TTS_VOICES, 'default': TTS_DEFAULT_VOICE, 'available': EDGE_TTS_AVAILABLE})
 
-def tts_thread_task(index_text, voice, rate, out_name, chunk_size, obfuscate=False):
+def tts_thread_task(index_text, voice, rate, out_name, chunk_size, obfuscate=False,
+                    dest_dir=None):
+    """Synthesise the index MP3 and merge it.
+
+    `dest_dir` writes the final MP3 straight into the destination folder (no
+    copy, no download); ffmpeg still builds it sequentially, so the playback
+    order is untouched. Chunks always live in the TTS temp cache.
+    """
     acquire_wakelock()
     # State (status/action/start_time) is set by the route before the thread
     # starts, so a poll can never read the previous run's result.
@@ -6245,7 +6572,9 @@ def tts_thread_task(index_text, voice, rate, out_name, chunk_size, obfuscate=Fal
         set_state(total=total, file=f'الصوت: {voice_label} — تم تقسيم النص إلى {total} جزء')
         set_state(progress=2)
 
-        final_path = os.path.join(TTS_CACHE_DIR, out_name)
+        # The final file goes straight to its home: the destination when the
+        # user asked for that, the temp cache otherwise.
+        final_path = os.path.join(dest_dir, out_name) if dest_dir else os.path.join(TTS_CACHE_DIR, out_name)
         chunk_files = [os.path.join(TTS_CACHE_DIR, f"chunk_{i:03d}.mp3")
                        for i in range(1, total + 1)]
         workers = max(1, min(TTS_PARALLEL_CHUNKS, total))
@@ -6289,7 +6618,9 @@ def tts_thread_task(index_text, voice, rate, out_name, chunk_size, obfuscate=Fal
             set_state(progress=92)
             combine_mp3_chunks(chunk_files, final_path, bitrate="64k")
         set_state(progress=100, copied=total)
-        finish_transfer('done', 'تم إنشاء MP3 الصوتي بنجاح.', extra={'progress': 100, 'tts_name': out_name})
+        finish_transfer('done', 'تم إنشاء MP3 الصوتي بنجاح.',
+                        extra={'progress': 100, 'tts_name': out_name,
+                               'tts_saved_path': final_path if dest_dir else ''})
     except TransferCancelled:
         finish_transfer('cancelled', 'تم إلغاء تحويل الفهرس إلى MP3.')
     except Exception as e:
@@ -6315,7 +6646,7 @@ def tts_index():
     out_name = data.get('filename') or 'JOC_Index.mp3'
     if not out_name.lower().endswith('.mp3'):
         out_name += '.mp3'
-    out_name = os.path.basename(out_name)
+    out_name = os.path.basename(out_name) or 'JOC_Index.mp3'
     chunk_size = int(data.get('chunk_size', 3000))
     obf = data.get('obfuscate', False)
     if obf is True or obf is False:
@@ -6324,6 +6655,23 @@ def tts_index():
         obfuscate = 'file'
     else:
         obfuscate = bool(obf)
+
+    # Optional: write the finished MP3 straight into the destination instead of
+    # the temp cache (the UI then offers no download). Probe the folder first -
+    # the same 5-byte check a copy does - so a dead card fails before ffmpeg
+    # starts, and never overwrite an existing file silently.
+    dest_dir = ''
+    if data.get('save_to_dest'):
+        dest_dir = (data.get('save_dir') or '').strip()
+        if not dest_dir or not os.path.isdir(dest_dir):
+            return jsonify({'error': 'مسار الوجهة غير صالح لحفظ MP3'})
+        if not os.access(dest_dir, os.W_OK):
+            return jsonify({'error': 'لا توجد صلاحية كتابة في الوجهة'})
+        if os.path.exists(os.path.join(dest_dir, out_name)):
+            return jsonify({'error': 'يوجد ملف بالاسم نفسه في الوجهة — اختر اسماً آخر.'})
+        problem = check_destination(dest_dir)
+        if problem:
+            return jsonify({'error': problem})
 
     global ACTIVE_THREAD
     with transfer_lock:
@@ -6335,10 +6683,11 @@ def tts_index():
                     file='جاري تحضير الصوت…')
         ACTIVE_THREAD = threading.Thread(
             target=tts_thread_task,
-            args=(index_text, voice, rate, out_name, chunk_size, obfuscate),
+            args=(index_text, voice, rate, out_name, chunk_size, obfuscate,
+                  dest_dir or None),
             daemon=True)
         ACTIVE_THREAD.start()
-    return jsonify({'success': True})
+    return jsonify({'success': True, 'saved_to_dest': bool(dest_dir)})
 
 @app.route('/api/tts/custom', methods=['POST'])
 def tts_custom_upload():
@@ -6571,7 +6920,9 @@ def main(argv=None):
     # request is already painted with the saved theme and previous searches.
     try:
         global APP_SETTINGS, SEARCH_HISTORY, APP_INDEX_SETTINGS
-        APP_SETTINGS = load_settings(theme_ids(), DEFAULT_THEME)
+        APP_SETTINGS = load_settings(theme_ids(), DEFAULT_THEME,
+                                     font_ids(), DEFAULT_FONT,
+                                     font_size_ids(), DEFAULT_FONT_SIZE)
         SEARCH_HISTORY = load_search_history()
         APP_INDEX_SETTINGS = load_index_settings()
         # A pulled-out card leaves stale results behind. Prune them once at

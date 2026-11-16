@@ -5,15 +5,16 @@ Android/Termux Flask app that copies + timestamp-spoofs MP3s to SD cards, genera
 ## Module layout
 `project.py` is still the app: Flask backend, HTML, CSS, and — critically — **all
 page JS in ONE inline `<script>` block** defined inside the Python string
-`HTML_TEMPLATE` (starts ~line 1790). Three pure sibling modules sit next to it
+`HTML_TEMPLATE` (starts ~line 1790). Four pure sibling modules sit next to it
 (flat files, **not** a package, no `__init__.py`) because they are logic worth
 testing without Flask:
 
 | Module | Owns | Self-test |
 |--------|------|-----------|
 | `sdmp3_themes.py` | theme registry, CSS tokens, WCAG contrast contract | `python sdmp3_themes.py` |
-| `sdmp3_state.py` | atomic `settings.json` / `search_history.json` | `python sdmp3_state.py` |
+| `sdmp3_state.py` | atomic `settings.json` / `search_history.json` / `index_settings.json` | `python sdmp3_state.py` |
 | `sdmp3_groups.py` | group paths (nested groups) validation + folder chain | `python sdmp3_groups.py` |
+| `sdmp3_fonts.py` | font registry (10 Arabic Google fonts), `@font-face` CSS, size presets | `python sdmp3_fonts.py` |
 
 They must stay **Flask-free and global-free**: `project.py` imports them, never
 the other way round, and each one runs its own checks when executed directly.
@@ -21,8 +22,8 @@ the other way round, and each one runs its own checks when executed directly.
 - Run: `python project.py` (serves `0.0.0.0:5050`, **not** the Flask default 5000). UI at `http://localhost:5050` / `<device-ip>:5050`.
   Flags: `--host H`, `--port P`, `--no-wakelock`, `--version` (parsed in `main()` at the bottom of `project.py`).
 - No test framework, linter, or package manifest. Verify via
-  `python -m py_compile project.py sdmp3_cli.py sdmp3_themes.py sdmp3_state.py sdmp3_groups.py`,
-  `bash -n install.sh`, the three module self-tests, and manual browser testing.
+  `python -m py_compile project.py sdmp3_cli.py sdmp3_themes.py sdmp3_state.py sdmp3_groups.py sdmp3_fonts.py`,
+  `bash -n install.sh`, the four module self-tests, and manual browser testing.
 - Stop with Ctrl+C / SIGTERM; this cleans the TTS temp cache (`tempfile.gettempdir()/tts_cache_<pid>`).
 
 ## Install / `sdmp3` entry point
@@ -68,6 +69,25 @@ thread so no HTTP request ever blocks on a shell call.
 
 ## One bad JS token disables the entire UI
 Since all JS is a single `<script>`, one syntax error kills every handler — symptoms are "no storage shown, no folders, can't select anything." `python -m py_compile` will NOT catch JS errors (the JS is just a string to Python). To lint the JS: render/extract the `<script>` contents (with Jinja `{*...}` stripped) and run `node --check`.
+
+The working recipe (a throwaway harness is kept outside the checkout, in
+`$TMPDIR/uitest/`, so it never ships):
+
+```sh
+python - <<'PY'
+import re, sys; sys.path.insert(0, '.')
+import project
+project.app.testing = True
+html = project.app.test_client().get('/').get_data(as_text=True)
+assert html.count('<script>') == 1
+open('/tmp/app.js', 'w').write(re.findall(r'<script>(.*?)</script>', html, re.S)[-1])
+PY
+node --check /tmp/app.js        # the hard gate
+```
+
+Then boot the rendered page under jsdom with a `fetch` stub and drive the real
+functions — that is what catches "handler exists but throws" (the success path
+must call `process.exit(0)`, or jsdom's `setInterval` keeps node alive).
 
 ## Copy engine — do not regress these
 The copy path is the product, and it is tuned; changes must keep the queue
@@ -200,7 +220,12 @@ The spoofing button is `btn-sand` (`--sand-fill #d0b49f` on `--accent-ink`), not
 
 - **No remote assets.** The page used to load Google Fonts, which blocked first
   paint on a phone that is offline or behind a slow DNS; the font stack is the
-  system face (`system-ui, … 'Noto Sans Arabic'`). Keep the page self-contained.
+  system face (`system-ui, … 'Noto Sans Arabic'`). Keep the page self-contained:
+  the 10 selectable fonts are self-hosted woff2 in `static/fonts/` (see «General
+  settings: fonts»), never a `fonts.googleapis.com` link.
+- **Every `font-size` is `calc(Npx * var(--font-scale))`.** A raw `Npx` silently
+  ignores the size preset, so it is a bug even though it renders. Same for the
+  inline `style="font-size:…"` attributes in the template — they are scaled too.
 - **Markup built with `innerHTML` must escape names/paths with `esc()` (quotes
   included). Row buttons carry no data: one delegated listener reads the path
   from the row, so a filename with `"` or `'` can't break or inject markup.
@@ -227,18 +252,60 @@ The spoofing button is `btn-sand` (`--sand-fill #d0b49f` on `--accent-ink`), not
   that pre-fills `parent/`, disabled at depth 3. `saveGroupEditor`/`renameGroup`
   store the canonical `groupPathParts(...).join('/')`.
 - `/` is rendered per request; do not add a cache header to it — it embeds the
-  per-volume storage list **and** the active theme.
+  per-volume storage list, the active theme **and** the saved font/size.
 - `theme-color` is the active theme's `--bg` (`{{ theme_bg }}`), not a constant:
   the Android status bar must match whichever theme is saved.
 
 ## Settings modal
 `#settingsModal` (`modal-content modal-settings`, fixed height like the picker)
-has two tabs — «المظهر» and «حول». The appearance pane is the theme grid, rendered
-server-side by Jinja from `themes` (cards carry `data-theme-id` and a swatch row
-from `t.swatches`), so the page needs no theme JSON in JS. `pickTheme(id)` POSTs
-`/api/settings`, then applies the returned `tokens`/`theme_bg` and moves the
-`active` class. `settingsSaveState` reports saving / a failure in one line. The header gear
-button (`.header-settings`) opens it.
+has **four tabs in this order**: «المظهر», «عام», «الفهرس», «حول». One pane per
+tab, all in the DOM (`#settingsPaneAppearance` / `General` / `Index` / `About`);
+`showSettingsTab(tab)` only toggles `display`, so a form value is never rebuilt
+or lost. `openIndexSettings()` (the create dialog's button) opens the modal
+straight on «الفهرس».
+
+- **المظهر** is the theme grid, rendered server-side by Jinja from `themes`
+  (cards carry `data-theme-id` and a swatch row from `t.swatches`), so the page
+  needs no theme JSON in JS. `pickTheme(id)` POSTs `/api/settings`, then applies
+  the returned `tokens`/`theme_bg` and moves the `active` class.
+- **عام** is typography: the font cards (server-rendered from `fonts`, each card
+  rendered *in its own family* via `style="font-family: {{ f.css_stack }}"`) and
+  the size presets (`font_sizes`). `pickFont(id)` / `pickFontSize(id)` POST one
+  key each and apply `app_font` / `font_scale` from the response.
+- **الفهرس** owns the JOC index settings — see «Index settings» below. It is the
+  only place they are written.
+- `setSettingsState(text, kind, elementId)` writes one status line per pane
+  (`#settingsSaveState`, `#generalSaveState`, `#indexSaveState`). The header gear
+  button (`.header-settings`) opens the modal on «المظهر».
+
+## General settings: fonts (`sdmp3_fonts.py` + `static/fonts/`)
+Ten Arabic Google fonts plus the `system` default, all **self-hosted**: 20 woff2
+files (an `arabic` and a `latin` subset per family, variable 400..700, ~900 KB
+total) in `static/fonts/`. Nothing is fetched from `fonts.googleapis.com` — the
+page must stay self-contained on a phone that is offline or behind a slow DNS,
+and `fetch_fonts.py` (a dev tool) verifies the Google unicode-ranges still match
+the module.
+
+- A font is one dict in `sdmp3_fonts.py`: id, name, desc, the CSS `stack`, and
+  the woff2 basenames. `font_face_css(version)` emits the `@font-face` rules with
+  `?v=<version>` cache-busting; `font_stack(id)` gives the `--app-font` value;
+  `font_scale(size_id)` gives the `--font-scale` multiplier; `FONT_SIZES` is the
+  4 presets (`small`/`normal`/`large`/`xlarge`).
+- Typography is **two CSS variables** and both are rendered server-side:
+  `--app-font` in `:root` (via `{{ app_font|safe }}`) and `--font-scale` on
+  `<html>` (via `{{ font_scale }}`). Applying a pick is a property write, no
+  reload and no re-render.
+- Every `font-size` in the template is `calc(Npx * var(--font-scale))` — a raw
+  `Npx` silently ignores the size preset. The gate checks that there is none.
+- Only the chosen family is downloaded: an `@font-face` is inert until text
+  actually uses it, which is why the `system` default costs zero font requests.
+- `font_css` and `app_font` must be piped through `|safe` inside `<style>`: Jinja
+  escapes `'` to `&#39;`, which is **not** decoded in CSS. The
+  `style="font-family: {{ f.css_stack }}"` attribute is fine with escaping.
+- `str.format` breaks on CSS braces, so `font_face_css()` uses `%`-formatting.
+- Run `python sdmp3_fonts.py` for the self-test (every id resolves, sizes are
+  ordered, the `@font-face` output is complete). Adding a font is one dict plus
+  two woff2 files — `project.py` does not change, the Jinja loop picks it up.
 
 ## Path picker (تحديد / تصفح)
 `/api/sizes` returns sizes for a whole selection in one request (parents are
@@ -277,25 +344,54 @@ index — that is why `checkCacheStatus()` is called at load.
 
 ## Settings, themes and search history
 
-Two JSON files, both written through `sdmp3_state.py` (atomic `tmp` +
+Three JSON files, all written through `sdmp3_state.py` (atomic `tmp` +
 `os.replace`, chmod 0600, a corrupt file is moved to `.bak` and defaults are used):
 
 | File | Contents |
 |------|----------|
-| `state_file('settings.json')` | `{version, theme, updated}` — the theme is the only writable key |
+| `state_file('settings.json')` | `{version, theme, font, font_size, updated}` — schema version 2 |
+| `state_file('index_settings.json')` | the JOC index settings — schema version 2, see «Index settings» |
 | `state_file('search_history.json')` | `{items: [last 25 results], queries: [last 25 queries]}` |
 
-Both are loaded in `main()` (so the first request already has them) and served by
-`GET/POST /api/settings`, `GET /api/history`, `POST /api/history/clear`,
-`POST /api/history/remove`.
+All three are loaded in `main()` (so the first request already has them) and served
+by `GET/POST /api/settings`, `GET/POST /api/index_settings`, `GET /api/history`,
+`POST /api/history/clear`, `POST /api/history/remove`.
+
+`POST /api/settings` takes **any subset** of `theme`, `font`, `font_size`: a
+missing key keeps its stored value, and an unknown id is a 400, so
+`settings.json` can never hold a value the page cannot render.
+
+### Index settings (`index_settings.json`)
+The JOC form lives in الإعدادات › الفهرس and is written **only** by its
+«حفظ إعدادات الفهرس» button (`saveIndexSettingsNow()` → `POST /api/index_settings`).
+`joc_start`, `joc_limit`, `joc_mode`, `joc_template`, `joc_strip`,
+`joc_download_txt`, `joc_review_txt`, `joc_mp3_index`, `mp3_to_dest`, `tts_voice`,
+`tts_rate`, `mask_mode`.
+
+- Validation is `_coerce_index_settings()`: ints are clamped
+  (`joc_start` 1..999999, `joc_limit` 10..5000), enums are whitelisted
+  (`joc_mode` 1/2/3, `joc_template` 1..4, `tts_rate` in `TTS_RATES`, `mask_mode`
+  none/noise/file), booleans accept real bools, 0/1 and `'true'/'on'/'yes'`.
+  A value that does not fit is **dropped** (the previous value stays) — the file
+  is user-editable and one bad number must not make the form unreadable.
+  The route echoes the canonical settings so the form shows what was written.
+- The **output name is not part of this shape** (older files may still carry a
+  `joc_filename`; it is ignored, never rewritten). It is generated by
+  `openJocModal()` per creation (`makeRandomName(5)`) and stays editable until
+  «إنشاء». `currentJocTxtName` remembers the name the index was built with.
+- The create dialog (`#jocModal`) is now just the name field plus
+  `renderJocSummary()` — a read-out of the saved settings — with buttons
+  «الإعدادات» (`openIndexSettings()`), «إلغاء» and «إنشاء». `submitJocIndex()`
+  does **not** save settings (that was the old, confusing behaviour).
 
 ### Theme registry (`sdmp3_themes.py`)
 A theme is one dict of palette colours; **every** alpha variant (`--accent-soft`,
 `--kind-sdcard-tile`, `--pill-bg`, `--shine`, `--shadow-*`, …) is derived in
-`build_tokens()`, so a theme can never drift out of sync with the CSS. 8 themes:
+`build_tokens()`, so a theme can never drift out of sync with the CSS. 12 themes:
 `coffee-blues` (default, byte-identical to the old hand-written `:root`),
-`midnight-teal`, `slate-sand`, `olive-grove`, `clay-rose`, `graphite`, and the two
-light ones `paper` / `sandstone`.
+`midnight-teal`, `slate-sand`, `olive-grove`, `clay-rose`, `graphite`,
+`night-oxford`, `deep-charcoal`, and the four light ones `paper`, `sandstone`,
+`clear-dawn` / `pearl-breath`.
 
 - **Adding a theme is one dict** in `_THEME_DEFS` with the `BASE_KEYS`. Nothing in
   `project.py` changes. Run `python sdmp3_themes.py`: it prints every contrast
@@ -304,7 +400,9 @@ light ones `paper` / `sandstone`.
 - Tokens are rendered **server-side** into `:root` (`theme_css_pairs`) plus
   `<html data-theme>` and `<meta name="theme-color">` (`theme_color` = `--bg`),
   so there is no flash of the default theme. The `/` route passes `active_theme`,
-  `theme_css`, `theme_bg`, `themes`; do not add a cache header to `/`.
+  `theme_css`, `theme_bg`, `themes` (and the typography vars: `font_css`,
+  `app_font`, `font_scale`, `fonts`, `font_sizes`, `active_font`,
+  `active_font_size`); do not add a cache header to `/`.
 - Switching a theme in the settings modal only assigns the returned tokens on
   `documentElement.style` (`applyTheme` in the page JS). No reload, no re-render.
 - **Never hard-code a colour in the template** — not in CSS and not in inline JS
@@ -332,8 +430,24 @@ mutation returns the new list so client and file cannot drift.
   concurrency is welcome; the copy engine stays single-threaded.
 - `combine_mp3_chunks()` runs through `_run_ffmpeg()`, which heartbeats and makes
   Cancel effective mid-merge; a cancelled/failed merge deletes its partial MP3.
+  It calls `setup_tts_cache()` itself, so it also works outside a TTS run.
 - `chunk_*.mp3` are removed after every run (finally block); a full index used to
   leave a copy of itself in `/data` until the process exited.
+- **MP3 straight into the destination** (`mp3_to_dest`, saved index setting,
+  default on): `/api/tts_index` takes `save_to_dest` + `save_dir`, validates that
+  the folder exists, is writable and has no file of that name, then runs
+  `check_destination()` before ffmpeg starts. `tts_thread_task(..., dest_dir)`
+  makes the final path `dest_dir/out_name`, so ffmpeg builds the MP3 **in place**
+  — no copy, no download, playback order untouched. The result travels in the
+  state snapshot as `tts_name` + `tts_saved_path` (`''` when it went to the temp
+  cache). `downloadTtsFile(snapshot)` branches on it: with a path it refreshes
+  the destination listing and offers no download; otherwise it clicks the
+  `/api/tts/download` link as before. Existing file → the request is refused, a
+  run never silently overwrites.
+- `ttsAvailable` mirrors `/api/tts/voices.available`. When `edge-tts` is missing
+  the switch is disabled and `#ttsNotice` explains why — `#ttsOptions` is **not**
+  replaced, because its controls are part of the saved form and destroying them
+  made «إنشاء» throw.
 
 ## TTS prerequisites
 - `edge-tts` is **optional** (import check sets `EDGE_TTS_AVAILABLE`; TTS-only features). Copy/JOC/spoof work without it.
@@ -341,10 +455,10 @@ mutation returns the new list so client and file cannot drift.
 - Long indexes are split by `chunk_index_text` (line ~481) and merged to 64kbps mono via ffmpeg.
 
 ## JOC index → TXT → MP3 data flow (no on-disk .txt)
-The index text is generated in-memory by `/api/joc_index`, held in the JS var `currentJocIndexText`, and passed to `/api/tts_index` as `index`. There is **no server-side .txt file** for the flow.
+The index text is generated in-memory by `/api/joc_index`, held in the JS var `currentJocIndexText`, and passed to `/api/tts_index` as `index`. There is **no server-side .txt file** for the flow. The index settings it is built with come from the «الفهرس» pane (loaded once at startup into `savedIndexSettings`), not from the create dialog.
 
 ### Review/edit-text gate (recent feature)
-A `jocReviewTxt` checkbox in the JOC modal defers txt-download/copy/MP3 actions. When enabled, after generation it opens an editor modal; **`saveEditTxt()` writes the textarea back to `currentJocIndexText`** before `runPendingJocActions()` sends it to `/api/tts_index` — so the MP3 reflects the edited text. `pendingJocActions` carries `{txtName, downloadTxt, doMp3, mp3Name, voice, rate, obfuscate}`. Cancel keeps the text and shows a success notify with reopen/copy buttons rather than auto-running MP3.
+A `jocReviewTxt` checkbox (in الإعدادات › الفهرس) defers txt-download/copy/MP3 actions. When enabled, after generation it opens an editor modal; **`saveEditTxt()` writes the textarea back to `currentJocIndexText`** before `runPendingJocActions()` sends it to `/api/tts_index` — so the MP3 reflects the edited text. `pendingJocActions` carries `{txtName, downloadTxt, doMp3, mp3Name, voice, rate, obfuscate, saveToDest, saveDir}`; `currentJocTxtName` is set at creation so the copy/notify text names the right `.txt` even if the field changes later. Cancel keeps the text and shows a success notify with reopen/copy buttons rather than auto-running MP3.
 
 ## Behavior notes
 - File/dir traversal and copying intentionally use DFS + natural sort so hardware players replay in order.
