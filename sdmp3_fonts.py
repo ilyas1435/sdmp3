@@ -24,9 +24,9 @@ import os
 SYSTEM_STACK = ("system-ui, -apple-system, 'Segoe UI', Roboto, "
                 "'Noto Sans Arabic', 'IBM Plex Sans Arabic', sans-serif")
 
-# Google Fonts' own subset ranges. All ten families are cut with the same
-# subsetter, so the ranges are identical for every family (fetch_fonts.py
-# asserts this) and live here once instead of inside each font dict.
+# Google Fonts' own subset ranges. Every family — variable or static weight —
+# is cut with the same subsetter, so the ranges are identical across families
+# (fetch_fonts.py asserts this) and live here once instead of inside each dict.
 ARABIC_RANGE = (
     'U+0600-06FF, U+0750-077F, U+0870-0891, U+0897-08E1, U+08E3-08FF, '
     'U+200C-200E, U+2010-2011, U+204F, U+2E41, U+FB50-FDFF, U+FE70-FE74, '
