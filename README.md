@@ -12,17 +12,25 @@
 - 📁 **Multi-storage support** — internal storage, **SD card** and **USB OTG** are detected separately and each gets its own icon, label and colour (MMC vs USB is read from the block device, since Android shows both as `/storage/XXXX-XXXX`).
 - 📦 **Fast sequential copying** — `sendfile` when the kernel supports it (about twice as fast on Android FUSE) with a 4 MB fallback buffer, one write pass per file, and one global flush every 1 GB; playback order comes from writing files in order, not from per-file `fsync`.
 - 🧭 **JOC physical-order sequencing** — files are copied in a natural, physical order (DFS traversal + natural sort) so hardware MP3 players play them reliably in sequence.
-- 🗂️ **Several parent folders per copy, built by checking rows** — open "الملفات المحددة", tick any folders/files, then «ضم في مجلد أب» to put them under a named folder inside the destination (e.g. الكيمياء + الفيزياء → «العلوم»), and repeat for as many folders as you need. Unticked items are simply not grouped. Everything is created at copy time only — the source is never modified — and if a group folder already exists the app asks once, before writing, whether to merge. Groups clear themselves when the copy finishes, and an item can be moved between groups instantly with no prompt.
+- 🗂️ **Copy groups as a folder tree** — open «الملفات المحددة» and the groups are a real folder tree: create a folder in one click, rename it **in place** (Enter saves, Esc cancels — nested folders follow their parent), add «＋ فرع» sub-folders up to three levels deep, and move any item by **dragging** it onto a folder or onto «بدون مجلد» to take it out. Everything is created inside the destination at copy time only — the source is never modified — and if a group folder already exists the app asks once, before writing, whether to merge. Groups clear themselves when a copy finishes, and cancelled/failed copies keep the cart for a retry.
+- 🪄 **«تنظيم ذكي» with a preview** — one tap proposes a folder per source parent (e.g. `الصف الأول/a.mp3` → «الصف الأول», keeping the last three path segments). Nothing is written until you review the list: uncheck the folders you don't want, then «تطبيق على N مجلد» — existing folders are reused instead of duplicated.
 - ✅ **One-pass post-copy verification** — after the final flush, the app walks the copied files once (metadata only, no content reads) and compares every file size with what was actually written. The result is shown as `X/Y` in the progress window, with any mismatching file listed by path. Can be turned off in destination options.
 - 🖥️ **Built-in file browser** — expandable tree view to browse, select, and exclude folders/files; the destination picker lists files too (with sizes), and every row (folder **or** file, in the tree, the search results and the picker) has rename + delete.
-- 🛒 **Selection cart** — view total size of selections and copy everything with one tap.
+- 🛒 **Selection cart** — view total size of selections and copy everything with one tap. The selection, the groups and the search folder are **remembered**, so an F5 or a restart brings the cart back; a path whose card was pulled out is dropped silently instead of leaving a ghost entry.
 - ⏱️ **Instant folder indexing** — cache a folder's contents once for lightning-fast subsequent lookups. The index is **saved to disk**, so refreshing the page or restarting `sdmp3` keeps the folder cached and the source/destination paths restored.
 - 🗑️ **Forced delete with a live monitor** — deleting a file or a whole tree runs in the background and shows a sweeping progress bar plus a running "deleted N" count. It retries with loosened permissions and finally hands the job to **Shizuku** (`rish rm -rf`) so even `Android/data` can go; only volume roots and system/app paths are refused.
 
 ### 🔍 Search
 - ⚡ **Deep instant search** — find folders/files by name with a live "instant" speed badge.
+- 📂 **Visible search scope** — the search runs inside the folder shown above it, with a sub-folder menu, «↑ أعلى» and «تحديد مجلد»; narrowing a search never moves the copy source.
 - 🗂️ **Folders-only toggle** — restrict search to folder names only.
 - 💾 **Persistent index** — a built folder index survives an F5 and a server restart (kept in `~/.local/state/sdmp3/search_cache.json`).
+
+### 🎨 Appearance
+- 🎭 **14 themes** — the warm **Coffee Blues** default plus dark, light and the two **GitHub** palettes (dark `#0d1117` / light `#ffffff`), all contrast-checked (text ≥ 7:1, labels ≥ 4.5:1) when the registry loads.
+- 🔤 **11 Arabic fonts, self-hosted** — including **IBM Plex Sans Arabic** in its four real weights (400/500/600/700). No `fonts.googleapis.com` request: the page must open instantly on an offline phone.
+- 🔍 **Four text sizes** — small, normal, large and extra-large, applied instantly without a reload.
+- 🧭 **Foldable route block** — the source/destination pair folds away (the folded line still names both paths) so the page is about copying, not configuring; the open/closed state is remembered.
 
 ### 📝 JOC Index Generator
 - 🔢 **Flexible numbering** — configurable start number and max characters per line.

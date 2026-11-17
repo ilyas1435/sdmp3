@@ -6,12 +6,15 @@ registry, and commit the resulting files in ``static/fonts/``.
     python fetch_fonts.py            # download missing/stale subsets
     python fetch_fonts.py --force    # re-download everything
 
-It asks Google Fonts for the *variable* 400..700 cut, keeps only the `arabic`
-and `latin` subsets (the two the UI needs), verifies their unicode ranges match
-the constants in ``sdmp3_fonts.py``, and writes:
+It asks Google Fonts for the variable 400..700 cut of every family that has no
+``weights`` key, and for the explicit weights of every family that does (IBM
+Plex Sans Arabic is only published as static weights). Only the `arabic` and
+`latin` subsets are kept (the two the UI needs), their unicode ranges are
+verified against the constants in ``sdmp3_fonts.py``, and the files are written
+with the names ``sdmp3_fonts.font_assets()`` expects:
 
-    static/fonts/<font-id>-arabic.woff2
-    static/fonts/<font-id>-latin.woff2
+    static/fonts/<font-id>-arabic.woff2            (variable family)
+    static/fonts/<font-id>-<weight>-arabic.woff2   (static-weight family)
 
 Nothing else in the app depends on this script at runtime.
 """
@@ -24,13 +27,15 @@ import urllib.request
 
 import sdmp3_fonts as F
 
-CSS_URL = ('https://fonts.googleapis.com/css2?family={family}:wght@400..700'
+CSS_URL = ('https://fonts.googleapis.com/css2?family={family}:wght@{axis}'
            '&display=swap')
 UA = ('Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 '
       '(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 OUT_DIR = os.path.join(ROOT, F.FONT_DIR)
+
+FACE_RE = re.compile(r'/\*\s*([\w-]+)\s*\*/\s*@font-face\s*\{(.*?)\}', re.S)
 
 
 def fetch(url, binary=False):
@@ -40,18 +45,35 @@ def fetch(url, binary=False):
     return data if binary else data.decode('utf-8')
 
 
-def parse_subsets(css):
-    """{subset: (woff2 url, unicode-range)} for the labelled @font-face blocks."""
-    found = {}
-    for name, body in re.findall(r'/\*\s*([\w-]+)\s*\*/\s*@font-face\s*\{(.*?)\}',
-                                 css, re.S):
-        if name not in ('arabic', 'latin'):
-            continue
+def css_url(font):
+    """The Google CSS URL for a family: one weight range or the explicit list."""
+    family = font['family'].replace(' ', '+')
+    weights = font.get('weights')
+    axis = ';'.join(str(int(w)) for w in weights) if weights else '400..700'
+    return CSS_URL.format(family=family, axis=axis)
+
+
+def parse_faces(css):
+    """[{'subset','weight','url','range'}] for every labelled @font-face block.
+
+    Google labels each block with a `/* arabic */` comment and states the weight
+    inside it (`font-weight: 600;` for a static file, `font-weight: 400 700;`
+    for a variable one), so the weight must be read from the body — a family
+    with four weights repeats the same `/* arabic */` label four times.
+    """
+    faces = []
+    for label, body in FACE_RE.findall(css):
         url = re.search(r'url\((https://[^)]+)\)', body)
         rng = re.search(r'unicode-range:\s*([^;]+);', body)
-        if url and rng:
-            found[name] = (url.group(1).strip(), ' '.join(rng.group(1).split()))
-    return found
+        weight = re.search(r'font-weight:\s*([^;]+);', body)
+        if url and rng and weight:
+            faces.append({
+                'subset': label,
+                'weight': ' '.join(weight.group(1).split()),
+                'url': url.group(1).strip(),
+                'range': ' '.join(rng.group(1).split()),
+            })
+    return faces
 
 
 def main(argv=None):
@@ -70,31 +92,32 @@ def main(argv=None):
     expected = {'arabic': F.ARABIC_RANGE, 'latin': F.LATIN_RANGE}
     total = 0
     for font in fonts:
-        family = font['family'].replace(' ', '+')
-        css = fetch(CSS_URL.format(family=family))
-        subsets = parse_subsets(css)
-        for subset in ('arabic', 'latin'):
-            if subset not in subsets:
-                raise SystemExit('{}: no {} subset in the Google CSS'.format(
-                    font['id'], subset))
-            url, rng = subsets[subset]
-            if ' '.join(rng.split()) != ' '.join(expected[subset].split()):
+        css = fetch(css_url(font))
+        faces = parse_faces(css)
+        by_key = {(face['subset'], face['weight']): face for face in faces}
+        for weight, subset, name in F.font_assets(font):
+            want = '400 700' if weight is None else str(int(weight))
+            face = by_key.get((subset, want))
+            if not face:
+                raise SystemExit('{}: no {} {} subset in the Google CSS'.format(
+                    font['id'], want, subset))
+            if ' '.join(face['range'].split()) != ' '.join(expected[subset].split()):
                 raise SystemExit('{}: {} unicode-range drifted from sdmp3_fonts.py'
                                  '\n  google: {}\n  module: {}'.format(
-                                     font['id'], subset, rng, expected[subset]))
-            name = F.font_file(font['id'], subset)
+                                     font['id'], subset, face['range'],
+                                     expected[subset]))
             path = os.path.join(OUT_DIR, name)
             if os.path.isfile(path) and not args.force:
                 total += os.path.getsize(path)
-                print('  {:<28} {} (kept)'.format(name, os.path.getsize(path)))
+                print('  {:<38} {} (kept)'.format(name, os.path.getsize(path)))
                 continue
-            data = fetch(url, binary=True)
+            data = fetch(face['url'], binary=True)
             if len(data) < 1000:
                 raise SystemExit('{}: download looks empty'.format(name))
             with open(path, 'wb') as fh:
                 fh.write(data)
             total += len(data)
-            print('  {:<28} {} (downloaded)'.format(name, len(data)))
+            print('  {:<38} {} (downloaded)'.format(name, len(data)))
 
     print('\n{} fonts, {} bytes in {}'.format(len(fonts), total, F.FONT_DIR))
     missing = F.missing_files(ROOT)

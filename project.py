@@ -2051,6 +2051,48 @@ HTML_TEMPLATE = """
         .path-line > input { margin-bottom:0; flex:1 1 170px; }
         .path-line > .btn { white-space:nowrap; }
 
+        /* The whole route folds into one line that still says both paths: the
+           source/destination pair is chosen rarely, but it must never be a
+           mystery while the rest of the page is in use. */
+        .route-details > summary { list-style:none; cursor:pointer; display:flex; align-items:center;
+            gap:9px; padding:8px 11px; border:1px solid var(--field-line); border-radius:10px;
+            background:var(--field); }
+        .route-details > summary::-webkit-details-marker { display:none; }
+        .route-details > summary:hover { border-color:var(--accent-line); }
+        .route-sum { display:flex; align-items:center; gap:6px; min-width:0; flex:1 1 0; }
+        .route-sum-label { flex-shrink:0; font-size:calc(11px * var(--font-scale)); color:var(--text-muted); }
+        .route-sum-path { min-width:0; font-family:var(--num-font); direction:ltr; text-align:left;
+            font-size:calc(11px * var(--font-scale)); color:var(--text);
+            white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+        .route-sum-path.is-empty { color:var(--text-muted); direction:rtl; text-align:right; font-family:inherit; }
+        .route-chev { width:15px; height:15px; flex-shrink:0; color:var(--text-muted); transition:transform .15s ease; }
+        .route-details[open] .route-chev { transform:rotate(180deg); }
+        .route-details .route { margin-top:14px; }
+        .route-joc { margin-top:12px; }
+        @media (max-width: 480px) { .route-sum-label { display:none; } }
+
+        /* Search scope: one bar that names the folder being searched, plus the
+           same folder's entries so a result can be selected without leaving the
+           section. 300 rows at a time keeps a 4 000-file folder instant. */
+        .search-scope { display:flex; flex-direction:column; gap:8px; margin-bottom:12px; padding:9px 10px;
+            border-radius:11px; background:var(--field); border:1px solid var(--field-line); }
+        .scope-line { display:flex; align-items:center; gap:7px; flex-wrap:wrap; }
+        .scope-line > .icon { width:15px; height:15px; color:var(--accent); flex-shrink:0; }
+        .scope-path { flex:1 1 130px; min-width:0; font-family:var(--num-font); direction:ltr; text-align:left;
+            font-size:calc(11px * var(--font-scale)); color:var(--text);
+            white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+        .scope-select { max-width:46%; padding:5px 8px; border-radius:7px; border:1px solid var(--border);
+            background:var(--bg); color:var(--text); font-family:inherit; font-size:calc(11.5px * var(--font-scale)); }
+        .scope-items { display:flex; flex-direction:column; gap:5px; max-height:210px; overflow-y:auto; }
+        .scope-item { display:flex; align-items:center; gap:8px; padding:5px 9px; border-radius:9px;
+            background:var(--card); border:1px solid var(--border); }
+        .scope-item .icon { width:14px; height:14px; color:var(--text-muted); flex-shrink:0; }
+        .scope-item-name { flex:1; min-width:0; font-size:calc(11.5px * var(--font-scale)); color:var(--text);
+            white-space:nowrap; overflow:hidden; text-overflow:ellipsis; cursor:pointer; }
+        .scope-item-name:hover { color:var(--accent-text); }
+        .scope-item-size { flex-shrink:0; font-size:calc(10px * var(--font-scale)); color:var(--text-muted); }
+        .scope-empty { padding:6px 2px; font-size:calc(11px * var(--font-scale)); color:var(--text-muted); }
+
         /* Monospace digits: counts and speeds must not jitter between polls. */
         .num { font-family: var(--num-font); font-variant-numeric: tabular-nums; direction:ltr; unicode-bidi:isolate; }
 
@@ -2317,17 +2359,58 @@ HTML_TEMPLATE = """
         .group-section-head { display:flex; align-items:center; justify-content:space-between; gap:8px; flex-wrap:wrap; }
         .group-section-title { display:flex; align-items:center; gap:8px; font-size:calc(12.5px * var(--font-scale)); font-weight:600; color:var(--text); }
         .group-section-title .icon { color:var(--accent); width:16px; height:16px; }
-        .group-cards { display:flex; flex-direction:column; gap:7px; }
-        .group-card { display:flex; flex-direction:column; gap:7px; padding:9px 10px; border-radius:10px; border:1px solid var(--accent-line); background:var(--accent-soft); }
-        .group-card.drop-target { outline:2px dashed var(--accent); outline-offset:2px; }
-        .group-card-main { display:flex; align-items:center; gap:9px; min-width:0; }
-        .group-card-main .icon { color:var(--accent-text); flex-shrink:0; }
-        .group-card-text { min-width:0; flex:1; }
-        .group-card-name { font-size:calc(13px * var(--font-scale)); font-weight:600; color:var(--text); }
-        .group-card-name .group-crumb-sep { color:var(--accent-text); margin:0 3px; font-weight:400; }
-        .group-card-meta { font-size:calc(10.5px * var(--font-scale)); color:var(--text-muted); margin-top:2px; }
-        .group-card-actions { display:flex; flex-wrap:wrap; gap:6px; }
-        .group-card-actions .btn { min-height:32px; padding:5px 9px; font-size:calc(11.5px * var(--font-scale)); }
+        .group-section-actions { display:flex; gap:6px; flex-wrap:wrap; }
+
+        /* Groups are a folder tree: one quiet row per folder, its items only when
+           it is opened. Nesting is the breadcrumb path ("A/B"), so the tree is
+           derived on render and needs no second data model. */
+        .group-tree { display:flex; flex-direction:column; gap:2px; }
+        .gt-node { display:flex; flex-direction:column; gap:2px; }
+        .gt-row { display:flex; align-items:center; gap:6px; padding:5px 7px; border-radius:9px;
+            border:1px solid transparent; background:transparent; }
+        .gt-row:hover, .gt-row:focus-within { background:var(--accent-soft); }
+        .gt-row.is-drop { border-color:var(--accent); border-style:dashed; background:var(--accent-soft); }
+        .gt-row.is-renaming { background:var(--card); border-color:var(--accent-line); }
+        .gt-twisty { width:22px; height:22px; padding:0; border:0; background:none; color:var(--text-muted);
+            display:inline-flex; align-items:center; justify-content:center; cursor:pointer; flex-shrink:0; border-radius:6px; }
+        .gt-twisty:hover { color:var(--accent-text); }
+        .gt-twisty .icon { width:13px; height:13px; transition:transform .15s ease; }
+        .gt-twisty.open .icon { transform:rotate(90deg); }
+        .gt-twisty.is-leaf { visibility:hidden; cursor:default; }
+        .gt-folder { width:16px; height:16px; flex-shrink:0; color:var(--accent-text); }
+        .gt-row.is-unassigned .gt-folder { color:var(--text-muted); }
+        .gt-name { flex:1; min-width:0; font-size:calc(12.5px * var(--font-scale)); font-weight:600; color:var(--text);
+            white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+        .gt-row.is-unassigned .gt-name { color:var(--text-muted); font-weight:500; }
+        .gt-count { flex-shrink:0; font-size:calc(10px * var(--font-scale)); color:var(--text-muted);
+            background:var(--card); border:1px solid var(--border); border-radius:999px; padding:1px 7px; }
+        .gt-actions { display:flex; align-items:center; gap:2px; flex-shrink:0; }
+        .gt-btn { width:26px; height:26px; padding:0; border:1px solid transparent; border-radius:7px;
+            background:none; color:var(--text-muted); display:inline-flex; align-items:center;
+            justify-content:center; cursor:pointer; }
+        .gt-btn:hover { color:var(--accent-text); border-color:var(--accent-line); }
+        .gt-btn.danger:hover { color:var(--danger-ink); border-color:var(--danger-line); }
+        .gt-btn .icon { width:14px; height:14px; }
+        .gt-add { flex-shrink:0; padding:3px 8px; border-radius:7px; border:1px solid var(--accent-line);
+            background:var(--accent-soft); color:var(--accent-text); cursor:pointer;
+            font-family:inherit; font-size:calc(10.5px * var(--font-scale)); font-weight:600; }
+        .gt-add:hover { border-color:var(--accent); }
+        .gt-rename { flex:1; min-width:0; margin:0; padding:3px 8px; border-radius:7px;
+            border:1px solid var(--accent); background:var(--field); color:var(--text);
+            font-family:inherit; font-size:calc(12.5px * var(--font-scale)); }
+        .gt-paths { display:flex; flex-direction:column; gap:3px; padding:2px 0 5px; margin-inline-start:26px; }
+        .gt-path { display:flex; align-items:center; gap:7px; padding:4px 8px; border-radius:8px;
+            background:var(--card); border:1px solid var(--border); }
+        .gt-path.is-dragging { opacity:.45; }
+        .gt-path .icon { width:13px; height:13px; color:var(--text-muted); flex-shrink:0; }
+        .gt-path-name { flex:1; min-width:0; font-size:calc(11px * var(--font-scale)); color:var(--text);
+            white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+        .gt-path-x { width:22px; height:22px; padding:0; border:0; border-radius:6px; background:none;
+            color:var(--text-muted); display:inline-flex; align-items:center; justify-content:center; cursor:pointer; flex-shrink:0; }
+        .gt-path-x:hover { color:var(--danger-ink); background:var(--danger-soft); }
+        .gt-path-x .icon { width:12px; height:12px; }
+        .gt-empty { padding:3px 8px; margin-inline-start:26px; font-size:calc(10.5px * var(--font-scale)); color:var(--text-muted); }
+        .group-crumb-sep { color:var(--accent-text); margin:0 3px; font-weight:400; }
         .btn-ghost-danger { color:var(--danger-ink); border-color:var(--danger-line); }
         .group-empty-hint { font-size:calc(11px * var(--font-scale)); color:var(--text-muted); line-height:1.55; }
 
@@ -2354,20 +2437,19 @@ HTML_TEMPLATE = """
         .pick-bar-actions { display:flex; flex-wrap:wrap; gap:6px; }
         .pick-bar-actions .btn { min-height:36px; padding:7px 11px; font-size:calc(12px * var(--font-scale)); }
 
-        .assign-sheet { position:absolute; left:14px; right:14px; bottom:14px; z-index:6;
-            display:flex; flex-direction:column; gap:9px; padding:12px; border-radius:14px;
-            background:var(--card-2); border:1px solid var(--accent-line);
-            box-shadow:0 18px 40px var(--shadow-card); }
-        .assign-sheet-head { display:flex; align-items:center; justify-content:space-between; gap:8px; font-size:calc(12.5px * var(--font-scale)); color:var(--text); }
-        .assign-groups { display:flex; flex-wrap:wrap; gap:7px; max-height:30vh; overflow-y:auto; }
-        .assign-group { display:flex; align-items:center; gap:7px; max-width:100%; padding:7px 11px;
-            border-radius:10px; background:var(--accent-soft); border:1px solid var(--accent-line);
-            color:var(--accent-text); font-size:calc(12px * var(--font-scale)); font-weight:600; cursor:pointer; }
-        .assign-group:hover { border-color:var(--accent); }
-        .assign-group-count { font-size:calc(10.5px * var(--font-scale)); font-weight:500; color:var(--text-muted); background:var(--field); border-radius:20px; padding:1px 7px; }
-        .group-editor { display:flex; flex-direction:column; gap:7px; }
-        .group-editor input { margin:0; }
-        .group-editor-actions { display:flex; gap:7px; }
+        /* «تنظيم ذكي» preview: a proposal the user can trim before it touches
+           the groups. Nothing is written until «تطبيق». */
+        .smart-preview { display:flex; flex-direction:column; gap:7px; padding:9px 10px;
+            border-radius:10px; border:1px solid var(--accent-line); background:var(--accent-soft); }
+        .smart-preview-head { display:flex; align-items:center; justify-content:space-between; gap:8px;
+            font-size:calc(12px * var(--font-scale)); font-weight:600; color:var(--text); }
+        .smart-preview-list { display:flex; flex-direction:column; gap:4px; max-height:22vh; overflow-y:auto; }
+        .smart-preview-row { display:flex; align-items:center; gap:8px; padding:5px 8px; border-radius:8px;
+            background:var(--card); border:1px solid var(--border); cursor:pointer; }
+        .smart-preview-row.is-off { opacity:.5; }
+        .smart-preview-name { flex:1; min-width:0; font-size:calc(11.5px * var(--font-scale)); color:var(--text); }
+        .smart-preview-meta { flex-shrink:0; font-size:calc(10.5px * var(--font-scale)); color:var(--text-muted); }
+        .smart-preview-actions { display:flex; gap:7px; flex-wrap:wrap; }
         .field-error { min-height:14px; font-size:calc(11.5px * var(--font-scale)); color:var(--danger-ink); }
 
         /* ---- tools (collapsible) --------------------------------------- */
@@ -2465,7 +2547,21 @@ HTML_TEMPLATE = """
             <h2 class="section-title">المسار</h2>
             <span class="section-kicker">من المصدر إلى الوجهة</span>
         </div>
-        <div class="route">
+        <details class="route-details" id="routeDetails">
+            <summary>
+                <span class="route-sum">
+                    <span class="section-step">١</span>
+                    <span class="route-sum-label">المسار</span>
+                    <span class="route-sum-path" id="routeSourceSummary">…</span>
+                </span>
+                <span class="route-sum">
+                    <span class="section-step">٢</span>
+                    <span class="route-sum-label">الوجهة</span>
+                    <span class="route-sum-path" id="routeDestSummary">لم تُحدَّد</span>
+                </span>
+                <svg class="icon route-chev" viewBox="0 0 24 24" aria-hidden="true"><polyline points="6 9 12 15 18 9"></polyline></svg>
+            </summary>
+            <div class="route">
             <div class="route-node">
                 <div class="route-label"><span class="section-step">١</span> مصدر الملفات</div>
                 <div class="storage-grid" id="source_storage_cards">
@@ -2511,7 +2607,7 @@ HTML_TEMPLATE = """
                     {% endfor %}
                 </div>
                 <div class="path-line">
-                    <input type="text" id="custom_dest_path" class="ltr-input" placeholder="/storage/XXXX-XXXX/..." oninput="checkDiskSpace(this.value)" aria-label="مسار الوجهة">
+                    <input type="text" id="custom_dest_path" class="ltr-input" placeholder="/storage/XXXX-XXXX/..." oninput="checkDiskSpace(this.value); updateRouteSummary()" aria-label="مسار الوجهة">
                     <button class="btn btn-outline btn-sm" onclick="openPathBrowser('dest')">
                         <svg class="icon" viewBox="0 0 24 24"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>
                         تحديد
@@ -2536,13 +2632,16 @@ HTML_TEMPLATE = """
                     <span>التحقق من الحجم الإجمالي بعد النسخ</span>
                 </label>
                 <small class="check-hint">جولة واحدة بعد النسخ: تقارن حجم كل ملف على الوجهة بما كُتب فعلاً، ولا تقرأ محتوى الملفات ولا تعدّل المصدر.</small>
-
-                <button class="btn btn-outline" style="margin-top:14px; width:100%;" onclick="openJocModal()">
-                    <svg class="icon" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path></svg>
-                    إنشاء فهرس JOC
-                </button>
             </div>
         </div>
+        </details>
+
+        <!-- The index generator is a separate flow: it stays one tap away
+             whether or not the route block is folded. -->
+        <button class="btn btn-outline route-joc" onclick="openJocModal()">
+            <svg class="icon" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path></svg>
+            إنشاء فهرس JOC
+        </button>
     </section>
 
     <section class="section">
@@ -2552,6 +2651,21 @@ HTML_TEMPLATE = """
             <span id="searchSpeedBadge" class="section-kicker" style="display:none; color:var(--accent-text);">
                 <svg class="icon" style="width:12px;height:12px;" viewBox="0 0 24 24"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg> فوري
             </span>
+        </div>
+        <!-- The search runs inside one named folder, so the folder is a visible
+             control instead of an invisible assumption ("current source root"). -->
+        <div class="search-scope">
+            <div class="scope-line">
+                <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>
+                <div class="scope-path" id="searchScopePath" title="مجلد البحث الحالي">/sdcard</div>
+                <select class="scope-select" id="searchSubfolder" onchange="enterSearchSubfolder(this.value)" aria-label="مجلد فرعي للبحث">
+                    <option value="">مجلد فرعي…</option>
+                </select>
+                <button type="button" class="btn btn-outline btn-sm" onclick="searchScopeUp()" title="مجلد أعلى">↑ أعلى</button>
+                <button type="button" class="btn btn-outline btn-sm" onclick="openPathBrowser('search')">تحديد مجلد</button>
+            </div>
+            <div class="scope-items" id="searchScopeItems"></div>
+            <button type="button" class="btn btn-outline btn-sm" id="searchScopeMore" style="display:none; align-self:flex-start;" onclick="loadMoreScopeItems()">عرض المزيد</button>
         </div>
         <div class="path-line" style="margin-bottom: 12px;">
             <input type="text" id="searchInput" placeholder="اكتب اسم الملف للبحث..." style="margin-bottom:0; flex:1 1 160px;" aria-label="نص البحث">
@@ -2720,14 +2834,15 @@ HTML_TEMPLATE = """
                         <svg class="icon" viewBox="0 0 24 24"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path><line x1="12" y1="11" x2="12" y2="17"></line><line x1="9" y1="14" x2="15" y2="14"></line></svg>
                         <span>المجلدات الأب</span>
                     </div>
-                    <div style="display:flex; gap:6px; flex-wrap:wrap;">
-                        <button type="button" class="btn btn-outline btn-sm" onclick="smartOrganizeGroups()" title="ينشئ مجلداً أب باسم المجلد المشترك في المصدر (مثل «الصف الأول») ويدخل فيه كل المحدد"><svg class="icon" aria-hidden="true"><use href="#ico-spark"></use></svg> تنظيم ذكي</button>
-                        <button type="button" class="btn btn-outline btn-sm" onclick="startNewGroup()"><svg class="icon" aria-hidden="true"><use href="#ico-plus"></use></svg> مجموعة جديدة</button>
+                    <div class="group-section-actions">
+                        <button type="button" class="btn btn-outline btn-sm" onclick="smartOrganizeGroups()" title="يقترح مجلداً لكل مسار أب في المصدر ويعرض المعاينة قبل التطبيق"><svg class="icon" aria-hidden="true"><use href="#ico-spark"></use></svg> تنظيم ذكي</button>
+                        <button type="button" class="btn btn-outline btn-sm" onclick="startNewGroup()"><svg class="icon" aria-hidden="true"><use href="#ico-plus"></use></svg> مجلد جديد</button>
                     </div>
                 </div>
-                <div id="groupStatusHint" class="check-hint" style="display:none; margin:6px 0 0;"></div>
-                <div id="groupCards" class="group-cards"></div>
-                <div id="groupEmptyHint" class="group-empty-hint">أشّر العناصر بالأسفل ثم «ضم في مجلد أب»، أو اضغط «تنظيم ذكي» لإنشاء المجلد الأب تلقائياً من المصدر، أو اسحب عنصراً وأفلته على أي مجموعة. ويمكن تكرار ذلك بعدة مجموعات.</div>
+                <div id="groupStatusHint" class="check-hint" style="display:none; margin:0;"></div>
+                <div id="smartPreview" class="smart-preview" style="display:none;"></div>
+                <div id="groupTree" class="group-tree"></div>
+                <div id="groupEmptyHint" class="group-empty-hint">لا توجد مجلدات بعد. اضغط «مجلد جديد» أو «تنظيم ذكي»، أو اسحب عنصراً من القائمة وأفلته على مجلد. الأسهم تفتح المجلد، و✎ تعيد التسمية داخل النافذة، و✕ تحذف.</div>
             </div>
         </div>
 
@@ -2745,30 +2860,7 @@ HTML_TEMPLATE = """
             <span class="pick-count"><b id="pickCount">0</b> مؤشَّر</span>
             <div class="pick-bar-actions">
                 <button type="button" class="btn btn-outline btn-sm" id="unassignBtn" style="display:none;" onclick="unassignPicked()">إزالة من المجموعة</button>
-                <button type="button" class="btn btn-primary btn-sm" onclick="openAssignSheet()">ضم في مجلد أب</button>
                 <button type="button" class="btn btn-outline btn-sm" onclick="clearPick()">إلغاء التأشير</button>
-            </div>
-        </div>
-
-        <div id="assignSheet" class="assign-sheet" style="display:none;">
-            <div class="assign-sheet-head">
-                <span>أضف <b id="assignCount">0</b> عنصر إلى:</span>
-                <button type="button" class="btn btn-outline btn-sm" onclick="hideAssignSheet()">إغلاق</button>
-            </div>
-            <div id="assignHint" class="check-hint" style="margin:0;"></div>
-            <div id="assignGroups" class="assign-groups"></div>
-            <div id="assignNewWrap">
-                <button type="button" class="btn btn-outline btn-sm" onclick="beginGroupEditor()"><svg class="icon" aria-hidden="true"><use href="#ico-plus"></use></svg> اسم جديد</button>
-            </div>
-            <div id="groupEditor" class="group-editor" style="display:none;">
-                <input type="text" id="groupNameInput" maxlength="180" autocomplete="off" placeholder="اسم المجلد الأب"
-                       oninput="onGroupNameInput(this.value)" onkeydown="onGroupNameKey(event)">
-                <div class="check-hint" style="margin:0;">للتداخل داخل مجلد أب آخر اكتب: العلماء/ابن باز (حتى 3 مستويات)</div>
-                <div id="groupNameError" class="field-error"></div>
-                <div class="group-editor-actions">
-                    <button type="button" class="btn btn-primary btn-sm" id="groupSaveBtn" onclick="saveGroupEditor()">حفظ</button>
-                    <button type="button" class="btn btn-outline btn-sm" onclick="cancelGroupEditor()">إلغاء</button>
-                </div>
             </div>
         </div>
     </div>
@@ -3184,9 +3276,10 @@ HTML_TEMPLATE = """
     }
 
     // ---- Copy groups: named parent folders created at copy time only ----
+    // A group is {id, name, paths}. `name` is a breadcrumb ("A/B"): nesting is
+    // a plain path, so there is no second tree model to keep in sync and the
+    // server (sdmp3_groups.prepare_copy_groups) reads exactly this shape.
     function syncGroupsWithSelection() {
-        // A path that left the selection must leave its group too, and the pick
-        // set must never point at something the tree no longer has.
         copyGroups.forEach(function(g) {
             g.paths = g.paths.filter(function(p) { return selectedPaths.has(p); });
         });
@@ -3214,6 +3307,7 @@ HTML_TEMPLATE = """
     const GROUP_BAD_CHARS = String.fromCharCode(92) + ':*?"<>|';
     const GROUP_MAX_DEPTH = 3;
     const GROUP_PATH_MAX = 180;
+    const GROUP_SEG_MAX = 80;
 
     // "العلماء / ابن باز // دروس" -> ['العلماء','ابن باز','دروس']
     function groupPathParts(raw) {
@@ -3225,6 +3319,19 @@ HTML_TEMPLATE = """
         return groupPathParts(raw).join('/').toLowerCase();
     }
 
+    // One directory *name* (not a path): the rules the server applies to a
+    // segment are checked here first so the UI can refuse before the copy.
+    function groupSegmentError(seg) {
+        if (!seg) return 'اكتب اسماً للمجلد';
+        if (seg === '.' || seg === '..') return 'اسم غير صالح';
+        if (seg.length > GROUP_SEG_MAX) return 'طول المقطع أكثر من ' + GROUP_SEG_MAX + ' حرفاً';
+        for (let j = 0; j < GROUP_BAD_CHARS.length; j++) {
+            if (seg.indexOf(GROUP_BAD_CHARS[j]) !== -1) return 'لا تستخدم الرموز : * ? " < > |';
+        }
+        if (/[ .]$/.test(seg)) return 'لا ينتهي الاسم بمسافة أو نقطة';
+        return '';
+    }
+
     function groupNameError(raw, exceptId) {
         let name = (raw || '').trim();
         if (!name) return 'اكتب اسماً للمجلد';
@@ -3233,13 +3340,8 @@ HTML_TEMPLATE = """
         if (!parts.length) return 'اكتب اسماً للمجلد';
         if (parts.length > GROUP_MAX_DEPTH) return 'أقصى تداخل ' + GROUP_MAX_DEPTH + ' مستويات (مثال: العلماء/ابن باز)';
         for (let i = 0; i < parts.length; i++) {
-            let seg = parts[i];
-            if (seg === '.' || seg === '..') return 'اسم غير صالح';
-            if (seg.length > 80) return 'طول المقطع أكثر من 80 حرفاً';
-            for (let j = 0; j < GROUP_BAD_CHARS.length; j++) {
-                if (seg.indexOf(GROUP_BAD_CHARS[j]) !== -1) return 'لا تستخدم الرموز \\ : * ? " < > |';
-            }
-            if (/[ .]$/.test(seg)) return 'لا ينتهي الاسم بمسافة أو نقطة';
+            let err = groupSegmentError(parts[i]);
+            if (err) return err;
         }
         let key = parts.join('/').toLowerCase();
         for (let i = 0; i < copyGroups.length; i++) {
@@ -3249,9 +3351,10 @@ HTML_TEMPLATE = """
         return '';
     }
 
-    // "A/B" -> "A › B": the card shows the real nesting, not a slash soup.
+    // "A/B" -> "A › B": the read-out keeps the real nesting, not a slash soup.
     function groupBreadcrumbHtml(name) {
-        return groupPathParts(name).map(function(seg) { return esc(seg); }).join(' <span class="group-crumb-sep">›</span> ');
+        return groupPathParts(name).map(function(seg) { return esc(seg); })
+            .join(' <span class="group-crumb-sep">›</span> ');
     }
 
     function setGroupStatus(text) {
@@ -3261,62 +3364,508 @@ HTML_TEMPLATE = """
         el.style.display = text ? 'block' : 'none';
     }
 
-    // «تنظيم ذكي»: infer the common source parent of the selected paths and put
-    // everything into one group named after its last segment (e.g. «الصف الأول»).
-    // An existing group with the same name is reused, so nothing is ever
-    // duplicated; the source tree itself is never touched.
-    function smartOrganizeGroups() {
-        let paths = Array.from(selectedPaths.keys());
-        if (paths.length < 2) {
-            setGroupStatus('حدّد عنصرين على الأقل لإنشاء مجلد أب مشترك.');
-            return;
-        }
-        // Work on path segments relative to the current source root: the group
-        // name must be a real folder name, never the storage root itself.
-        let rootSegs = String(currentSourceRoot || '').split('/').filter(Boolean);
-        let relParents = paths.map(function(p) {
-            let segs = String(p).split('/').filter(Boolean);
-            if (rootSegs.length && rootSegs.every(function(s, i) { return segs[i] === s; })) {
-                segs = segs.slice(rootSegs.length);
-            }
-            segs.pop(); // drop the item's own name; we want its parent folder
-            return segs;
-        });
-        let common = relParents[0].slice();
-        for (let i = 1; i < relParents.length; i++) {
-            let j = 0;
-            while (j < common.length && j < relParents[i].length && common[j] === relParents[i][j]) j++;
-            common = common.slice(0, j);
-            if (!common.length) break;
-        }
-        if (!common.length) {
-            setGroupStatus('لا يوجد مجلد أب مشترك — حدّد مجلدات من نفس المصدر.');
-            return;
-        }
-        let name = common[common.length - 1];
-        if (name.length > 80) {
-            setGroupStatus('اسم المجلد المشترك طويل جداً (أكثر من 80 حرفاً).');
-            return;
-        }
-        // Reuse an existing group with this name (FAT is case-insensitive).
-        let target = null;
-        let key = name.toLowerCase();
-        for (let i = 0; i < copyGroups.length; i++) {
-            if (groupPathKey(copyGroups[i].name) === key) { target = copyGroups[i]; break; }
-        }
-        if (!target) {
-            target = { id: nextGroupId++, name: name, paths: [] };
-            copyGroups.push(target);
-        }
-        // One item lives in one group only: remove it from every other group.
+    // ---- the folder tree -------------------------------------------------
+    // Nodes are derived from the breadcrumbs on every render: "A" and "A/B"
+    // share one branch, so a nested group looks like a folder inside a folder.
+    // Only *closed* nodes are remembered: a new folder must appear expanded,
+    // or the user would think it was not created.
+    let groupNodeClosed = {};
+
+    function isNodeOpen(key) { return !groupNodeClosed[groupPathKey(key)]; }
+
+    function toggleGroupNode(key) {
+        let k = groupPathKey(key);
+        if (groupNodeClosed[k]) delete groupNodeClosed[k];
+        else groupNodeClosed[k] = true;
+        renderGroupTree();
+    }
+
+    function groupTreeRows() {
+        let nodes = {};
+        let order = [];
         copyGroups.forEach(function(g) {
-            if (g !== target) g.paths = g.paths.filter(function(p) { return paths.indexOf(p) === -1; });
+            let parts = groupPathParts(g.name);
+            for (let i = 0; i < parts.length; i++) {
+                let key = parts.slice(0, i + 1).join('/').toLowerCase();
+                if (!nodes[key]) {
+                    nodes[key] = {key: key, name: parts.slice(0, i + 1).join('/'),
+                                  label: parts[i], depth: i + 1, group: null,
+                                  paths: [], children: []};
+                    order.push(key);
+                }
+            }
+            let ownKey = groupPathKey(g.name);
+            if (nodes[ownKey]) {
+                nodes[ownKey].group = g;
+                nodes[ownKey].paths = g.paths.slice();
+                nodes[ownKey].name = g.name;
+                nodes[ownKey].label = groupPathParts(g.name).slice(-1)[0];
+            }
         });
-        let set = new Set(target.paths);
-        paths.forEach(function(p) { set.add(p); });
-        target.paths = Array.from(set);
-        setGroupStatus('تم ضم ' + paths.length + ' عنصر داخل «' + name + '» — راجع النتيجة بالأسفل قبل النسخ.');
+        // Link each node to its parent: children are rendered inside the parent
+        // so closing a folder really hides its branches.
+        order.forEach(function(key) {
+            let node = nodes[key];
+            if (node.depth === 1) return;
+            let parentKey = groupPathParts(node.name).slice(0, -1).join('/').toLowerCase();
+            if (nodes[parentKey]) nodes[parentKey].children.push(node);
+        });
+        let byLabel = function(a, b) { return a.label.localeCompare(b.label, 'ar'); };
+        let roots = order.map(function(k) { return nodes[k]; })
+            .filter(function(n) { return n.depth === 1; });
+        roots.sort(byLabel);
+        order.forEach(function(k) { nodes[k].children.sort(byLabel); });
+        return roots;
+    }
+
+    // Selections that belong to no folder: they stay visible (and are the drop
+    // area that takes an item out of every group).
+    function ungroupedPaths() {
+        let grouped = {};
+        copyGroups.forEach(function(g) {
+            g.paths.forEach(function(p) { grouped[p] = true; });
+        });
+        return Array.from(selectedPaths.keys()).filter(function(p) { return !grouped[p]; });
+    }
+
+    let groupRename = null;   // {gid, value} while a folder name is edited inline
+
+    function renameInputHtml(node) {
+        return '<input type="text" class="gt-rename" id="gtRenameInput" autocomplete="off" ' +
+            'maxlength="' + GROUP_SEG_MAX + '" value="' + esc(groupRename ? groupRename.value : node.label) + '" ' +
+            'aria-label="اسم المجلد">';
+    }
+
+    function groupRowActionsHtml(node) {
+        let gid = node.group ? node.group.id : 0;
+        if (groupRename && groupRename.gid === gid && gid) {
+            return '<button type="button" class="gt-btn" data-act="rename-save" title="حفظ (Enter)">' +
+                    '<svg class="icon" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"></polyline></svg></button>' +
+                '<button type="button" class="gt-btn danger" data-act="rename-cancel" title="إلغاء (Esc)">' +
+                    '<svg class="icon" viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg></button>';
+        }
+        let html = '';
+        // Bulk add: only shown while rows are checked, so the normal state of a
+        // folder row stays three quiet glyphs.
+        if (pickPaths.size) {
+            html += '<button type="button" class="gt-add" data-act="add" title="أضف ' + pickPaths.size +
+                ' عنصراً مؤشَّراً إلى هذا المجلد">ضم ' + pickPaths.size + '</button>';
+        }
+        if (!gid) return html;   // a parent that only exists because of a child
+        let depth = groupPathParts(node.name).length;
+        if (groupRename && groupRename.gid === gid) return html;
+        html += '<button type="button" class="gt-btn" data-act="rename" title="إعادة التسمية">' +
+                '<svg class="icon" viewBox="0 0 24 24"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path></svg></button>';
+        html += '<button type="button" class="gt-btn" data-act="child"' +
+                (depth >= GROUP_MAX_DEPTH ? ' disabled title="أقصى تداخل 3 مستويات"' : ' title="مجلد فرعي داخله"') + '>' +
+                '<svg class="icon" viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg></button>';
+        html += '<button type="button" class="gt-btn danger" data-act="delete" title="حذف المجلد (العناصر تبقى محددة)">' +
+                '<svg class="icon" viewBox="0 0 24 24"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"></path></svg></button>';
+        return html;
+    }
+
+    function groupPathsHtml(paths, gid) {
+        if (!paths.length) {
+            return gid ? '<div class="gt-empty">مجلد فارغ — أشّر عناصر ثم اضغط «ضم».</div>'
+                       : '<div class="gt-empty">اسحب عنصراً إلى هنا لإخراجه من مجلده.</div>';
+        }
+        let names = {};
+        paths.forEach(function(p) { names[p] = p.split('/').filter(Boolean).pop() || p; });
+        return '<div class="gt-paths">' + paths.map(function(p) {
+            return '<div class="gt-path" draggable="true" data-path="' + esc(p) + '">' +
+                (selectedPaths.get(p) ? iconDir : iconFile) +
+                '<span class="gt-path-name" title="' + esc(p) + '">' + esc(names[p]) + '</span>' +
+                (gid ? '<button type="button" class="gt-path-x" data-act="unlink" data-path="' + esc(p) +
+                    '" title="أخرجه من المجلد"><svg class="icon" viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg></button>' : '') +
+            '</div>';
+        }).join('') + '</div>';
+    }
+
+    function groupNodeHtml(node) {
+        let gid = node.group ? node.group.id : 0;
+        let open = isNodeOpen(node.key);
+        let hasChildren = node.children.length > 0;
+        let canToggle = node.paths.length > 0 || hasChildren;
+        let renaming = !!(groupRename && gid && groupRename.gid === gid);
+        return '<div class="gt-node" data-key="' + esc(node.key) + '">' +
+            '<div class="gt-row' + (renaming ? ' is-renaming' : '') + '" data-gid="' + gid +
+                '" data-key="' + esc(node.key) + '" data-drop="1">' +
+                '<button type="button" class="gt-twisty' + (open ? ' open' : '') + (canToggle ? '' : ' is-leaf') +
+                    '" data-act="toggle" data-key="' + esc(node.key) + '" aria-label="' + (open ? 'طي المجلد' : 'فتح المجلد') + '">' +
+                    '<svg class="icon" viewBox="0 0 24 24"><polyline points="9 6 15 12 9 18"></polyline></svg>' +
+                '</button>' +
+                '<svg class="gt-folder icon" viewBox="0 0 24 24"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>' +
+                (renaming ? renameInputHtml(node)
+                          : '<span class="gt-name" data-act="toggle" data-key="' + esc(node.key) +
+                            '" title="' + esc(node.name) + '">' + esc(node.label) + '</span>') +
+                '<span class="gt-count">' + node.paths.length + '</span>' +
+                '<div class="gt-actions">' + groupRowActionsHtml(node) + '</div>' +
+            '</div>' +
+            (open ? groupPathsHtml(node.paths, gid) : '') +
+            (open ? node.children.map(groupNodeHtml).join('') : '') +
+        '</div>';
+    }
+
+    function renderGroupTree() {
+        let el = document.getElementById('groupTree');
+        if (!el) return;
+        let empty = document.getElementById('groupEmptyHint');
+        if (empty) empty.style.display = copyGroups.length ? 'none' : 'block';
+        if (!copyGroups.length && !smartPreview) { el.innerHTML = ''; return; }
+        let html = groupTreeRows().map(groupNodeHtml).join('');
+        if (copyGroups.length) {
+            // The "no folder" node is always present once groups exist: it is
+            // how an item is taken back out (drag onto it, or ✕ on its row).
+            let loose = ungroupedPaths();
+            let open = isNodeOpen('');
+            html += '<div class="gt-node" data-key="">' +
+                '<div class="gt-row is-unassigned" data-gid="0" data-key="" data-drop="1">' +
+                    '<button type="button" class="gt-twisty' + (open ? ' open' : '') +
+                        '" data-act="toggle" data-key="" aria-label="' + (open ? 'طي' : 'فتح') + '">' +
+                        '<svg class="icon" viewBox="0 0 24 24"><polyline points="9 6 15 12 9 18"></polyline></svg></button>' +
+                    '<svg class="gt-folder icon" viewBox="0 0 24 24"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>' +
+                    '<span class="gt-name" data-act="toggle" data-key="">بدون مجلد</span>' +
+                    '<span class="gt-count">' + loose.length + '</span>' +
+                '</div>' +
+                (open ? groupPathsHtml(loose, 0) : '') +
+            '</div>';
+        }
+        el.innerHTML = html;
+        bindGroupRenameInput();
+    }
+
+    function bindGroupRenameInput() {
+        let input = document.getElementById('gtRenameInput');
+        if (!input || !groupRename) return;
+        input.value = groupRename.value;
+        input.focus();
+        try { input.setSelectionRange(input.value.length, input.value.length); } catch (_e) {}
+        input.addEventListener('input', function() {
+            groupRename.value = input.value;
+            let err = groupRenameError(input.value);
+            let save = document.querySelector('#groupTree button[data-act="rename-save"]');
+            if (save) save.disabled = !!err;
+            setGroupStatus(err || 'Enter يحفظ، Esc يلغي.');
+        });
+        input.addEventListener('keydown', function(e) {
+            if (e.key === 'Enter') { e.preventDefault(); commitGroupRename(); }
+            else if (e.key === 'Escape') { e.preventDefault(); cancelGroupRename(); }
+        });
+    }
+
+    // The error for renaming the *last* segment: a nested folder keeps its
+    // parent path, and every descendant folder moves with it.
+    function groupRenameError(seg) {
+        let g = findGroup(groupRename ? groupRename.gid : 0);
+        if (!g) return 'المجلد غير موجود';
+        seg = (seg || '').trim();
+        let err = groupSegmentError(seg);
+        if (err) return err;
+        let parts = groupPathParts(g.name);
+        let parentParts = parts.slice(0, -1);
+        let oldKey = groupPathKey(g.name);
+        let mine = {};
+        let proposals = [];
+        copyGroups.forEach(function(other) {
+            let k = groupPathKey(other.name);
+            if (k === oldKey || k.indexOf(oldKey + '/') === 0) {
+                mine[other.id] = true;
+                proposals.push(parentParts.concat([seg])
+                    .concat(groupPathParts(other.name).slice(parts.length)));
+            }
+        });
+        for (let i = 0; i < proposals.length; i++) {
+            let full = proposals[i].join('/');
+            if (full.length > GROUP_PATH_MAX) return 'المسار طويل جداً (الحد ' + GROUP_PATH_MAX + ' حرفاً)';
+            let key = full.toLowerCase();
+            for (let j = 0; j < copyGroups.length; j++) {
+                if (mine[copyGroups[j].id]) continue;
+                if (groupPathKey(copyGroups[j].name) === key) return 'يوجد مجلد بنفس الاسم';
+            }
+        }
+        return '';
+    }
+
+    function startRenameGroup(gid) {
+        let g = findGroup(gid);
+        if (!g) return;
+        groupRename = {gid: gid, value: groupPathParts(g.name).slice(-1)[0]};
+        renderGroupTree();
+        setGroupStatus('Enter يحفظ، Esc يلغي.');
+    }
+
+    function cancelGroupRename() {
+        groupRename = null;
+        setGroupStatus('');
+        renderGroupTree();
+    }
+
+    function commitGroupRename() {
+        if (!groupRename) return;
+        let g = findGroup(groupRename.gid);
+        if (!g) { cancelGroupRename(); return; }
+        let seg = (groupRename.value || '').trim();
+        let err = groupRenameError(seg);
+        if (err) { setGroupStatus(err); return; }
+        let parts = groupPathParts(g.name);
+        let oldKey = groupPathKey(g.name);
+        let base = parts.slice(0, -1).concat([seg]);
+        // A renamed folder renames every nested group under it, otherwise the
+        // child would point at a parent path that no longer exists.
+        copyGroups.forEach(function(other) {
+            let k = groupPathKey(other.name);
+            if (k === oldKey || k.indexOf(oldKey + '/') === 0) {
+                other.name = base.concat(groupPathParts(other.name).slice(parts.length)).join('/');
+            }
+        });
+        groupRename = null;
+        setGroupStatus('');
         renderGroupUI();
+        setGroupStatus('تم تغيير الاسم.');
+    }
+
+    function uniqueGroupName(base) {
+        let n = 1;
+        while (n < 500) {
+            let name = base + ' ' + n;
+            if (groupNameError(name, null) === '') return name;
+            n++;
+        }
+        return base + ' ' + Date.now();
+    }
+
+    // A new folder is created instantly under a placeholder name and opened for
+    // renaming: no dialog, no second sheet, nothing to confirm.
+    function startNewGroup() {
+        if (!selectedPaths.size) { setGroupStatus('حدّد عنصراً أولاً.'); return; }
+        let name = uniqueGroupName('مجلد');
+        let picked = Array.from(pickPaths);
+        copyGroups.forEach(function(g) {
+            g.paths = g.paths.filter(function(p) { return picked.indexOf(p) === -1; });
+        });
+        let g = {id: nextGroupId++, name: name, paths: picked};
+        copyGroups.push(g);
+        pickPaths = new Set();
+        groupRename = {gid: g.id, value: name};
+        renderGroupUI();
+        setGroupStatus('اكتب اسماً ثم Enter — أو Esc للإبقاء على «' + name + '».');
+    }
+
+    function startChildGroup(gid) {
+        let parent = findGroup(gid);
+        if (!parent) return;
+        let base = groupPathParts(parent.name);
+        if (base.length >= GROUP_MAX_DEPTH) {
+            setGroupStatus('أقصى تداخل ' + GROUP_MAX_DEPTH + ' مستويات.');
+            return;
+        }
+        let childName = '';
+        for (let n = 1; n < 500; n++) {
+            let candidate = base.concat(['فرع ' + n]).join('/');
+            if (groupNameError(candidate, null) === '') { childName = candidate; break; }
+        }
+        if (!childName) { setGroupStatus('تعذر إنشاء مجلد فرعي.'); return; }
+        let picked = Array.from(pickPaths);
+        copyGroups.forEach(function(g) {
+            g.paths = g.paths.filter(function(p) { return picked.indexOf(p) === -1; });
+        });
+        let child = {id: nextGroupId++, name: childName, paths: picked};
+        copyGroups.push(child);
+        pickPaths = new Set();
+        groupRename = {gid: child.id, value: groupPathParts(childName).slice(-1)[0]};
+        renderGroupUI();
+    }
+
+    function deleteGroup(gid) {
+        let g = findGroup(gid);
+        if (!g) return;
+        // Deleting a folder never unselects its files: it only puts them back
+        // in "بدون مجلد". A nested folder goes with its parent, because "A/B"
+        // without "A" would be a path with no folder of its own.
+        let key = groupPathKey(g.name);
+        copyGroups = copyGroups.filter(function(other) {
+            let k = groupPathKey(other.name);
+            return !(k === key || k.indexOf(key + '/') === 0);
+        });
+        renderGroupUI();
+        setGroupStatus('حُذف المجلد — عناصره بقيت محددة.');
+    }
+
+    function movePathToGroup(path, gid) {
+        if (!selectedPaths.has(path)) return;   // only real selections move
+        copyGroups.forEach(function(g) {
+            g.paths = g.paths.filter(function(p) { return p !== path; });
+        });
+        if (gid) {
+            let target = findGroup(gid);
+            if (!target) return;
+            if (target.paths.indexOf(path) === -1) target.paths.push(path);
+            setGroupStatus('نُقل العنصر إلى «' + target.name + '».');
+        } else {
+            setGroupStatus('أُخرج العنصر من مجلده — سيُنسخ مباشرة في الوجهة.');
+        }
+        renderGroupUI();
+    }
+
+    // Dropping one row on a folder moves it; the same drop on the "no folder"
+    // node takes it out of every group.
+    function clearGroupDropTargets() {
+        let rows = document.querySelectorAll('#groupTree .gt-row.is-drop');
+        for (let i = 0; i < rows.length; i++) rows[i].classList.remove('is-drop');
+    }
+
+    // ---- «تنظيم ذكي»: propose one folder per source parent, preview it ----
+    // The two old failure modes were selections that sit directly in the source
+    // root (no common parent) and selections from different parents (a single
+    // "common parent" dumped them all together). Here every item is mapped to
+    // its own parent path relative to the source root, so both work, and the
+    // proposal is shown before anything is written.
+    let smartPreview = null;   // [{name, paths, checked, existing}]
+
+    function sourceBasename() {
+        let parts = String(currentSourceRoot || '').split('/').filter(Boolean);
+        return parts.length ? parts[parts.length - 1] : 'المصدر';
+    }
+
+    function sourceRelativeParent(path) {
+        let base = String(currentSourceRoot || '').replace(/\\/+$/, '');
+        let p = String(path || '').replace(/\\/+$/, '');
+        let rel = p;
+        if (base && (p === base || p.indexOf(base + '/') === 0)) rel = p.slice(base.length);
+        let parts = rel.split('/').filter(Boolean);
+        parts.pop();   // the item's own name: we want the folder holding it
+        return parts;
+    }
+
+    // Every segment must be a legal FAT name and the whole path must fit the
+    // limits the server enforces; a value that cannot be fixed is dropped and
+    // the caller falls back to the source folder's own name.
+    function clampGroupSegments(parts) {
+        let segs = parts.map(function(s) {
+            s = String(s || '').trim();
+            for (let i = 0; i < GROUP_BAD_CHARS.length; i++) {
+                if (s.indexOf(GROUP_BAD_CHARS[i]) !== -1) s = s.split(GROUP_BAD_CHARS[i]).join('-');
+            }
+            s = s.replace(/[ .]+/g, ' ').trim();
+            if (s.length > GROUP_SEG_MAX) s = s.slice(0, GROUP_SEG_MAX).trim();
+            return s;
+        }).filter(function(s) { return s && s !== '.' && s !== '..'; });
+        if (segs.length > GROUP_MAX_DEPTH) segs = segs.slice(segs.length - GROUP_MAX_DEPTH);
+        while (segs.length > 1 && segs.join('/').length > GROUP_PATH_MAX) segs = segs.slice(1);
+        if (segs.length && segs.join('/').length > GROUP_PATH_MAX) {
+            segs[0] = segs[0].slice(0, GROUP_PATH_MAX);
+        }
+        return segs;
+    }
+
+    function buildSmartProposal() {
+        let buckets = {};
+        let order = [];
+        let existing = {};
+        copyGroups.forEach(function(g) { existing[groupPathKey(g.name)] = true; });
+        Array.from(selectedPaths.keys()).forEach(function(path) {
+            let segs = clampGroupSegments(sourceRelativeParent(path));
+            if (!segs.length) segs = clampGroupSegments([sourceBasename()]);
+            if (!segs.length) segs = ['المصدر'];
+            let name = segs.join('/');
+            let key = name.toLowerCase();
+            if (!buckets[key]) {
+                buckets[key] = {name: name, paths: [], checked: true, existing: !!existing[key]};
+                order.push(key);
+            }
+            buckets[key].paths.push(path);
+        });
+        return order.map(function(k) { return buckets[k]; });
+    }
+
+    function smartOrganizeGroups() {
+        if (!selectedPaths.size) { setGroupStatus('حدّد عنصراً أولاً.'); return; }
+        smartPreview = buildSmartProposal();
+        if (!smartPreview.length) { setGroupStatus('لم أجد مساراً مناسباً لهذه العناصر.'); return; }
+        setGroupStatus('');
+        renderSmartPreview();
+    }
+
+    function renderSmartPreview() {
+        let el = document.getElementById('smartPreview');
+        if (!el) return;
+        if (!smartPreview) { el.style.display = 'none'; el.innerHTML = ''; return; }
+        let chosen = smartPreview.filter(function(p) { return p.checked; }).length;
+        let rows = smartPreview.map(function(p, i) {
+            let meta = (p.paths.length === 1 ? 'عنصر واحد' : p.paths.length + ' عناصر') +
+                (p.existing ? ' · موجود' : ' · جديد');
+            return '<label class="smart-preview-row' + (p.checked ? '' : ' is-off') + '" data-row="' + i + '">' +
+                '<input type="checkbox" class="checkbox" data-idx="' + i + '" value="preview"' +
+                    (p.checked ? ' checked' : '') + '>' +
+                '<span class="smart-preview-name truncate-text" title="' + esc(p.name) + '">' +
+                    groupBreadcrumbHtml(p.name) + '</span>' +
+                '<span class="smart-preview-meta">' + esc(meta) + '</span>' +
+            '</label>';
+        }).join('');
+        el.innerHTML = '<div class="smart-preview-head"><span>مقترح التنظيم</span>' +
+                '<span class="num">' + smartPreview.length + '</span></div>' +
+            '<div class="smart-preview-list">' + rows + '</div>' +
+            '<div class="smart-preview-actions">' +
+                '<button type="button" class="btn btn-primary btn-sm" data-act="apply"' +
+                    (chosen ? '' : ' disabled') + '>' + (chosen ? 'تطبيق على ' + chosen + ' مجلد' : 'لا شيء محدد') + '</button>' +
+                '<button type="button" class="btn btn-outline btn-sm" data-act="cancel">إلغاء</button>' +
+            '</div>';
+        el.style.display = 'flex';
+    }
+
+    function toggleSmartPreview(index, checked) {
+        if (!smartPreview || !smartPreview[index]) return;
+        smartPreview[index].checked = checked;
+        let el = document.getElementById('smartPreview');
+        if (!el) return;
+        let row = el.querySelector('[data-row="' + index + '"]');
+        if (row) row.classList.toggle('is-off', !checked);
+        let n = smartPreview.filter(function(p) { return p.checked; }).length;
+        let apply = el.querySelector('button[data-act="apply"]');
+        if (apply) {
+            apply.disabled = !n;
+            apply.textContent = n ? 'تطبيق على ' + n + ' مجلد' : 'لا شيء محدد';
+        }
+    }
+
+    function cancelSmartPreview() {
+        smartPreview = null;
+        renderSmartPreview();
+        setGroupStatus('');
+    }
+
+    function applySmartPreview() {
+        if (!smartPreview) return;
+        let chosen = smartPreview.filter(function(p) { return p.checked; });
+        if (!chosen.length) { setGroupStatus('لم تختر شيئاً للتطبيق.'); return; }
+        // Whatever this proposal claims leaves its previous folder first: one
+        // item lives in exactly one group.
+        let moving = {};
+        chosen.forEach(function(p) {
+            p.paths.forEach(function(x) { moving[x] = true; });
+        });
+        copyGroups.forEach(function(g) {
+            g.paths = g.paths.filter(function(p) { return !moving[p]; });
+        });
+        chosen.forEach(function(p) {
+            let key = p.name.toLowerCase();
+            let target = null;
+            for (let i = 0; i < copyGroups.length; i++) {
+                if (groupPathKey(copyGroups[i].name) === key) { target = copyGroups[i]; break; }
+            }
+            if (!target) {
+                target = {id: nextGroupId++, name: p.name, paths: []};
+                copyGroups.push(target);
+            }
+            let set = new Set(target.paths);
+            p.paths.forEach(function(x) { set.add(x); });
+            target.paths = Array.from(set);
+        });
+        copyGroups = copyGroups.filter(function(g) { return g.paths.length > 0; });
+        smartPreview = null;
+        renderSmartPreview();
+        renderGroupUI();
+        setGroupStatus('تم التنظيم في ' + chosen.length + ' مجلد — راجع الشجرة قبل النسخ.');
     }
 
     function renderGroupPill() {
@@ -3330,76 +3879,14 @@ HTML_TEMPLATE = """
         pill.title = 'سيتم إنشاء «' + names + '» داخل الوجهة — اضغط للعرض والتعديل';
     }
 
-    function renderGroupSection() {
-        let cards = document.getElementById('groupCards');
-        if (!cards) return;
-        let empty = document.getElementById('groupEmptyHint');
-        if (empty) empty.style.display = copyGroups.length ? 'none' : 'block';
-        cards.innerHTML = copyGroups.map(function(g) {
-            let n = g.paths.length;
-            let meta = n === 0 ? 'فارغة — أشّر ثم أضف'
-                : (n === 1 ? 'عنصر واحد' : (n === 2 ? 'عنصران' : n + ' عناصر'));
-            let depth = groupPathParts(g.name).length;
-            if (depth > 1) meta += ' • داخل مجلد أب';
-            let addDisabled = pickPaths.size ? '' : ' disabled';
-            return '<div class="group-card" data-gid="' + g.id + '">' +
-                '<div class="group-card-main">' +
-                    '<svg class="icon" viewBox="0 0 24 24"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>' +
-                    '<div class="group-card-text">' +
-                        '<div class="group-card-name truncate-text" title="' + esc(g.name) + '">' + groupBreadcrumbHtml(g.name) + '</div>' +
-                        '<div class="group-card-meta">' + esc(meta) + '</div>' +
-                    '</div>' +
-                '</div>' +
-                '<div class="group-card-actions">' +
-                    '<button type="button" class="btn btn-outline btn-sm" data-act="add"' + addDisabled + '>إضافة المؤشَّر</button>' +
-                    '<button type="button" class="btn btn-outline btn-sm" data-act="child"' + (depth >= GROUP_MAX_DEPTH ? ' disabled title="أقصى تداخل 3 مستويات"' : '') + '><svg class="icon" aria-hidden="true"><use href="#ico-plus"></use></svg> فرع</button>' +
-                    '<button type="button" class="btn btn-outline btn-sm" data-act="rename">تعديل الاسم</button>' +
-                    '<button type="button" class="btn btn-outline btn-sm btn-ghost-danger" data-act="delete">حذف</button>' +
-                '</div>' +
-            '</div>';
-        }).join('');
-    }
-
-    // Drag & drop: a selected row can be dropped onto a group card to move it
-    // there. Touch devices keep the «ضم في مجلد أب» sheet as the Select path.
-    function clearGroupDropTargets() {
-        let cards = document.querySelectorAll('#groupCards .group-card');
-        for (let i = 0; i < cards.length; i++) cards[i].classList.remove('drop-target');
-    }
-
-    function movePathToGroup(path, gid) {
-        if (!selectedPaths.has(path)) return;   // only real selections move
-        let target = findGroup(gid);
-        if (!target) return;
-        copyGroups.forEach(function(g) {
-            g.paths = g.paths.filter(function(p) { return p !== path; });
-        });
-        if (target.paths.indexOf(path) === -1) target.paths.push(path);
-        renderGroupUI();
-    }
-
-    let groupCardsEl = document.getElementById('groupCards');
-    if (groupCardsEl) {
-        groupCardsEl.addEventListener('dragover', function(e) {
-            let card = (e.target && e.target.closest) ? e.target.closest('.group-card') : null;
-            if (!card) return;
-            e.preventDefault();
-            e.dataTransfer.dropEffect = 'move';
-            let cards = groupCardsEl.querySelectorAll('.group-card');
-            for (let i = 0; i < cards.length; i++) cards[i].classList.toggle('drop-target', cards[i] === card);
-        });
-        groupCardsEl.addEventListener('dragleave', function(e) {
-            let card = (e.target && e.target.closest) ? e.target.closest('.group-card') : null;
-            if (card) card.classList.remove('drop-target');
-        });
-        groupCardsEl.addEventListener('drop', function(e) {
-            let card = (e.target && e.target.closest) ? e.target.closest('.group-card') : null;
-            if (!card) return;
-            e.preventDefault();
-            clearGroupDropTargets();
-            let path = e.dataTransfer.getData('text/x-sdmp3-path');
-            if (path) movePathToGroup(path, Number(card.getAttribute('data-gid')));
-        });
+    function renderGroupUI() {
+        renderGroupPill();
+        scheduleUiSave();
+        let modal = document.getElementById('selectedModal');
+        if (!modal || modal.style.display !== 'flex') return;
+        renderGroupTree();
+        renderPickBar();
+        renderSelectedRows();
     }
 
     function renderPickBar() {
@@ -3408,7 +3895,7 @@ HTML_TEMPLATE = """
         let n = pickPaths.size;
         bar.style.display = n ? 'flex' : 'none';
         let count = document.getElementById('pickCount');
-        if (count) count.innerText = n;
+        if (count) count.textContent = String(n);
         let anyGrouped = false;
         pickPaths.forEach(function(p) { if (groupNameForPath(p)) anyGrouped = true; });
         let unassign = document.getElementById('unassignBtn');
@@ -3419,16 +3906,10 @@ HTML_TEMPLATE = """
             all.indeterminate = n > 0 && n < selectedPaths.size;
         }
         let hint = document.getElementById('pickAllHint');
-        if (hint) hint.textContent = copyGroups.length ? ('مجموعات: ' + copyGroups.length) : '';
-    }
-
-    function renderGroupUI() {
-        renderGroupPill();
-        let modal = document.getElementById('selectedModal');
-        if (!modal || modal.style.display !== 'flex') return;
-        renderGroupSection();
-        renderPickBar();
-        renderSelectedRows();
+        if (hint) {
+            hint.textContent = !copyGroups.length ? '' :
+                (n ? 'اضغط «ضم N» على صف أي مجلد' : 'المجلدات: ' + copyGroups.length);
+        }
     }
 
     function togglePick(path, checked) {
@@ -3442,21 +3923,21 @@ HTML_TEMPLATE = """
             }
         }
         renderPickBar();
-        renderGroupSection();
+        renderGroupTree();
     }
 
     function togglePickAll(checked) {
         pickPaths = checked ? new Set(selectedPaths.keys()) : new Set();
         renderSelectedRows();
         renderPickBar();
-        renderGroupSection();
+        renderGroupTree();
     }
 
     function clearPick() {
         pickPaths = new Set();
         renderSelectedRows();
         renderPickBar();
-        renderGroupSection();
+        renderGroupTree();
     }
 
     function addPickedToGroup(gid) {
@@ -3473,17 +3954,8 @@ HTML_TEMPLATE = """
         pickPaths.forEach(function(p) { set.add(p); });
         g.paths = Array.from(set);
         pickPaths = new Set();
-        hideAssignSheet();
         renderGroupUI();
-    }
-
-    function assignPickedToGroup(gid) {
-        if (!pickPaths.size) {
-            let hint = document.getElementById('assignHint');
-            if (hint) hint.textContent = 'أشّر العناصر من القائمة أولاً.';
-            return;
-        }
-        addPickedToGroup(gid);
+        setGroupStatus('أُضيفت العناصر إلى «' + g.name + '».');
     }
 
     function unassignPicked() {
@@ -3492,176 +3964,179 @@ HTML_TEMPLATE = """
             g.paths = g.paths.filter(function(p) { return !pickPaths.has(p); });
         });
         pickPaths = new Set();
-        hideAssignSheet();
         renderGroupUI();
+        setGroupStatus('أُخرجت العناصر من مجلداتها.');
     }
 
-    function renameGroup(gid) {
-        let g = findGroup(gid);
-        if (!g) return;
-        showInputModal('تعديل اسم المجلد', 'اسم المجلد الأب داخل الوجهة (استخدم / للتداخل):', g.name,
-            function(val) {
-                g.name = groupPathParts(val).join('/');
-                renderGroupUI();
-            },
-            function(val) { return groupNameError(val, gid); });
-    }
-
-    function deleteGroup(gid) {
-        copyGroups = copyGroups.filter(function(g) { return g.id !== gid; });
-        renderGroupUI();
-    }
-
-    function openAssignSheet() {
-        let sheet = document.getElementById('assignSheet');
-        if (!sheet) return;
-        let editor = document.getElementById('groupEditor');
-        if (editor) editor.style.display = 'none';
-        let wrap = document.getElementById('assignNewWrap');
-        if (wrap) wrap.style.display = 'block';
-        let hint = document.getElementById('assignHint');
-        if (hint) hint.textContent = pickPaths.size ? '' : 'أشّر العناصر التي تريد ضمّها، أو أنشئ المجلد أولاً.';
-        let count = document.getElementById('assignCount');
-        if (count) count.textContent = pickPaths.size;
-        renderAssignGroups();
-        sheet.style.display = 'flex';
-    }
-
-    function hideAssignSheet() {
-        let sheet = document.getElementById('assignSheet');
-        if (sheet) sheet.style.display = 'none';
-        cancelGroupEditor();
-    }
-
-    function renderAssignGroups() {
-        let el = document.getElementById('assignGroups');
-        if (!el) return;
-        if (!copyGroups.length) {
-            el.innerHTML = '<div class="group-empty-hint">لا توجد مجلدات بعد — اكتب اسماً جديداً بالأسفل.</div>';
-            return;
-        }
-        // Parents before their children: a plain path sort already does that
-        // ("A" < "A/B"), and it keeps the indentation readable.
-        let ordered = copyGroups.slice().sort(function(a, b) {
-            return groupPathKey(a.name).localeCompare(groupPathKey(b.name));
+    // One delegated listener for the tree: no group name or path is ever
+    // interpolated into an inline onclick.
+    let groupTreeEl = document.getElementById('groupTree');
+    if (groupTreeEl) {
+        groupTreeEl.addEventListener('click', function(e) {
+            let hit = e.target.closest ? e.target.closest('[data-act]') : null;
+            if (!hit) return;
+            let act = hit.getAttribute('data-act');
+            if (act === 'toggle') { toggleGroupNode(hit.getAttribute('data-key') || ''); return; }
+            let row = hit.closest('.gt-row');
+            let gid = row ? Number(row.getAttribute('data-gid')) : 0;
+            if (act === 'add') addPickedToGroup(gid);
+            else if (act === 'rename') startRenameGroup(gid);
+            else if (act === 'child') startChildGroup(gid);
+            else if (act === 'delete') deleteGroup(gid);
+            else if (act === 'rename-save') commitGroupRename();
+            else if (act === 'rename-cancel') cancelGroupRename();
+            else if (act === 'unlink') {
+                let path = hit.getAttribute('data-path');
+                if (path) movePathToGroup(path, 0);
+            }
         });
-        el.innerHTML = ordered.map(function(g) {
-            let depth = groupPathParts(g.name).length;
-            let indent = depth > 1 ? ' style="margin-inline-start:' + ((depth - 1) * 14) + 'px;"' : '';
-            let label = depth > 1 ? groupPathParts(g.name)[depth - 1] : g.name;
-            return '<button type="button" class="assign-group" data-gid="' + g.id + '"' + indent +
-                ' title="' + esc(g.name) + '">' +
-                '<span class="truncate-text">' + esc(label) + '</span>' +
-                '<span class="assign-group-count">' + g.paths.length + '</span>' +
-            '</button>';
-        }).join('');
-    }
-
-    function startNewGroup() {
-        openAssignSheet();
-        beginGroupEditor();
-    }
-
-    // "＋ فرع" on a group card: nest a new group inside it without typing the
-    // parent name again (the editor opens with "parent/" already there).
-    function startChildGroup(gid) {
-        let parent = null;
-        for (let i = 0; i < copyGroups.length; i++) {
-            if (copyGroups[i].id === gid) parent = copyGroups[i];
-        }
-        if (!parent) return;
-        openAssignSheet();
-        let editor = document.getElementById('groupEditor');
-        let wrap = document.getElementById('assignNewWrap');
-        if (!editor) return;
-        if (wrap) wrap.style.display = 'none';
-        editor.style.display = 'flex';
-        let input = document.getElementById('groupNameInput');
-        input.value = parent.name + '/';
-        input.focus();
-        try { input.setSelectionRange(input.value.length, input.value.length); } catch (_e) {}
-        onGroupNameInput(input.value);
-    }
-
-    function beginGroupEditor() {
-        let editor = document.getElementById('groupEditor');
-        if (!editor) return;
-        let wrap = document.getElementById('assignNewWrap');
-        if (wrap) wrap.style.display = 'none';
-        editor.style.display = 'flex';
-        let input = document.getElementById('groupNameInput');
-        input.value = 'مجموعة ' + (copyGroups.length + 1);
-        input.focus();
-        input.select();
-        onGroupNameInput(input.value);
-    }
-
-    function onGroupNameInput(val) {
-        let err = groupNameError(val, null);
-        let errEl = document.getElementById('groupNameError');
-        // Do not scold an empty field before the user has typed anything.
-        if (errEl) errEl.textContent = (val || '').trim() ? (err || '') : '';
-        let save = document.getElementById('groupSaveBtn');
-        if (save) save.disabled = !!err;
-    }
-
-    function onGroupNameKey(e) {
-        if (e.key === 'Enter') { e.preventDefault(); saveGroupEditor(); }
-        else if (e.key === 'Escape') { e.preventDefault(); cancelGroupEditor(); }
-    }
-
-    function cancelGroupEditor() {
-        let editor = document.getElementById('groupEditor');
-        if (editor) editor.style.display = 'none';
-        let wrap = document.getElementById('assignNewWrap');
-        if (wrap) wrap.style.display = 'block';
-    }
-
-    function saveGroupEditor() {
-        let input = document.getElementById('groupNameInput');
-        let name = (input.value || '').trim();
-        let err = groupNameError(name, null);
-        if (err) {
-            let errEl = document.getElementById('groupNameError');
-            if (errEl) errEl.textContent = err;
-            input.focus();
-            return;
-        }
-        // Store the canonical breadcrumb: "A / B // C" is saved as "A/B/C", so
-        // the card, the pill and the server all see the same path.
-        name = groupPathParts(name).join('/');
-        // Whatever is checked right now comes into the new group with it, and
-        // leaves any other group first: one item, one parent folder.
-        copyGroups.forEach(function(other) {
-            other.paths = other.paths.filter(function(p) { return !pickPaths.has(p); });
+        groupTreeEl.addEventListener('dragover', function(e) {
+            let row = e.target.closest ? e.target.closest('.gt-row[data-drop]') : null;
+            if (!row) return;
+            e.preventDefault();
+            if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+            let rows = groupTreeEl.querySelectorAll('.gt-row');
+            for (let i = 0; i < rows.length; i++) rows[i].classList.toggle('is-drop', rows[i] === row);
         });
-        copyGroups.push({ id: nextGroupId++, name: name, paths: Array.from(pickPaths) });
-        pickPaths = new Set();
-        hideAssignSheet();
-        renderGroupUI();
+        groupTreeEl.addEventListener('dragleave', function(e) {
+            let row = e.target.closest ? e.target.closest('.gt-row[data-drop]') : null;
+            if (row) row.classList.remove('is-drop');
+        });
+        groupTreeEl.addEventListener('drop', function(e) {
+            let row = e.target.closest ? e.target.closest('.gt-row[data-drop]') : null;
+            if (!row) return;
+            e.preventDefault();
+            clearGroupDropTargets();
+            let path = e.dataTransfer ? e.dataTransfer.getData('text/x-sdmp3-path') : '';
+            if (path) movePathToGroup(path, Number(row.getAttribute('data-gid')) || 0);
+        });
+        // Items inside the tree are draggable too, so moving one between two
+        // folders never requires going back to the list.
+        groupTreeEl.addEventListener('dragstart', function(e) {
+            let row = e.target.closest ? e.target.closest('.gt-path[data-path]') : null;
+            if (!row || !e.dataTransfer) return;
+            e.dataTransfer.setData('text/x-sdmp3-path', row.getAttribute('data-path'));
+            e.dataTransfer.effectAllowed = 'move';
+            row.classList.add('is-dragging');
+        });
+        groupTreeEl.addEventListener('dragend', function(e) {
+            let row = e.target.closest ? e.target.closest('.gt-path') : null;
+            if (row) row.classList.remove('is-dragging');
+            clearGroupDropTargets();
+        });
     }
 
-    // One delegated listener for the group cards and one for the assign sheet:
-    // no name or path is ever embedded in an inline onclick.
-    document.getElementById('groupCards').addEventListener('click', function(e) {
-        let btn = e.target.closest ? e.target.closest('button[data-act]') : null;
-        if (!btn) return;
-        let card = btn.closest('.group-card');
-        if (!card) return;
-        let gid = Number(card.getAttribute('data-gid'));
-        let act = btn.getAttribute('data-act');
-        if (act === 'add') addPickedToGroup(gid);
-        else if (act === 'child') startChildGroup(gid);
-        else if (act === 'rename') renameGroup(gid);
-        else if (act === 'delete') deleteGroup(gid);
-    });
-    document.getElementById('assignGroups').addEventListener('click', function(e) {
-        let btn = e.target.closest ? e.target.closest('.assign-group') : null;
-        if (!btn) return;
-        assignPickedToGroup(Number(btn.getAttribute('data-gid')));
-    });
+    let smartPreviewEl = document.getElementById('smartPreview');
+    if (smartPreviewEl) {
+        smartPreviewEl.addEventListener('change', function(e) {
+            let box = e.target.closest ? e.target.closest('input[data-idx]') : null;
+            if (!box) return;
+            toggleSmartPreview(Number(box.getAttribute('data-idx')), box.checked);
+        });
+        smartPreviewEl.addEventListener('click', function(e) {
+            let btn = e.target.closest ? e.target.closest('button[data-act]') : null;
+            if (!btn) return;
+            if (btn.getAttribute('data-act') === 'apply') applySmartPreview();
+            else if (btn.getAttribute('data-act') === 'cancel') cancelSmartPreview();
+        });
+    }
 
-    
+    // ---- persistence: the cart survives a refresh ------------------------
+    // Paths + groups + the search folder live in localStorage. They are written
+    // on a 300ms debounce (checking ten boxes must not ten times serialise) and
+    // verified against the server on the next load: a card that was pulled out
+    // while the tab was closed must not come back as a ghost selection.
+    const UI_STATE_KEY = 'sdmp3_ui_state_v1';
+    const UI_STATE_MAX_PATHS = 3000;
+    let uiSaveTimer = null;
+    let uiStateReady = false;
+
+    function saveUiStateNow() {
+        uiSaveTimer = null;
+        if (!uiStateReady) return;
+        try {
+            let paths = [];
+            selectedPaths.forEach(function(isDir, p) { paths.push([p, isDir ? 1 : 0]); });
+            if (paths.length > UI_STATE_MAX_PATHS) return;   // too much for localStorage
+            localStorage.setItem(UI_STATE_KEY, JSON.stringify({
+                v: 1,
+                source: currentSourceRoot,
+                search: searchScopePath,
+                paths: paths,
+                excludes: Array.from(excludedPaths),
+                groups: copyGroups.map(function(g) {
+                    return {name: g.name, paths: g.paths.slice()};
+                })
+            }));
+        } catch (_e) {}
+    }
+
+    function scheduleUiSave() {
+        if (!uiStateReady) return;
+        if (uiSaveTimer) clearTimeout(uiSaveTimer);
+        uiSaveTimer = setTimeout(saveUiStateNow, 300);
+    }
+
+    function dropMissingPath(path) {
+        selectedPaths.delete(path);
+        excludedPaths.delete(path);
+        pickPaths.delete(path);
+        delete selectedSizes[path];
+        copyGroups.forEach(function(g) {
+            g.paths = g.paths.filter(function(p) { return p !== path; });
+        });
+        copyGroups = copyGroups.filter(function(g) { return g.paths.length > 0; });
+    }
+
+    function pruneMissingSelection() {
+        let paths = Array.from(selectedPaths.keys());
+        if (!paths.length) return;
+        fetch('/api/sizes', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({paths: paths, excludes: Array.from(excludedPaths)})
+        }).then(function(r) { return r.json(); }).then(function(data) {
+            let missing = data.missing || [];
+            if (!missing.length) return;
+            missing.forEach(dropMissingPath);
+            refreshCheckboxStates();
+            setGroupStatus('أُزيل ' + missing.length + ' عنصراً لأنها لم تعد موجودة.');
+        }).catch(function() {});
+    }
+
+    function restoreUiState() {
+        let raw = null;
+        try { raw = localStorage.getItem(UI_STATE_KEY); } catch (_e) {}
+        let state = null;
+        if (raw) { try { state = JSON.parse(raw); } catch (_e) { state = null; } }
+        uiStateReady = true;
+        if (!state || state.v !== 1) return;
+
+        (Array.isArray(state.paths) ? state.paths : []).slice(0, UI_STATE_MAX_PATHS)
+            .forEach(function(pair) {
+                if (!Array.isArray(pair) || typeof pair[0] !== 'string') return;
+                if (pair[0].charAt(0) !== '/') return;
+                selectedPaths.set(pair[0], !!pair[1]);
+            });
+        (Array.isArray(state.excludes) ? state.excludes : []).forEach(function(p) {
+            if (typeof p === 'string' && p.charAt(0) === '/') excludedPaths.add(p);
+        });
+        if (Array.isArray(state.groups)) {
+            state.groups.forEach(function(saved) {
+                if (!saved || typeof saved.name !== 'string') return;
+                let name = groupPathParts(saved.name).join('/');
+                if (!name || groupNameError(name, null)) return;
+                let paths = (Array.isArray(saved.paths) ? saved.paths : [])
+                    .filter(function(p) { return selectedPaths.has(p); });
+                if (!paths.length) return;
+                copyGroups.push({id: nextGroupId++, name: name, paths: paths});
+            });
+        }
+        if (typeof state.source === 'string' && state.source) updateSourceRoot(state.source);
+        if (typeof state.search === 'string' && state.search) setSearchScope(state.search, false);
+        refreshCheckboxStates();
+        if (selectedPaths.size) pruneMissingSelection();
+    }
+
     const iconDir = `<svg class="icon" style="min-width:20px; color:var(--accent)" viewBox="0 0 24 24"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>`;
     const iconFile = `<svg class="icon" style="min-width:20px; color:var(--text-muted)" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline></svg>`;
     const iconEdit = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path></svg>`;
@@ -3719,6 +4194,12 @@ HTML_TEMPLATE = """
         }
         loadSubFolders(currentSourceRoot, document.getElementById('treeContainer'));
         generateRandomSpoofDate();
+        updateRouteSummary();
+        // Everything the last visit left behind: the selection, the groups, the
+        // search folder. Restoring after the tree has been requested keeps the
+        // checkboxes in sync with the rows that arrive a moment later.
+        restoreUiState();
+        if (!searchScopePath) setSearchScope(currentSourceRoot, false);
         checkTransferStatus(); 
         checkCacheStatus(currentSourceRoot);
         loadSearchHistory();
@@ -3732,6 +4213,36 @@ HTML_TEMPLATE = """
         syncStorageCards('source', path);
         loadSubFolders(path, document.getElementById('treeContainer'));
         checkCacheStatus(path);
+        updateRouteSummary();
+        scheduleUiSave();
+    }
+
+    // The route block folds away, so the folded line must still say both paths:
+    // the page is about a source and a destination, and hiding them would turn
+    // one tap saved into one mystery kept.
+    function updateRouteSummary() {
+        let srcEl = document.getElementById('routeSourceSummary');
+        let dstEl = document.getElementById('routeDestSummary');
+        let srcBox = document.getElementById('custom_source_path');
+        let dstBox = document.getElementById('custom_dest_path');
+        let src = (srcBox && srcBox.value) || currentSourceRoot || '';
+        let dst = (dstBox && dstBox.value) || '';
+        if (srcEl) { srcEl.textContent = src || '…'; srcEl.title = src || ''; }
+        if (dstEl) {
+            dstEl.textContent = dst || 'لم تُحدَّد';
+            dstEl.title = dst || '';
+            dstEl.classList.toggle('is-empty', !dst);
+        }
+    }
+
+    // Open/closed survives a reload: whoever folded the route away did it on
+    // purpose, and reopening the page must not undo that.
+    let routeDetailsEl = document.getElementById('routeDetails');
+    if (routeDetailsEl) {
+        try { routeDetailsEl.open = localStorage.getItem('sdmp3_route_open') === '1'; } catch (_e) {}
+        routeDetailsEl.addEventListener('toggle', function() {
+            try { localStorage.setItem('sdmp3_route_open', routeDetailsEl.open ? '1' : '0'); } catch (_e) {}
+        });
     }
 
     // ---- storage cards (internal / SD card / USB OTG) -------------------
@@ -3851,6 +4362,8 @@ HTML_TEMPLATE = """
             localStorage.setItem('joc_last_dest', path);
             syncStorageCards('dest', path);
             checkDiskSpace(path);
+            updateRouteSummary();
+            scheduleUiSave();
         }
     }
 
@@ -3875,10 +4388,17 @@ HTML_TEMPLATE = """
 
     function openPathBrowser(mode) {
         pickerMode = mode;
-        document.getElementById('pathBrowserTitle').innerText = (mode === 'dest') ? 'اختر مجلد الوجهة' : 'اختر مجلد المصدر';
-        let inputId = (mode === 'dest') ? 'custom_dest_path' : 'custom_source_path';
-        let val = document.getElementById(inputId).value;
-        loadDestBrowser(val ? val : (mode === 'dest' ? '/sdcard' : currentSourceRoot));
+        let titles = {dest: 'اختر مجلد الوجهة', source: 'اختر مجلد المصدر', search: 'اختر مجلد البحث'};
+        document.getElementById('pathBrowserTitle').innerText = titles[mode] || titles.dest;
+        let start = '';
+        if (mode === 'search') {
+            start = searchScopePath;
+        } else {
+            let inputId = (mode === 'dest') ? 'custom_dest_path' : 'custom_source_path';
+            let val = document.getElementById(inputId).value;
+            start = val ? val : (mode === 'dest' ? '/sdcard' : currentSourceRoot);
+        }
+        loadDestBrowser(start || '/sdcard');
         document.getElementById('destBrowserModal').style.display = 'flex';
     }
 
@@ -3985,6 +4505,8 @@ HTML_TEMPLATE = """
         let p = document.getElementById('currentDestView').value;
         if (pickerMode === 'source') {
             updateSourceRoot(p);
+        } else if (pickerMode === 'search') {
+            setSearchScope(p, true);
         } else {
             updateDestPath(p);
         }
@@ -4284,6 +4806,132 @@ HTML_TEMPLATE = """
 
     let searchDebounceTimer = null;
     let searchRequestToken = 0;
+    // ---- search scope: the folder the search runs in ---------------------
+    // The old search silently walked currentSourceRoot, so there was no way to
+    // narrow it and no hint about where it looked. The scope is its own value
+    // (its own localStorage key) and its entries are listed here, so a result
+    // can be selected without opening another dialog.
+    const SCOPE_FILES_STEP = 300;
+    let searchScopePath = localStorage.getItem('sdmp3_search_scope') || '';
+    let scopeItems = [];
+    let scopeShown = SCOPE_FILES_STEP;
+
+    function setSearchScope(path, remember) {
+        let p = String(path || '').trim();
+        if (p.length > 1) p = p.replace(/\\/+$/, '');
+        if (!p) p = '/sdcard';
+        searchScopePath = p;
+        if (remember) { try { localStorage.setItem('sdmp3_search_scope', p); } catch (_e) {} }
+        let label = document.getElementById('searchScopePath');
+        if (label) { label.textContent = p; label.title = p; }
+        loadSearchScope();
+        scheduleUiSave();
+    }
+
+    function searchScopeUp() {
+        let parts = String(searchScopePath || '').split('/').filter(function(x) { return x; });
+        parts.pop();
+        setSearchScope('/' + parts.join('/'), true);
+    }
+
+    function enterSearchSubfolder(sub) {
+        let sel = document.getElementById('searchSubfolder');
+        if (sel) sel.value = '';
+        if (!sub) return;
+        let base = String(searchScopePath || '/sdcard').replace(/\\/+$/, '');
+        setSearchScope(base + '/' + sub, true);
+    }
+
+    // One request fills both the subfolder menu and the first page of entries:
+    // /api/items already returns {name, path, is_dir, size} from a single scandir.
+    function loadSearchScope() {
+        let path = searchScopePath || '/sdcard';
+        let label = document.getElementById('searchScopePath');
+        if (label) { label.textContent = path; label.title = path; }
+        let box = document.getElementById('searchScopeItems');
+        if (box) box.innerHTML = '<div class="scope-empty">جاري التحميل…</div>';
+        fetch('/api/items?path=' + encodeURIComponent(path) + '&sort=name')
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                scopeItems = data.items || [];
+                scopeShown = SCOPE_FILES_STEP;
+                renderSearchScopeItems();
+                renderSearchSubfolders();
+            })
+            .catch(function() {
+                scopeItems = [];
+                renderSearchScopeItems();
+            });
+    }
+
+    // The <select> is only rebuilt when a folder is loaded, never on a keystroke
+    // or a checkbox toggle: rebuilding it mid-interaction closes the menu.
+    function renderSearchSubfolders() {
+        let sel = document.getElementById('searchSubfolder');
+        if (!sel) return;
+        let dirs = scopeItems.filter(function(i) { return i.is_dir; });
+        let html = '<option value="">مجلد فرعي…</option>';
+        dirs.slice(0, 200).forEach(function(d) {
+            html += '<option value="' + esc(d.name) + '">' + esc(d.name) + '</option>';
+        });
+        sel.innerHTML = html;
+    }
+
+    function renderSearchScopeItems() {
+        let box = document.getElementById('searchScopeItems');
+        let more = document.getElementById('searchScopeMore');
+        if (!box) return;
+        if (!scopeItems.length) {
+            box.innerHTML = '<div class="scope-empty">لا توجد عناصر في هذا المجلد.</div>';
+            if (more) more.style.display = 'none';
+            return;
+        }
+        let shown = scopeItems.slice(0, scopeShown);
+        box.innerHTML = shown.map(function(item) {
+            let size = item.is_dir ? '' : '<span class="scope-item-size num">' + esc(formatBytes(item.size || 0)) + '</span>';
+            return '<div class="scope-item">' +
+                '<input type="checkbox" class="checkbox" value="' + esc(item.path) + '"' +
+                    (isPathSelected(item.path) ? ' checked' : '') +
+                    ' onchange="toggleScopeItem(this, ' + (item.is_dir ? 'true' : 'false') + ')" aria-label="تحديد">' +
+                (item.is_dir ? iconDir : iconFile) +
+                '<span class="scope-item-name truncate-text" data-act="' + (item.is_dir ? 'open' : 'pick') +
+                    '" data-path="' + esc(item.path) + '" title="' + esc(item.path) + '">' + esc(item.name) + '</span>' +
+                size +
+            '</div>';
+        }).join('');
+        if (more) {
+            let rest = scopeItems.length - scopeShown;
+            more.style.display = rest > 0 ? 'inline-flex' : 'none';
+            more.textContent = 'عرض المزيد (' + Math.max(rest, 0) + ')';
+        }
+    }
+
+    function loadMoreScopeItems() {
+        scopeShown += SCOPE_FILES_STEP;
+        renderSearchScopeItems();
+    }
+
+    function toggleScopeItem(cb, isDir) {
+        if (cb.checked) includePath(cb.value, isDir);
+        else excludePath(cb.value);
+        refreshCheckboxStates();
+    }
+
+    let scopeItemsEl = document.getElementById('searchScopeItems');
+    if (scopeItemsEl) {
+        scopeItemsEl.addEventListener('click', function(e) {
+            let hit = e.target.closest ? e.target.closest('[data-act]') : null;
+            if (!hit) return;
+            let path = hit.getAttribute('data-path');
+            if (!path) return;
+            if (hit.getAttribute('data-act') === 'open') { setSearchScope(path, true); return; }
+            // A file has nothing to open, so its name toggles its checkbox.
+            let row = hit.closest('.scope-item');
+            let box = row ? row.querySelector('input[type="checkbox"]') : null;
+            if (box) { box.checked = !box.checked; toggleScopeItem(box, false); }
+        });
+    }
+
     function searchDeep(committed) {
         let q = document.getElementById('searchInput').value.trim();
         let foldersOnly = document.getElementById('foldersOnlyCheck').checked; 
@@ -4292,7 +4940,7 @@ HTML_TEMPLATE = """
         resBox.style.display = 'block'; resBox.innerHTML = '<div style="padding:10px;color:var(--text-muted);">جاري البحث السريع...</div>';
 
         let myToken = ++searchRequestToken;
-        fetch('/api/search?q=' + encodeURIComponent(q) + '&folders_only=' + foldersOnly + '&root=' + encodeURIComponent(currentSourceRoot) + (committed ? '&remember=1' : ''))
+        fetch('/api/search?q=' + encodeURIComponent(q) + '&folders_only=' + foldersOnly + '&root=' + encodeURIComponent(searchScopePath || currentSourceRoot) + (committed ? '&remember=1' : ''))
             .then(r=>r.json()).then(data=>{
             if (myToken !== searchRequestToken) return; 
             document.getElementById('searchSpeedBadge').style.display = data.from_cache ? 'inline-flex' : 'none';
@@ -4641,7 +5289,6 @@ HTML_TEMPLATE = """
     async function openSelectedModal() {
         let modal = document.getElementById('selectedModal');
         modal.style.display = 'flex';
-        hideAssignSheet();
 
         if (selectedPaths.size === 0) {
             document.getElementById('selectedList').innerHTML = '<div style="text-align:center; padding:40px; color:var(--text-muted);">لا يوجد عناصر محددة</div>';
@@ -4753,13 +5400,13 @@ HTML_TEMPLATE = """
             if (gname) {
                 let chip = document.createElement('span');
                 chip.className = 'group-chip';
-                chip.textContent = 'داخل: ' + gname;
+                chip.textContent = 'داخل: ' + groupPathParts(gname).join(' › ');
                 chip.title = 'سيُنسخ داخل مجلد «' + gname + '»';
                 main.appendChild(chip);
             } else if (copyGroups.length) {
                 let chip = document.createElement('span');
                 chip.className = 'group-chip none';
-                chip.textContent = 'بدون مجموعة — سيُنسخ مباشرة في الوجهة';
+                chip.textContent = 'بدون مجلد — سيُنسخ مباشرة في الوجهة';
                 main.appendChild(chip);
             }
 
@@ -4833,7 +5480,7 @@ HTML_TEMPLATE = """
     function closeSelectedModal(e) {
         if (e.target.id !== 'selectedModal') return;
         e.target.style.display = 'none';
-        hideAssignSheet();
+        cancelSmartPreview();
     }
 
     function startTransfer(confirmMerge) {
@@ -6462,15 +7109,23 @@ def get_items_sizes():
     for path in sorted(paths, key=len):
         if not any(path == r or path.startswith(r.rstrip('/') + '/') for r in roots):
             roots.append(path)
+    root_exists = {}
     root_bytes = {}
     for root in roots:
-        root_bytes[root] = get_dir_size(root, excludes) if os.path.exists(root) else 0
+        # One existence test per root, the same os.path.exists the walk would do:
+        # `missing` is how the page drops a selection whose card was pulled out
+        # while the tab was closed, without a second stat per item.
+        root_exists[root] = os.path.exists(root)
+        root_bytes[root] = get_dir_size(root, excludes) if root_exists[root] else 0
     sizes = {}
+    missing = []
     for path in paths:
         owner = next(r for r in roots if path == r or path.startswith(r.rstrip('/') + '/'))
         total = root_bytes[owner]
         sizes[path] = {'bytes': total, 'formatted': format_size(total), 'owner': owner}
-    return jsonify({'sizes': sizes})
+        if not root_exists[owner]:
+            missing.append(path)
+    return jsonify({'sizes': sizes, 'missing': missing})
 
 
 @app.route('/api/size', methods=['POST'])

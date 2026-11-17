@@ -45,8 +45,13 @@ LATIN_RANGE = (
     'U+2212, U+2215, U+FEFF, U+FFFD'
 )
 
-# Every family below ships one variable woff2 per subset covering this range.
+# Every variable family below ships one woff2 per subset covering this range.
 FONT_WEIGHT_RANGE = '400 700'
+
+# A family may instead ship *separate* files per weight (`weights` in its dict).
+# IBM Plex Sans Arabic is only published as static weights, so it needs one file
+# per weight/subset; the four are exactly the weights the stylesheet uses.
+FONT_WEIGHTS = (400, 500, 600, 700)
 
 FONT_DIR = 'static/fonts'
 FONT_URL_PREFIX = '/static/fonts'
@@ -74,6 +79,9 @@ FONTS = [
      'desc': 'نسخ تقليدي للقراءة'},
     {'id': 'rubik', 'family': 'Rubik', 'name': 'روبيك',
      'desc': 'هندسي ناعم للعربية واللاتينية'},
+    {'id': 'ibm-plex-sans-arabic', 'family': 'IBM Plex Sans Arabic',
+     'name': 'IBM بلكس عربي', 'desc': 'هندسي هادئ بأربعة أوزان',
+     'weights': FONT_WEIGHTS},
 ]
 
 # Size presets multiply every font-size in the stylesheet (they are all written
@@ -109,11 +117,35 @@ def get_font(font_id):
     return _FONT_INDEX[font_id]
 
 
-def font_file(font_id, subset):
-    """Relative path of a font file inside FONT_DIR ('' for `system`)."""
-    if font_id not in _FONT_INDEX or subset not in ('arabic', 'latin'):
+def font_file(font_id, subset, weight=None):
+    """Relative path of a font file inside FONT_DIR ('' for `system`).
+
+    A static-weight family carries the weight in the name
+    (``ibm-plex-sans-arabic-400-arabic.woff2``) because those families publish
+    one file per weight; a variable family keeps the older two-part name.
+    """
+    font = _FONT_INDEX.get(font_id)
+    if not font or subset not in ('arabic', 'latin'):
         return ''
-    return '{}-{}.woff2'.format(font_id, subset)
+    weights = font.get('weights')
+    if not weights:
+        return '{}-{}.woff2'.format(font_id, subset)
+    if weight is None:
+        return ''
+    return '{}-{}-{}.woff2'.format(font_id, int(weight), subset)
+
+
+def font_assets(font):
+    """[(weight, subset, filename)] — every file this font must ship.
+
+    `weight` is None for a variable family (one file per subset) and the actual
+    number for a static-weight family (one file per weight *and* subset).
+    """
+    assets = []
+    for weight in (font.get('weights') or [None]):
+        for subset in ('arabic', 'latin'):
+            assets.append((weight, subset, font_file(font['id'], subset, weight)))
+    return assets
 
 
 def font_stack(font_id):
@@ -129,24 +161,37 @@ def font_scale(size_id):
     return float((_SIZE_INDEX.get(size_id) or _SIZE_INDEX[DEFAULT_FONT_SIZE])['scale'])
 
 
+def font_asset_names(font_id):
+    """Every woff2 file this font must ship, in declaration order."""
+    font = get_font(font_id)
+    if font['id'] == DEFAULT_FONT:
+        return []
+    return [name for _weight, _subset, name in font_assets(font)]
+
+
 def font_face_css(version=''):
     """Every `@font-face` rule, pointing at the self-hosted files.
 
-    The rules are inert until the family is actually used, so shipping all ten
-    costs nothing on first paint. `version` is appended as a query string: the
-    files are cached hard, and a new release must not serve a stale font.
+    The rules are inert until the family is actually used, so shipping eleven
+    families costs nothing on first paint. `version` is appended as a query
+    string: the files are cached hard, and a new release must not serve a stale
+    font.
     """
     suffix = ('?v=' + str(version)) if version else ''
     rules = []
     for font in FONTS:
-        for subset, unicode_range in (('arabic', ARABIC_RANGE), ('latin', LATIN_RANGE)):
+        for weight, subset, filename in font_assets(font):
+            unicode_range = ARABIC_RANGE if subset == 'arabic' else LATIN_RANGE
+            # A static family declares the one weight its file contains; a
+            # variable family declares the whole supported range.
+            weight_css = FONT_WEIGHT_RANGE if weight is None else str(int(weight))
             # %-formatting, not str.format: the rule is full of CSS braces.
             rules.append(
                 "@font-face{font-family:'%s';font-style:normal;font-weight:%s;"
                 "font-display:swap;src:url(%s/%s%s) format('woff2');"
                 "unicode-range:%s;}" % (
-                    font['family'], FONT_WEIGHT_RANGE, FONT_URL_PREFIX,
-                    font_file(font['id'], subset), suffix, unicode_range)
+                    font['family'], weight_css, FONT_URL_PREFIX,
+                    filename, suffix, unicode_range)
             )
     return '\n'.join(rules)
 
@@ -162,10 +207,10 @@ def catalog():
 def missing_files(root=''):
     """Subset files that are not on disk (used by the self-test and doctor)."""
     missing = []
+    base = root or os.path.dirname(os.path.abspath(__file__))
     for font in FONTS:
-        for subset in ('arabic', 'latin'):
-            path = os.path.join(root or os.path.dirname(os.path.abspath(__file__)),
-                                FONT_DIR, font_file(font['id'], subset))
+        for _weight, _subset, filename in font_assets(font):
+            path = os.path.join(base, FONT_DIR, filename)
             if not os.path.isfile(path) or os.path.getsize(path) < 1000:
                 missing.append(path)
     return missing
@@ -174,11 +219,12 @@ def missing_files(root=''):
 if __name__ == '__main__':  # pragma: no cover - manual report
     ids = font_ids()
     assert len(ids) == len(set(ids)), 'duplicate font id'
-    assert len(FONTS) == 10, 'the settings grid expects exactly 10 Google fonts'
+    assert len(FONTS) == 11, 'the settings grid expects exactly 11 Google fonts'
     assert DEFAULT_FONT not in [f['id'] for f in FONTS]
     assert DEFAULT_FONT_SIZE in font_size_ids()
     for f in FONTS:
         assert f['family'] and f['name'] and f['desc'], f
+        assert all(int(w) in FONT_WEIGHTS for w in (f.get('weights') or [])), f
     scales = [s['scale'] for s in FONT_SIZES]
     assert scales == sorted(scales), 'size presets must stay ordered'
     assert 0.8 <= scales[0] and scales[-1] <= 1.3, scales
@@ -187,19 +233,36 @@ if __name__ == '__main__':  # pragma: no cover - manual report
     assert font_stack('cairo').startswith("'Cairo', ")
     assert font_stack('nope') == SYSTEM_STACK
     assert font_scale('nope') == 1.0 and font_scale('large') == 1.10
-    css = font_face_css('1.7.0')
-    assert css.count('@font-face') == len(FONTS) * 2, css.count('@font-face')
-    assert '/static/fonts/cairo-arabic.woff2?v=1.7.0' in css
+    # Variable family: one file per subset, one weight range in the rule.
+    assert font_file('cairo', 'arabic') == 'cairo-arabic.woff2'
+    assert font_file('cairo', 'arabic', 400) == 'cairo-arabic.woff2'
+    # Static family: the weight is part of the name and is required.
+    assert font_file('ibm-plex-sans-arabic', 'arabic', 600) == \
+        'ibm-plex-sans-arabic-600-arabic.woff2'
+    assert font_file('ibm-plex-sans-arabic', 'arabic') == ''
+    assert len(font_assets(get_font('ibm-plex-sans-arabic'))) == len(FONT_WEIGHTS) * 2
+    faces = sum(len(font_assets(f)) for f in FONTS)
+    css = font_face_css('1.9.0')
+    assert css.count('@font-face') == faces, (css.count('@font-face'), faces)
+    assert '/static/fonts/cairo-arabic.woff2?v=1.9.0' in css
+    assert ('/static/fonts/ibm-plex-sans-arabic-700-latin.woff2?v=1.9.0'
+            in css)
+    assert "font-weight:600;font-display:swap;src:url(/static/fonts/ibm-plex-sans-arabic-600" in css
+    assert 'font-weight:400 700' in css, 'variable families keep the range'
     assert 'unicode-range:U+0600-06FF' in css
     missing = missing_files()
-    print('{} fonts, {} subsets, {} size presets, {} bytes of @font-face CSS'.format(
-        len(FONTS), len(FONTS) * 2, len(FONT_SIZES), len(css)))
+    missing_names = {os.path.basename(p) for p in missing}
+
+    print('{} fonts, {} files, {} size presets, {} bytes of @font-face CSS'.format(
+        len(FONTS), faces, len(FONT_SIZES), len(css)))
     print('default: {} / {} (scale {})'.format(DEFAULT_FONT, DEFAULT_FONT_SIZE,
                                                font_scale(DEFAULT_FONT_SIZE)))
     for f in FONTS:
-        print('  {:<18} {:<20} arabic+{:<6} latin'.format(
-            f['id'], f['family'], 'ok' if os.path.isfile(os.path.join(
-                FONT_DIR, font_file(f['id'], 'arabic'))) else 'MISSING'))
+        print('  {:<22} {:<20} {:<18} {}'.format(
+            f['id'], f['family'],
+            '+'.join(str(w) for w in (f.get('weights') or ['400..700'])),
+            'ok' if not any(asset[2] in missing_names
+                            for asset in font_assets(f)) else 'MISSING'))
     if missing:
         raise SystemExit('missing font files (run: python fetch_fonts.py):\n  '
                          + '\n  '.join(missing))

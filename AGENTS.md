@@ -14,7 +14,7 @@ testing without Flask:
 | `sdmp3_themes.py` | theme registry, CSS tokens, WCAG contrast contract | `python sdmp3_themes.py` |
 | `sdmp3_state.py` | atomic `settings.json` / `search_history.json` / `index_settings.json` | `python sdmp3_state.py` |
 | `sdmp3_groups.py` | group paths (nested groups) validation + folder chain | `python sdmp3_groups.py` |
-| `sdmp3_fonts.py` | font registry (10 Arabic Google fonts), `@font-face` CSS, size presets | `python sdmp3_fonts.py` |
+| `sdmp3_fonts.py` | font registry (11 Arabic Google fonts, variable + static weights), `@font-face` CSS, size presets | `python sdmp3_fonts.py` |
 
 They must stay **Flask-free and global-free**: `project.py` imports them, never
 the other way round, and each one runs its own checks when executed directly.
@@ -217,7 +217,7 @@ Each volume kind owns a hue: `.storage-card.kind-*` sets a local `--kind`/`--kin
 
 The spoofing button is `btn-sand` (`--sand-fill #d0b49f` on `--accent-ink`), not amber: `--warning` is reserved for text and warning pills, so no button introduces a hue the palette does not own.
 
-## Page layout (v1.8.0 — design, not features)
+## Page layout (v1.9.0 — design, not features)
 
 One document, not a stack of boxes. The page is `<header class="app-header">`, then
 four `<section class="section">` blocks separated by a hairline (`.section + .section
@@ -229,9 +229,18 @@ four `<section class="section">` blocks separated by a hairline (`.section + .se
   (`.pill::before` plus `.pill-ok`/`.pill-warn`/`.pill-kind-*`), while the label
   stays `--text-muted` so it clears 4.5:1 on every theme. Pills outside the header
   (picker badge, group chip) keep the older tinted-chip look.
-- **Route section**: source (`.section-step` ١) → `.route-link` (hairline + arrow)
-  → destination (٢); each node holds its `.storage-grid` and one `.path-line`
-  (input + buttons). This is the only place the copy direction is chosen.
+- **Route section**: the whole block is a `<details class="route-details"
+  id="routeDetails">`, **closed by default**, because the source/destination pair
+  is chosen rarely while the rest of the page is used constantly. Its `<summary>`
+  still names both paths (`#routeSourceSummary` / `#routeDestSummary`,
+  `updateRouteSummary()` after every change) so folding saves a tap without
+  hiding the two values the page is entirely about; an unset destination reads
+  «لم تُحدَّد» and wears `.is-empty`. Open/closed is remembered in
+  `sdmp3_route_open`. Inside are source (`.section-step` ١) → `.route-link`
+  (hairline + arrow) → destination (٢); each node holds its `.storage-grid` and
+  one `.path-line` (input + buttons). This is the only place the copy direction
+  is chosen. The «إنشاء فهرس JOC» button sits **outside** the fold
+  (`.route-joc`): it is a separate flow and must stay one tap away.
 - **Tools section**: spoofing lives in `<details class="tools">`, closed by
   default — an occasional action must not out-weigh the copy.
 - **Action bar** (`#actionBar`, `.actionbar`): fixed, **opaque** `--bar-bg` with a
@@ -261,6 +270,71 @@ four `<section class="section">` blocks separated by a hairline (`.section + .se
   written with `textContent`, never `innerText` (jsdom has no `innerText`, and that
   is the gate's environment).
 
+## Groups window: folder tree, inline rename, drag & drop
+`#selectedModal` turns the flat group list into a **folder tree** (`#groupTree`).
+The data model did not change: a group is still `{id, name, paths}` and `name` is
+a breadcrumb (`"A/B"`), so the tree is **derived on every render**
+(`groupTreeRows()` → nested nodes) and there is no second model to keep in sync.
+
+- Rows are `.gt-row` with a twisty, a folder icon, the segment label, a count and
+  the actions. Only *closed* nodes are remembered (`groupNodeClosed`): a folder
+  the user just created must appear expanded.
+- **Renaming happens in the row** (`startRenameGroup` → `#gtRenameInput`): Enter
+  saves, Esc cancels, ✓/✕ do the same. Only the **last segment** is edited;
+  `commitGroupRename()` renames every nested group under it (`A/B` follows `A`).
+  `groupRenameError` validates the segment (`groupSegmentError`), the whole path
+  length and casefold duplicates *including* the renamed descendants, and Save
+  is disabled while there is an error. No `showInputModal`, no second sheet.
+- **Creating is one click**: «مجلد جديد» (`startNewGroup`) adds `مجلد N` (unique
+  via `uniqueGroupName`) with the checked rows as its items and opens the rename;
+  the `＋` on a folder (`startChildGroup`) creates `parent/فرع N`, disabled at
+  `GROUP_MAX_DEPTH`. Empty groups are allowed here — «ضم» later fills them.
+- **Delete** (`deleteGroup`) removes the folder *and* its nested groups; its
+  files stay selected and fall back to «بدون مجلد».
+- **Drag & drop** moves one item: rows in `.gt-path` carry
+  `text/x-sdmp3-path`, `.gt-row[data-drop]` is the target and
+  `movePathToGroup(path, gid|0)` re-assigns it (an item lives in exactly one
+  group). The permanent **«بدون مجلد»** node (`ungroupedPaths()`) lists what
+  belongs to no folder and is the drop area that takes an item out of every
+  group. The tree has one **delegated** click/drag listener: no group name or
+  path is ever interpolated into an inline `onclick` (only `esc()`ed attributes).
+- Checkboxes in the selected-file list still use `value="pick"` and `data-path`;
+  the group tree never writes a path into a checkbox value.
+
+## «تنظيم ذكي»: propose, preview, apply
+`smartOrganizeGroups()` maps **each selection** to its own parent path relative
+to `currentSourceRoot` (`sourceRelativeParent`), keeps the last
+`GROUP_MAX_DEPTH` segments, and falls back to `sourceBasename()` for an item
+sitting directly in the root. That fixes the two old failure modes (a flat
+selection and selections from different parents).
+
+The proposal is a **preview** (`smartPreview` → `#smartPreview`), one checkbox
+per folder with its item count and «موجود/جديد»: nothing is written until
+«تطبيق على N مجلد». `applySmartPreview()` takes the checked rows only, removes
+their paths from any previous group, reuses a folder whose path already exists
+(`groupPathKey`) and drops whatever became empty. `cancelSmartPreview()` throws
+the proposal away.
+
+## Remembered UI state (`localStorage sdmp3_ui_state_v1`)
+A refresh used to lose the cart. Now `scheduleUiSave()` (300ms debounce, called
+from `renderGroupUI`) writes
+`{v:1, source, search, paths:[[path,isDir]], excludes, groups:[{name,paths}]}` and
+`restoreUiState()` (from `window.onload`, after the tree is requested) rebuilds
+the selection, the groups and the search folder. Additive and cheap:
+
+- `uiStateReady` gates both directions: nothing is written before the restore
+  has run, so the page cannot overwrite the saved state with an empty one.
+- More than `UI_STATE_MAX_PATHS` (3000) selected paths skips the write rather
+  than throwing a quota error on a phone.
+- The restored selection is verified once against the server:
+  `pruneMissingSelection()` posts to `/api/sizes` and drops every path the
+  response lists in **`missing`** (`dropMissingPath`). `/api/sizes` computes it
+  from the same `os.path.exists(root)` it already needed — one test per walked
+  root, never a second stat per item.
+- A card that was pulled out comes back as nothing, not as a ghost selection.
+- Saved groups whose name no longer validates, or whose paths all vanished, are
+  dropped silently (`groupNameError`); ids are re-issued from `nextGroupId`.
+
 ## UI invariants
 
 - **No remote assets.** The page used to load Google Fonts, which blocked first
@@ -289,7 +363,8 @@ four `<section class="section">` blocks separated by a hairline (`.section + .se
 - Group data lives only in JS: `copyGroups = [{id, name, paths}]`, one path per
   group; `name` is a breadcrumb (`A/B`), so nesting needs no tree model. It is
   cleared when a copy finishes with `action === 'copy'` and when the selection
-  becomes empty; cancelled/failed copies keep it for retry.
+  becomes empty; cancelled/failed copies keep it for retry. It is mirrored to
+  `sdmp3_ui_state_v1` (see «Remembered UI state») so a refresh keeps the cart.
 - **Groups are typed as paths, validated client-side too**: `GROUP_BAD_CHARS`
   deliberately does **not** contain `/` (it is the nesting separator), depth ≤
   `GROUP_MAX_DEPTH` (3), full path ≤ `GROUP_PATH_MAX` (180), each segment ≤ 80.
@@ -324,18 +399,30 @@ straight on «الفهرس».
   button (`.header-settings`) opens the modal on «المظهر».
 
 ## General settings: fonts (`sdmp3_fonts.py` + `static/fonts/`)
-Ten Arabic Google fonts plus the `system` default, all **self-hosted**: 20 woff2
-files (an `arabic` and a `latin` subset per family, variable 400..700, ~900 KB
-total) in `static/fonts/`. Nothing is fetched from `fonts.googleapis.com` — the
-page must stay self-contained on a phone that is offline or behind a slow DNS,
-and `fetch_fonts.py` (a dev tool) verifies the Google unicode-ranges still match
-the module.
+Eleven Arabic Google fonts plus the `system` default, all **self-hosted**: 28
+woff2 files in `static/fonts/`. Ten families are variable 400..700 and ship an
+`arabic` + `latin` subset each (20 files); `IBM Plex Sans Arabic` is only
+published as **static weights**, so it ships one file per weight and subset
+(`<id>-<weight>-<subset>.woff2`, 8 files for 400/500/600/700). Nothing is fetched
+from `fonts.googleapis.com` — the page must stay self-contained on a phone that
+is offline or behind a slow DNS — and `fetch_fonts.py` (a dev tool) verifies the
+Google unicode-ranges still match the module.
 
-- A font is one dict in `sdmp3_fonts.py`: id, name, desc, the CSS `stack`, and
-  the woff2 basenames. `font_face_css(version)` emits the `@font-face` rules with
-  `?v=<version>` cache-busting; `font_stack(id)` gives the `--app-font` value;
+- A font is one dict in `sdmp3_fonts.py`: id, family, name, desc and — for a
+  static-weight family — `weights: FONT_WEIGHTS`. Everything else is derived:
+  `font_assets(font)` is `[(weight|None, subset, filename)]` and is the single
+  source of truth for the `@font-face` rules, the self-test and `fetch_fonts.py`.
+  A file name comes from `font_file(id, subset, weight)`; `weight` is required
+  (and part of the name) only for a static family. `font_face_css(version)`
+  emits one rule per asset with `?v=<version>` cache-busting and the real
+  `font-weight`; `font_stack(id)` gives the `--app-font` value;
   `font_scale(size_id)` gives the `--font-scale` multiplier; `FONT_SIZES` is the
   4 presets (`small`/`normal`/`large`/`xlarge`).
+- `fetch_fonts.py` asks for `wght@400..700` for a variable family and for the
+  explicit `wght@400;500;600;700` list for a static one, then reads the weight
+  from each `@font-face` body (`parse_faces`): Google repeats the same
+  `/* arabic */` label once per weight, so the label alone cannot identify a
+  file.
 - Typography is **two CSS variables** and both are rendered server-side:
   `--app-font` in `:root` (via `{{ app_font|safe }}`) and `--font-scale` on
   `<html>` (via `{{ font_scale }}`). Applying a pick is a property write, no
@@ -349,12 +436,17 @@ the module.
   `style="font-family: {{ f.css_stack }}"` attribute is fine with escaping.
 - `str.format` breaks on CSS braces, so `font_face_css()` uses `%`-formatting.
 - Run `python sdmp3_fonts.py` for the self-test (every id resolves, sizes are
-  ordered, the `@font-face` output is complete). Adding a font is one dict plus
-  two woff2 files — `project.py` does not change, the Jinja loop picks it up.
+  ordered, the `@font-face` output is complete, every asset has a rule and every
+  file is on disk). Adding a variable font is one dict plus two woff2 files;
+  adding a static one is one dict with `weights` plus two files per weight.
+  `project.py` does not change, the Jinja loop picks it up.
 
 ## Path picker (تحديد / تصفح)
 `/api/sizes` returns sizes for a whole selection in one request (parents are
-walked once and nested selections are counted once); use it instead of calling
+walked once and nested selections are counted once) **plus `missing`**: the
+selected paths whose walked root does not exist. It reuses the single
+`os.path.exists(root)` the walk already needs, so a restored selection can drop
+a pulled-out card without another stat per item. Use it instead of calling
 `/api/size` in a loop. `/api/items` returns `{name, path, is_dir, size}` in one `scandir` pass (folders first, then files, name-sorted). The picker renders folders (navigable, with rename/delete actions) and files with a formatted size **and the same rename/delete icons** — a destination must be a folder, so a file row is never selectable, but it can still be tidied up from here. Long folders are paged: `PICKER_FILES_STEP` (300) files per page with «عرض المزيد», so a 4 000-file folder opens instantly.
 
 The dialog has a **fixed height** (`.modal-content.modal-picker`: `min(84vh, 720px)`, `92vh` on phones) with `#destTree` as the flex child that scrolls. Without it the dialog resized with every folder and moved the Confirm button under the user's finger.
@@ -377,6 +469,24 @@ immediately; the UI follows the normal `/transfer/status` poll with
 - A completed delete **prunes** its entries out of the instant-search index
   (`prune_cache_for_path`) instead of discarding the whole folder index; only a
   partial delete, whose survivors are unknown, falls back to invalidation.
+
+## Search scope (the folder the search runs in)
+The search used to walk `currentSourceRoot` silently. It now walks
+**`searchScopePath`**, which is its own value and its own localStorage key
+(`sdmp3_search_scope`) — narrowing a search must never move the source root.
+
+- `setSearchScope(path, remember)` is the only writer: it normalises the path,
+  writes the label (`#searchScopePath`), reloads the entries and schedules a UI
+  save. `searchDeep()` sends it as `&root=`.
+- The scope bar (`#searchScopeItems`) lists the current folder from `/api/items`,
+  `SCOPE_FILES_STEP` (300) rows at a time with «عرض المزيد»; folders are opened,
+  files toggle their `.checkbox` (whose `value` *is* the path, so
+  `refreshCheckboxStates()` syncs them), and both use `toggleScopeItem`.
+- `#searchSubfolder` is a `<select>` of the folder's child folders, rebuilt only
+  when a folder loads — never on a keystroke — plus «↑ أعلى» (`searchScopeUp`)
+  and «تحديد مجلد» (`openPathBrowser('search')`, the third `pickerMode`).
+- `enterSearchSubfolder(name)` joins one segment onto the current scope; the
+  select resets to its placeholder so the same folder can be chosen again.
 
 ## Search cache
 The instant-search index (`FOLDER_CACHE`) is mirrored to
@@ -432,11 +542,19 @@ The JOC form lives in الإعدادات › الفهرس and is written **only*
 ### Theme registry (`sdmp3_themes.py`)
 A theme is one dict of palette colours; **every** alpha variant (`--accent-soft`,
 `--kind-sdcard-tile`, `--pill-bg`, `--shine`, `--shadow-*`, …) is derived in
-`build_tokens()`, so a theme can never drift out of sync with the CSS. 12 themes:
+`build_tokens()`, so a theme can never drift out of sync with the CSS. 14 themes:
 `coffee-blues` (default, byte-identical to the old hand-written `:root`),
 `midnight-teal`, `slate-sand`, `olive-grove`, `clay-rose`, `graphite`,
-`night-oxford`, `deep-charcoal`, and the four light ones `paper`, `sandstone`,
-`clear-dawn` / `pearl-breath`.
+`night-oxford`, `deep-charcoal`, the four light ones `paper`, `sandstone`,
+`clear-dawn` / `pearl-breath`, and the two GitHub palettes `github-dark`
+(`--bg #0d1117`, accent `#2f81f7`) / `github-light` (`--bg #ffffff`, accent
+`#0969da`).
+
+- A **dark** theme uses light *fills* (`success_fill`, `danger_fill`,
+  `sand_fill`) with a dark label (`on_fill`/`accent_ink`); that is why
+  `github-dark` sets `on_fill '#0d1117'` and keeps `success #3fb950` as the
+  fill. A dark fill with a white label is what the contrast contract rejects
+  (`label on sand`), not the bright hue itself.
 
 - **Adding a theme is one dict** in `_THEME_DEFS` with the `BASE_KEYS`. Nothing in
   `project.py` changes. Run `python sdmp3_themes.py`: it prints every contrast
