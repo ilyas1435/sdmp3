@@ -2194,7 +2194,9 @@ HTML_TEMPLATE = """
             background:var(--field); }
         .route-details > summary::-webkit-details-marker { display:none; }
         .route-details > summary:hover { border-color:var(--accent-line); }
-        .route-sum { display:flex; align-items:center; gap:6px; min-width:0; flex:1 1 0; }
+        .route-sum { display:flex; align-items:center; gap:8px; min-width:0; flex:1 1 0; }
+        .kind-tag { flex-shrink:0; font-size:calc(10.5px * var(--font-scale)); padding:3px 7px; }
+        .source-path-input { color:var(--text-muted); font-size:calc(12px * var(--font-scale)); }
         .route-sum-label { flex-shrink:0; font-size:calc(11px * var(--font-scale)); color:var(--text-muted); }
         .route-sum-path { min-width:0; font-family:var(--num-font); direction:ltr; text-align:left;
             font-size:calc(11px * var(--font-scale)); color:var(--text);
@@ -2204,7 +2206,11 @@ HTML_TEMPLATE = """
         .route-details[open] .route-chev { transform:rotate(180deg); }
         .route-details .route { margin-top:14px; }
         .route-joc { margin-top:12px; }
-        @media (max-width: 480px) { .route-sum-label { display:none; } }
+        @media (max-width: 480px) {
+            .route-sum-label { display:none; }
+            .kind-tag { padding:2px 6px; }
+            .source-path-input { flex-basis:120px; }
+        }
 
         /* Search stays within reach while the keyboard is open: the controls
            stick to the top and the tree shrinks by the keyboard inset. */
@@ -2674,6 +2680,7 @@ HTML_TEMPLATE = """
                     <span class="section-step">١</span>
                     <span class="route-sum-label">المسار</span>
                     <span class="route-sum-path" id="routeSourceSummary">…</span>
+                    <span class="pill kind-tag" id="sourceKindTag" style="display:none;"></span>
                 </span>
                 <span class="route-sum">
                     <span class="section-step">٢</span>
@@ -2698,7 +2705,8 @@ HTML_TEMPLATE = """
                     {% endfor %}
                 </div>
                 <div class="path-line">
-                    <input type="text" id="custom_source_path" class="ltr-input" placeholder="/sdcard/..." readonly aria-label="مسار المصدر">
+                    <span class="pill kind-tag" id="sourcePathKindTag" style="display:none;"></span>
+                    <input type="text" id="custom_source_path" class="ltr-input source-path-input" placeholder="/sdcard/..." readonly aria-label="مسار المصدر">
                     <button class="btn btn-outline btn-sm" onclick="openPathBrowser('source')">
                         <svg class="icon" viewBox="0 0 24 24"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>
                         تصفح
@@ -4357,6 +4365,8 @@ HTML_TEMPLATE = """
         let src = (srcBox && srcBox.value) || currentSourceRoot || '';
         let dst = (dstBox && dstBox.value) || '';
         if (srcEl) { srcEl.textContent = src || '…'; srcEl.title = src || ''; }
+        applySourceKindTag(document.getElementById('sourceKindTag'), src);
+        applySourceKindTag(document.getElementById('sourcePathKindTag'), src);
         if (dstEl) {
             dstEl.textContent = dst || 'لم تُحدَّد';
             dstEl.title = dst || '';
@@ -4419,6 +4429,35 @@ HTML_TEMPLATE = """
             }
         });
         return best;
+    }
+
+    // The source path alone cannot say whether /sdcard is the phone or a card.
+    // These tags reuse the volume-kind tokens, so a theme never needs a new hue.
+    const SOURCE_KIND_LABELS = {
+        internal: 'المساحة الداخلية',
+        sdcard: 'كارت SD',
+        usb: 'USB OTG',
+        card: 'كارت ذاكرة'
+    };
+
+    function sourceKindLabel(kind) {
+        return SOURCE_KIND_LABELS[kind] || 'وحدة تخزين';
+    }
+
+    function applySourceKindTag(el, path) {
+        if (!el) return;
+        let st = storageForPath(path);
+        STORAGE_KIND_LIST.forEach(function(k) { el.classList.remove('pill-kind-' + k); });
+        if (!st) {
+            el.style.display = 'none';
+            el.textContent = '';
+            el.title = '';
+            return;
+        }
+        el.textContent = sourceKindLabel(st.kind);
+        el.title = (st.name || sourceKindLabel(st.kind)) + ' — ' + (st.path || path);
+        el.classList.add('pill-kind-' + st.kind);
+        el.style.display = '';
     }
 
     function renderCacheStatus(data) {
