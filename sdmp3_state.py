@@ -137,8 +137,14 @@ def load_settings(valid_theme_ids, default_theme,
     font_size = raw.get('font_size')
     if font_size not in (valid_font_size_ids or []):
         font_size = default_font_size
+    # Additive v2 key: a hand-written/older file simply means "off". POST
+    # coercion lives in project.py; stored files only ever hold a real bool.
+    auto_spoof = raw.get('auto_spoof')
+    if not isinstance(auto_spoof, bool):
+        auto_spoof = False
     settings = {'version': SETTINGS_VERSION, 'theme': theme,
-                'font': font, 'font_size': font_size}
+                'font': font, 'font_size': font_size,
+                'auto_spoof': auto_spoof}
     raw_version = raw.get('version')
     if isinstance(raw_version, int) and raw_version > SETTINGS_VERSION:
         # A newer app wrote this file. Keep what we understand, but do not
@@ -153,6 +159,7 @@ def save_settings(settings):
         'theme': settings.get('theme'),
         'font': settings.get('font'),
         'font_size': settings.get('font_size'),
+        'auto_spoof': bool(settings.get('auto_spoof')),
         'updated': int(time.time()),
     }
     return save_json(state_file(SETTINGS_FILE), payload)
@@ -271,10 +278,16 @@ if __name__ == '__main__':  # pragma: no cover - manual report
         # settings: theme + font + font size, all validated against registries
         assert load_settings(['a', 'b'], 'a') == {
             'version': SETTINGS_VERSION, 'theme': 'a',
-            'font': 'system', 'font_size': 'normal'}
-        assert save_settings({'theme': 'b', 'font': 'f1', 'font_size': 'big'}) is True
+            'font': 'system', 'font_size': 'normal', 'auto_spoof': False}
+        assert save_settings({'theme': 'b', 'font': 'f1', 'font_size': 'big',
+                              'auto_spoof': True}) is True
         saved = load_settings(['a', 'b'], 'a', ['f1', 'f2'], 'system', ['big', 'small'], 'normal')
         assert saved['theme'] == 'b' and saved['font'] == 'f1' and saved['font_size'] == 'big', saved
+        assert saved['auto_spoof'] is True, saved
+        with open(state_file(SETTINGS_FILE), 'w', encoding='utf-8') as fh:
+            json.dump({'version': SETTINGS_VERSION, 'theme': 'b', 'font': 'f1',
+                       'font_size': 'big'}, fh)
+        assert load_settings(['a', 'b'], 'a')['auto_spoof'] is False, 'legacy file not additive'
         bad = load_settings(['a'], 'a', ['other-font'], 'system', ['huge'], 'normal')
         assert bad['font'] == 'system' and bad['font_size'] == 'normal', bad
         rows = []

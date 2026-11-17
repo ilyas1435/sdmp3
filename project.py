@@ -6572,7 +6572,8 @@ _cache_save_timer = {'handle': None}
 # ~/.local/state/sdmp3/ through sdmp3_state.py, and both are loaded in main() so
 # the page can be painted with them on the very first request.
 APP_SETTINGS = {'version': 2, 'theme': DEFAULT_THEME,
-                'font': DEFAULT_FONT, 'font_size': DEFAULT_FONT_SIZE}
+                'font': DEFAULT_FONT, 'font_size': DEFAULT_FONT_SIZE,
+                'auto_spoof': False}
 APP_INDEX_SETTINGS = dict(DEFAULT_INDEX_SETTINGS)
 SEARCH_HISTORY = {'version': 1, 'items': [], 'queries': []}
 _settings_lock = threading.RLock()
@@ -6873,15 +6874,31 @@ def remember_search(query, root, results):
     save_search_history(snapshot)
 
 
+def _coerce_bool(value, default=False):
+    """Bool/0|1/'true'|'on'|'yes' -> bool; anything else keeps `default`."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        low = value.strip().lower()
+        if low in ('1', 'true', 'on', 'yes'):
+            return True
+        if low in ('0', 'false', 'off', 'no'):
+            return False
+    return default
+
+
 @app.route('/api/settings', methods=['GET', 'POST'])
 def api_settings():
     """Read or update the appearance + typography settings.
 
-    POST accepts any subset of `theme`, `font`, `font_size`: each id is checked
-    against its registry (sdmp3_themes.py / sdmp3_fonts.py) and an unknown id is
-    refused with a 400, so settings.json can never hold a value the page cannot
-    render. Only the keys present in the body change - the General pane saves a
-    font without touching the theme, and vice versa.
+    POST accepts any subset of `theme`, `font`, `font_size` and `auto_spoof`:
+    each id is checked against its registry (sdmp3_themes.py / sdmp3_fonts.py)
+    and an unknown id is refused with a 400, so settings.json can never hold a
+    value the page cannot render. A bad boolean is dropped, not written. Only
+    the keys present in the body change - the General pane saves a font without
+    touching the theme, and vice versa.
     """
     global APP_SETTINGS
     if request.method == 'GET':
@@ -6904,6 +6921,8 @@ def api_settings():
     theme_id = body.get('theme', APP_SETTINGS.get('theme') or DEFAULT_THEME)
     font_id = body.get('font', APP_SETTINGS.get('font') or DEFAULT_FONT)
     size_id = body.get('font_size', APP_SETTINGS.get('font_size') or DEFAULT_FONT_SIZE)
+    auto_spoof = _coerce_bool(body.get('auto_spoof'),
+                              bool(APP_SETTINGS.get('auto_spoof')))
     if theme_id not in THEMES:
         return jsonify({'error': 'سمة غير معروفة'}), 400
     if font_id not in font_ids():
@@ -6912,7 +6931,8 @@ def api_settings():
         return jsonify({'error': 'حجم خط غير معروف'}), 400
     with _settings_lock:
         APP_SETTINGS = {'version': SETTINGS_VERSION, 'theme': theme_id,
-                        'font': font_id, 'font_size': size_id}
+                        'font': font_id, 'font_size': size_id,
+                        'auto_spoof': auto_spoof}
         settings = dict(APP_SETTINGS)
     if not save_settings(settings):
         return jsonify({'error': 'تعذر حفظ الإعدادات على الجهاز'}), 500
