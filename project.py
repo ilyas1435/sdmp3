@@ -2117,6 +2117,8 @@ HTML_TEMPLATE = """
 {% for name, value in theme_css %}
             {{ name }}: {{ value }};
 {% endfor %}
+            /* Keyboard height, written from visualViewport in JS. */
+            --kb-inset: 0px;
             /* Typography: the family comes from sdmp3_fonts.py, the scale from
                the size preset. Both are rendered server-side so the first paint
                is already correct. */
@@ -2204,6 +2206,10 @@ HTML_TEMPLATE = """
         .route-joc { margin-top:12px; }
         @media (max-width: 480px) { .route-sum-label { display:none; } }
 
+        /* Search stays within reach while the keyboard is open: the controls
+           stick to the top and the tree shrinks by the keyboard inset. */
+        .search-sticky { position:sticky; top:0; z-index:8; background:var(--bg); padding:6px 0 8px;
+            border-bottom:1px solid var(--rule); }
         /* Search scope: one sticky control bar that names the folder being
            searched and offers its sub-folders. The entries themselves live in
            the tree below, so this bar stays compact while the keyboard is up. */
@@ -2216,6 +2222,7 @@ HTML_TEMPLATE = """
             white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
         .scope-select { max-width:46%; padding:5px 8px; border-radius:7px; border:1px solid var(--border);
             background:var(--bg); color:var(--text); font-family:inherit; font-size:calc(11.5px * var(--font-scale)); }
+        @media (max-width: 480px) { .search-sticky { padding:3px 0 6px; } }
 
         /* Monospace digits: counts and speeds must not jitter between polls. */
         .num { font-family: var(--num-font); font-variant-numeric: tabular-nums; direction:ltr; unicode-bidi:isolate; }
@@ -2244,7 +2251,7 @@ HTML_TEMPLATE = """
         .btn-outline:hover { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent-soft); }
         .btn-sm { padding: 8px 12px; min-height: 38px; font-size: calc(12.5px * var(--font-scale)); }
 
-        .tree { max-height: 62vh; overflow: auto; background: var(--field); border: 1px solid var(--border); border-radius: 10px; padding: 8px; scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
+        .tree { max-height: max(180px, calc(62vh - var(--kb-inset))); overflow: auto; background: var(--field); border: 1px solid var(--border); border-radius: 10px; padding: 8px; scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
         /* Search replaces the tree's contents; the header stays put while rows scroll. */
         .search-view-head { position: sticky; top: 0; z-index: 2; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 8px; margin: -8px -8px 8px; background: var(--field); border-bottom: 1px solid var(--field-line); }
         .search-view-head .search-view-label { color: var(--text-muted); font-size: calc(12px * var(--font-scale)); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -2767,30 +2774,33 @@ HTML_TEMPLATE = """
             </span>
         </div>
         <!-- The search runs inside one named folder, so the folder is a visible
-             control instead of an invisible assumption ("current source root"). -->
-        <div class="search-scope">
-            <div class="scope-line">
-                <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>
-                <div class="scope-path" id="searchScopePath" title="مجلد البحث الحالي">/sdcard</div>
-                <select class="scope-select" id="searchSubfolder" onchange="enterSearchSubfolder(this.value)" aria-label="مجلد فرعي للبحث">
-                    <option value="">مجلد فرعي…</option>
-                </select>
-                <button type="button" class="btn btn-outline btn-sm" onclick="searchScopeUp()" title="مجلد أعلى">
-                    <svg class="icon" aria-hidden="true"><use href="#ico-up"></use></svg> أعلى
-                </button>
-                <button type="button" class="btn btn-outline btn-sm" onclick="openPathBrowser('search')">تحديد مجلد</button>
+             control instead of an invisible assumption ("current source root").
+             The whole bar stays visible above the on-screen keyboard. -->
+        <div class="search-sticky" id="searchControls">
+            <div class="search-scope">
+                <div class="scope-line">
+                    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>
+                    <div class="scope-path" id="searchScopePath" title="مجلد البحث الحالي">/sdcard</div>
+                    <select class="scope-select" id="searchSubfolder" onchange="enterSearchSubfolder(this.value)" aria-label="مجلد فرعي للبحث">
+                        <option value="">مجلد فرعي…</option>
+                    </select>
+                    <button type="button" class="btn btn-outline btn-sm" onclick="searchScopeUp()" title="مجلد أعلى">
+                        <svg class="icon" aria-hidden="true"><use href="#ico-up"></use></svg> أعلى
+                    </button>
+                    <button type="button" class="btn btn-outline btn-sm" onclick="openPathBrowser('search')">تحديد مجلد</button>
+                </div>
             </div>
+            <div class="path-line" style="margin-bottom: 12px;">
+                <input type="text" id="searchInput" placeholder="اكتب اسم الملف للبحث..." style="margin-bottom:0; flex:1 1 160px;" aria-label="نص البحث">
+                <button class="btn btn-primary" onclick="searchDeep(true)">بحث</button>
+                <button type="button" class="btn btn-outline" id="historyToggleBtn" onclick="toggleHistoryBlock()" title="يعرض المجلدات التي حدّدتها سابقاً من البحث — اضغط عنصراً لإعادته إلى التحديد">السجل</button>
+            </div>
+            <label style="display:flex; align-items:center; gap:8px; cursor:pointer; color: var(--text-muted); font-size:calc(13px * var(--font-scale)); margin-bottom:0;">
+                <input type="checkbox" id="foldersOnlyCheck" class="checkbox" checked style="width:16px; height:16px; margin:0;">
+                بحث في أسماء المجلدات فقط
+            </label>
+            <div class="search-scope-hint" style="color:var(--text-muted); font-size:calc(12px * var(--font-scale)); margin-top:8px;">تظهر النتائج داخل متصفح الملفات في القسم التالي.</div>
         </div>
-        <div class="path-line" style="margin-bottom: 12px;">
-            <input type="text" id="searchInput" placeholder="اكتب اسم الملف للبحث..." style="margin-bottom:0; flex:1 1 160px;" aria-label="نص البحث">
-            <button class="btn btn-primary" onclick="searchDeep(true)">بحث</button>
-            <button type="button" class="btn btn-outline" id="historyToggleBtn" onclick="toggleHistoryBlock()" title="يعرض المجلدات التي حدّدتها سابقاً من البحث — اضغط عنصراً لإعادته إلى التحديد">السجل</button>
-        </div>
-        <label style="display:flex; align-items:center; gap:8px; cursor:pointer; color: var(--text-muted); font-size:calc(13px * var(--font-scale)); margin-bottom:0;">
-            <input type="checkbox" id="foldersOnlyCheck" class="checkbox" checked style="width:16px; height:16px; margin:0;">
-            بحث في أسماء المجلدات فقط
-        </label>
-        <div class="search-scope-hint" style="color:var(--text-muted); font-size:calc(12px * var(--font-scale)); margin-top:8px;">تظهر النتائج داخل متصفح الملفات في القسم التالي.</div>
 
         <div id="historyBlock" class="search-history" style="display:none;">
             <div class="history-head">
@@ -5003,6 +5013,46 @@ HTML_TEMPLATE = """
         sel.innerHTML = html;
     }
 
+    // The Android keyboard owns the lower part of the screen. visualViewport is
+    // the only honest measurement of how much is left; the CSS inset shrinks the
+    // tree instead of letting the last results hide under the keyboard.
+    let lastKeyboardInset = -1;
+    function syncViewportInset() {
+        let vv = window.visualViewport;
+        let inset = 0;
+        if (vv) {
+            inset = Math.max(0, Math.round((window.innerHeight || 0) -
+                (vv.height || window.innerHeight || 0) - (vv.offsetTop || 0)));
+        }
+        if (inset === lastKeyboardInset) return;
+        lastKeyboardInset = inset;
+        document.documentElement.style.setProperty('--kb-inset', inset + 'px');
+    }
+
+    // `nearest` is deliberate: a typing search must not fight a reader who has
+    // already scrolled to a result. It moves only when the target is off-screen.
+    function revealSearchResults() {
+        syncViewportInset();
+        let controls = document.getElementById('searchControls');
+        let head = document.getElementById('searchViewHead');
+        if (controls && controls.scrollIntoView) {
+            controls.scrollIntoView({behavior: 'smooth', block: 'nearest'});
+        }
+        if (head && head.scrollIntoView) {
+            let revealHead = function() { head.scrollIntoView({behavior: 'smooth', block: 'nearest'}); };
+            if (window.requestAnimationFrame) window.requestAnimationFrame(revealHead);
+            else revealHead();
+        }
+    }
+
+    syncViewportInset();
+    if (window.visualViewport && window.visualViewport.addEventListener) {
+        window.visualViewport.addEventListener('resize', syncViewportInset);
+        window.visualViewport.addEventListener('scroll', syncViewportInset);
+    }
+    window.addEventListener('resize', syncViewportInset);
+    window.addEventListener('scroll', syncViewportInset);
+
     function searchViewHeaderHtml(q, scope, count, fromCache) {
         return `<div id="searchViewHead" class="search-view-head">
             <button type="button" class="btn btn-outline btn-sm" onclick="exitSearchView()">
@@ -5069,10 +5119,14 @@ HTML_TEMPLATE = """
                 appendItemRows(body, results, {searchMode: true});
                 tree.innerHTML = head + body.innerHTML;
             }
+            revealSearchResults();
             // The search that just ran is now the newest history entry.
             if (committed) loadSearchHistory();
         }).catch(() => {
-            if (myToken === searchRequestToken) tree.innerHTML = head + '<div style="padding:10px;color:var(--danger-ink);">تعذر إتمام البحث.</div>';
+            if (myToken === searchRequestToken) {
+                tree.innerHTML = head + '<div style="padding:10px;color:var(--danger-ink);">تعذر إتمام البحث.</div>';
+                revealSearchResults();
+            }
         });
     }
 
