@@ -7,6 +7,7 @@ import time
 import datetime
 import json
 import re
+import random
 import shlex
 import atexit
 import tempfile
@@ -142,6 +143,12 @@ DEFAULT_STATE = {
     'verify_progress': 0,
     'verify_failed': [],
     'verify_cancelled': False,
+    # Auto-spoof runs inside the copy worker, after verification. These fields
+    # keep its result in the SAME final snapshot as the copy numbers.
+    'spoof_total': 0,
+    'spoof_done': 0,
+    'spoof_error': '',
+    'spoof_cancelled': False,
     'card_mbps': 0,
     'card_warning': '',
     'last_progress_ts': 0,
@@ -669,6 +676,93 @@ def apply_spoof_time(path, timestamp):
             return True
         except Exception:
             return False
+
+
+def random_spoof_timestamp():
+    """A random local minute in 2023, matching the page's manual date default."""
+    start = datetime.datetime(2023, 1, 1, 0, 0)
+    end = datetime.datetime(2023, 12, 31, 23, 59)
+    seconds = int((end - start).total_seconds())
+    return int((start + datetime.timedelta(seconds=random.randint(0, seconds))).timestamp())
+
+
+def _path_under_any(path, roots):
+    """Realpath-aware 'is this path inside one of these roots?' (no symlink tricks)."""
+    try:
+        real = os.path.realpath(path)
+    except OSError:
+        real = os.path.abspath(path)
+    real = real.rstrip(os.sep) or os.sep
+    for root in roots:
+        if not root:
+            continue
+        try:
+            rr = os.path.realpath(root).rstrip(os.sep) or os.sep
+        except OSError:
+            rr = os.path.abspath(root).rstrip(os.sep) or os.sep
+        if real == rr or real.startswith(rr + os.sep):
+            return True
+    return False
+
+
+def spoof_tree(dest_path, start_ts, on_progress=None, cancelled=None, skip_roots=()):
+    """Spoof a whole tree bottom-up, returning ``(done_count, error_or_None)``.
+
+    Children are stamped before their parent so a later directory mtime write
+    cannot undo a child's timestamp. Source paths, protected system paths and
+    symlinks are skipped. Cancellation stops early with no error; the caller
+    decides whether to report a cancelled spoof. The destination root itself is
+    stamped last, as the manual spoof pass has always done.
+    """
+    skip = list(skip_roots or [])
+    done = 0
+    try:
+        # Collect first (top-down so whole subtrees can be pruned), then apply
+        # bottom-up. This keeps protected/source checks off every single file.
+        levels = []
+        for root, dirs, files in os.walk(dest_path, topdown=True, followlinks=False):
+            if cancelled is not None and cancelled():
+                return done, None
+            keep_dirs = []
+            for name in dirs:
+                p = os.path.join(root, name)
+                if os.path.islink(p) or protected_target_reason(p) or _path_under_any(p, skip):
+                    continue
+                keep_dirs.append(name)
+            dirs[:] = keep_dirs
+            keep_files = []
+            for name in files:
+                p = os.path.join(root, name)
+                if os.path.islink(p) or _path_under_any(p, skip):
+                    continue
+                keep_files.append(name)
+            levels.append((root, keep_dirs, keep_files))
+
+        current = int(start_ts)
+        for root, dirs, files in reversed(levels):
+            for name in files + dirs:
+                if cancelled is not None and cancelled():
+                    return done, None
+                p = os.path.join(root, name)
+                if on_progress is not None:
+                    on_progress(p)
+                if apply_spoof_time(p, current):
+                    current += 60
+                    done += 1
+
+        if (not os.path.islink(dest_path)
+                and not _path_under_any(dest_path, skip)
+                and not protected_target_reason(dest_path)):
+            if cancelled is not None and cancelled():
+                return done, None
+            if on_progress is not None:
+                on_progress(dest_path)
+            if apply_spoof_time(dest_path, current):
+                done += 1
+        return done, None
+    except Exception as exc:
+        return done, str(exc)
+
 
 CARD_DAMAGE_HINT = (
     'هذا المجلد تالف على مستوى الكارت (نظام ملفات FAT): أندرويد يرفض حذفه '
@@ -1637,6 +1731,46 @@ def copy_thread_task(paths, dest, excludes=None, groups=None, verify=True):
             log_event('verify done: {}/{} ok, {} failed, cancelled={}'.format(
                 verified, len(planned_files), len(verify_failures), verify_cancelled))
 
+        # Auto-spoof is a setting, not a UI action: it must run here, in the
+        # copy worker, so closing Chrome mid-copy cannot skip it. It never
+        # resets state or starts a second thread - the copy numbers above stay
+        # in this same final snapshot.
+        spoof_total = 0
+        spoof_done = 0
+        spoof_error = ''
+        spoof_cancelled = False
+        if APP_SETTINGS.get('auto_spoof') and not is_cancelled():
+            try:
+                set_state(phase='spoofing', file='جاري تمويه تواريخ الوجهة...',
+                          spoof_total=0, spoof_done=0, spoof_error='', spoof_cancelled=False)
+                touch_progress()
+                spoof_total = count_files(
+                    [dest], cancel_check=is_cancelled, count_dirs=True,
+                    on_progress=touch_progress)
+                set_state(spoof_total=spoof_total)
+
+                seen_spoof = {'n': 0}
+
+                def on_auto_spoof(p=None):
+                    touch_progress()
+                    seen_spoof['n'] += 1
+                    if seen_spoof['n'] % 50 == 0:
+                        set_state(spoof_done=seen_spoof['n'], progress=99,
+                                  file=os.path.basename(p or ''))
+
+                spoof_done, spoof_error = spoof_tree(
+                    dest, random_spoof_timestamp(), on_progress=on_auto_spoof,
+                    cancelled=is_cancelled, skip_roots=paths)
+                # spoof_tree() reports success as None; the state contract (and
+                # the JS that renders it) uses the empty string for "no error".
+                spoof_error = spoof_error or ''
+                spoof_cancelled = is_cancelled()
+                log_event('auto spoof done: {}/{} error={!r} cancelled={}'.format(
+                    spoof_done, spoof_total, spoof_error, spoof_cancelled))
+            except Exception as exc:
+                spoof_error = str(exc)
+                log_event('auto spoof ERROR: {}: {}'.format(type(exc).__name__, exc))
+
         if len(group_names) == 1:
             group_note = ' داخل «{}»'.format(group_names[0])
         elif len(group_names) == 2:
@@ -1679,6 +1813,14 @@ def copy_thread_task(paths, dest, excludes=None, groups=None, verify=True):
         else:
             final_msg = 'اكتمل النسخ{} بنجاح{}.'.format(group_note, speed_note)
 
+        if APP_SETTINGS.get('auto_spoof'):
+            if spoof_cancelled:
+                final_msg += ' • تم إيقاف تمويه التواريخ'
+            elif spoof_error:
+                final_msg += ' • تعذر تمويه التواريخ'
+            else:
+                final_msg += ' • تم تمويه {} عنصراً'.format(spoof_done)
+
         log_event('copy done: copied={} failed={} bytes={} in {:.1f}s ({:.2f} MB/s) '
                   'verify={:.1f}s verified={} verify_failed={}'.format(
                       copied, len(failed_details), bytes_done, copy_seconds, avg_speed,
@@ -1704,6 +1846,10 @@ def copy_thread_task(paths, dest, excludes=None, groups=None, verify=True):
             'verify_progress': 100 if verify and planned_files else 0,
             'verify_failed': ['{} — {}'.format(p, r) for p, r in verify_failures[:30]],
             'verify_cancelled': verify_cancelled,
+            'spoof_total': spoof_total,
+            'spoof_done': spoof_done,
+            'spoof_error': spoof_error,
+            'spoof_cancelled': spoof_cancelled,
             'hint': CARD_WRITE_HINT if write_failed else '',
         })
 
@@ -1733,47 +1879,25 @@ def spoof_only_thread(dest_path, start_timestamp):
                                  on_progress=touch_progress)
         if is_cancelled(): raise TransferCancelled()
         set_state(total=total_items)
-        
-        current_time = start_timestamp
 
-        # topdown=False is REQUIRED here. Modifying a file inherently updates the directory it sits in.
-        for root, dirs, files in os.walk(dest_path, topdown=False):
+        # spoof_tree owns the bottom-up walk; this callback only keeps the UI
+        # heartbeat and percentage alive during a large pass.
+        seen = {'n': 0}
+
+        def on_spoof(p=None):
             touch_progress()
-            if is_cancelled(): raise TransferCancelled()
-            
-            # 1. Spoof files in this level
-            for name in files:
-                touch_progress()
-                p = os.path.join(root, name)
-                if os.path.islink(p): continue
-                if apply_spoof_time(p, current_time):
-                    current_time += 60
-                    copied += 1
-                
-                if copied % 50 == 0:
-                    snap_total = get_state_snapshot()['total']
-                    progress = int((copied / max(snap_total, 1)) * 100)
-                    set_state(copied=copied, progress=min(progress, 99), file=name)
+            seen['n'] += 1
+            if seen['n'] % 50 == 0:
+                snap_total = get_state_snapshot()['total']
+                progress = int((seen['n'] / max(snap_total, 1)) * 100)
+                set_state(copied=seen['n'], progress=min(progress, 99),
+                          file=os.path.basename(p or ''))
 
-            # 2. Spoof directories in this level 
-            for name in dirs:
-                touch_progress()
-                p = os.path.join(root, name)
-                if os.path.islink(p): continue
-                if apply_spoof_time(p, current_time):
-                    current_time += 60
-                    copied += 1
-                
-                if copied % 50 == 0:
-                    snap_total = get_state_snapshot()['total']
-                    progress = int((copied / max(snap_total, 1)) * 100)
-                    set_state(copied=copied, progress=min(progress, 99), file=name)
-                    
-        # 3. Spoof the root parent directory itself last
-        if not os.path.islink(dest_path):
-            if apply_spoof_time(dest_path, current_time):
-                copied += 1
-                
+        copied, spoof_error = spoof_tree(dest_path, start_timestamp,
+                                         on_progress=on_spoof, cancelled=is_cancelled)
+        if spoof_error:
+            raise RuntimeError(spoof_error)
+        if is_cancelled(): raise TransferCancelled()
         finish_transfer('done', 'تم تطبيق التمويه الجذري بنجاح.', extra={'progress': 100, 'copied': copied})
     except TransferCancelled: finish_transfer('cancelled', 'تم إلغاء التمويه.')
     except Exception as e: set_state(status='error', log=str(e))
@@ -2925,6 +3049,12 @@ HTML_TEMPLATE = """
                     <button type="button" class="size-option{% if s.id == active_font_size %} active{% endif %}" data-size-id="{{ s.id }}" onclick="pickFontSize('{{ s.id }}')">{{ s.name }}</button>
                     {% endfor %}
                 </div>
+                <div class="settings-note" style="margin-top:14px; margin-bottom:6px;">بعد النسخ</div>
+                <label class="auto-spoof-row" for="autoSpoofCheck" style="display:flex; align-items:center; gap:10px; cursor:pointer; color:var(--text); font-size:calc(14px * var(--font-scale));">
+                    <input type="checkbox" id="autoSpoofCheck" class="checkbox" style="margin:0;" {% if auto_spoof %}checked{% endif %} onchange="pickAutoSpoof(this.checked)">
+                    <span>تمويه تواريخ كل الوجهة تلقائياً بعد النسخ</span>
+                </label>
+                <div class="settings-note" style="margin-top:2px;">يشمل كل عناصر مجلد الوجهة بعد اكتمال النسخ والتحقق، ما عدا مسارات المصدر والمجلدات المحمية. يعمل حتى لو أُغلق المتصفح.</div>
                 <div id="generalSaveState" class="settings-save-state"></div>
             </div>
 
@@ -5264,6 +5394,14 @@ HTML_TEMPLATE = """
         saveTypography({ font_size: id }, 'generalSaveState');
     }
 
+    // The saved switch IS the consent: no per-copy prompt, so it also works
+    // when Chrome was closed before the copy finished.
+    function pickAutoSpoof(enabled) {
+        let cb = document.getElementById('autoSpoofCheck');
+        if (cb) cb.checked = !!enabled;
+        saveTypography({ auto_spoof: !!enabled }, 'generalSaveState');
+    }
+
     function pickTheme(id) {
         if (!id || id === activeThemeId) return;
         setSettingsState('جارٍ الحفظ...', '');
@@ -6275,6 +6413,15 @@ HTML_TEMPLATE = """
                     document.getElementById('progressText').innerText = 'تحقق';
                     document.getElementById('countText').innerText =
                         (data.verify_done || 0) + ' / ' + (data.verify_total || 0);
+                } else if (data.phase === 'spoofing') {
+                    // Metadata-only pass, still server-side: no fake card speed.
+                    fillEl.classList.remove('indeterminate');
+                    let spoofPct = data.spoof_total
+                        ? Math.min(99, Math.round(((data.spoof_done || 0) / data.spoof_total) * 100))
+                        : 99;
+                    fillEl.style.width = spoofPct + '%';
+                    document.getElementById('progressText').innerText = 'تمويه';
+                    document.getElementById('countText').innerText = 'تم تمويه ' + (data.spoof_done || 0);
                 } else {
                     fillEl.classList.remove('indeterminate');
                     document.getElementById('progressText').innerText = data.progress + '%';
@@ -6292,6 +6439,10 @@ HTML_TEMPLATE = """
                 } else if (data.phase === 'verifying') {
                     currentEl.innerText = 'جاري التحقق من الحجم الإجمالي... '
                         + (data.verify_done || 0) + ' / ' + (data.verify_total || 0);
+                    currentEl.style.color = 'var(--accent-text)';
+                } else if (data.phase === 'spoofing') {
+                    currentEl.innerText = 'جاري تمويه تواريخ الوجهة... '
+                        + (data.spoof_done || 0) + ' / ' + (data.spoof_total || 0);
                     currentEl.style.color = 'var(--accent-text)';
                 } else if (data.stalled && data.action !== 'tts') {
                     currentEl.innerText = (data.action === 'delete')
@@ -6315,7 +6466,8 @@ HTML_TEMPLATE = """
                 // Live throughput + remaining time, so "slow" is a number.
                 let speedEl = document.getElementById('speedText');
                 if (speedEl) {
-                    if (data.phase === 'syncing' || data.phase === 'verifying') {
+                    if (data.phase === 'syncing' || data.phase === 'verifying'
+                        || data.phase === 'spoofing') {
                         speedEl.innerText = '';
                     } else if (data.speed_mbps > 0) {
                         let eta = '';
@@ -6391,12 +6543,22 @@ HTML_TEMPLATE = """
                                 verifyNote = ' • التحقق: ' + data.verified + '/' + data.verify_total + ' سليم';
                             }
                         }
+                        let spoofNote = '';
+                        if (data.action === 'copy') {
+                            if (data.spoof_cancelled) {
+                                spoofNote = ' • تم إيقاف التمويه';
+                            } else if (data.spoof_error) {
+                                spoofNote = ' • تعذر تمويه التواريخ';
+                            } else if (data.spoof_total) {
+                                spoofNote = ' • تمويه ' + (data.spoof_done || 0) + '/' + data.spoof_total;
+                            }
+                        }
                         document.getElementById('timeTakenDiv').style.display = 'block';
                         document.getElementById('timeTakenDiv').innerText = 'استغرق: ' + data.time_taken
                             + (data.copy_seconds ? ' • النسخ ' + data.copy_seconds + ' ث' : '')
                             + (data.avg_mbps ? ' • متوسط السرعة: ' + data.avg_mbps + ' MB/s' : '')
                             + (data.verify_seconds ? ' • التحقق ' + data.verify_seconds + ' ث' : '')
-                            + verifyNote;
+                            + verifyNote + spoofNote;
                         // Remember this card's measured throughput: it is the only
                         // honest basis for the action bar's ETA next time.
                         if (data.action === 'copy' && data.avg_mbps > 0) {
@@ -6429,6 +6591,11 @@ HTML_TEMPLATE = """
                     if (data.verify_failed && data.verify_failed.length > 0) {
                         lines.push('<b>التحقق من الحجم:</b>');
                         data.verify_failed.forEach(function(n){ lines.push('- ' + esc(n)); });
+                    }
+                    if (data.spoof_error) {
+                        lines.push('<b>تمويه التواريخ:</b> ' + esc(data.spoof_error));
+                    } else if (data.spoof_cancelled) {
+                        lines.push('<b>تمويه التواريخ:</b> تم الإيقاف');
                     }
                     if (data.hint) {
                         lines.push('<b>ملاحظة:</b> ' + esc(data.hint));
@@ -6523,6 +6690,7 @@ def index():
         font_sizes=FONT_SIZES,
         active_font=font_id,
         active_font_size=size_id,
+        auto_spoof=bool(APP_SETTINGS.get('auto_spoof')),
     )
 
 @app.route('/api/system')
