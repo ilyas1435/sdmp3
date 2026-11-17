@@ -196,6 +196,10 @@ def set_state(**kwargs):
 def get_state_snapshot():
     with transfer_lock:
         snap = dict(transfer_state)
+        # Informational only: the browser uses this to say "still running" if a
+        # poll resumed after Chrome was closed. It never drives the progress
+        # bar or the copy logic — the worker owns both end-to-end.
+        snap['worker_alive'] = is_thread_alive(ACTIVE_THREAD)
     # Stall detection is computed on read: while a card hangs, the worker is
     # blocked in a syscall and cannot update its own state. Reporting the stall
     # is what turns a silent freeze into a message the user can act on.
@@ -371,6 +375,11 @@ def acquire_wakelock():
         pass
 
 def release_wakelock():
+    # acquire_wakelock() is a no-op under --no-wakelock. Calling the unlock here
+    # anyway would release a lock another Termux session owns, and would leave
+    # the phone free to sleep mid-copy. Never unlock what we did not lock.
+    if not WAKELOCK_ENABLED:
+        return
     try:
         subprocess.run(["termux-wake-unlock"], timeout=3, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except Exception:
@@ -2421,6 +2430,14 @@ HTML_TEMPLATE = """
 
         .progress-bar { width: 100%; height: 10px; background: var(--field); border-radius: 999px; overflow: hidden; margin: 15px 0; border: 1px solid var(--border);}
         .progress-fill { height: 100%; background: var(--accent); width: 0%; border-radius: 999px; transition: width 0.3s ease; }
+        /* The worker lives in Termux, not in this tab: closing Chrome cannot
+           stop a copy. Say so once, quietly, instead of implying that this
+           dialog must stay open. */
+        .background-note { display:flex; align-items:center; gap:8px; margin-top:10px;
+            padding:9px 11px; border-radius:10px; border:1px solid var(--accent-line);
+            background:var(--accent-soft); color:var(--text-muted);
+            font-size:calc(11.5px * var(--font-scale)); line-height:1.6; }
+        .background-note .icon { width:15px; height:15px; flex-shrink:0; color:var(--accent-text); }
         /* A delete has no known total, so its bar sweeps instead of pretending
            to know a percentage. The solid fill keeps it readable when the user
            asked the system for reduced motion. */
@@ -3232,6 +3249,10 @@ HTML_TEMPLATE = """
             <span id="countText">0 / 0</span>
         </div>
         <div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
+        <div id="backgroundNote" class="background-note">
+            <svg class="icon" aria-hidden="true"><use href="#ico-check"></use></svg>
+            <span>يستمر النسخ في الخلفية حتى لو أُغلق المتصفح، طالما أن Termux يعمل. لا حاجة لإبقاء هذه النافذة مفتوحة.</span>
+        </div>
         <div id="currentFile" class="ltr-input truncate-text" style="font-size:calc(12px * var(--font-scale)); color:var(--text-muted); background:transparent; border:none; padding:0; width: 100%;">جاري التحضير...</div>
         <div style="display:flex; justify-content:space-between; font-size:calc(12px * var(--font-scale)); color:var(--text-muted); margin-top:8px;">
             <span id="speedText" style="color:var(--accent); font-weight:500;"></span>
