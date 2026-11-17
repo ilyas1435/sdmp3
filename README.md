@@ -21,15 +21,17 @@
 - 🗑️ **Forced delete with a live monitor** — deleting a file or a whole tree runs in the background and shows a sweeping progress bar plus a running "deleted N" count. It retries with loosened permissions and finally hands the job to **Shizuku** (`rish rm -rf`) so even `Android/data` can go; only volume roots and system/app paths are refused.
 
 ### 🔍 Search
-- ⚡ **Deep instant search** — find folders/files by name with a live "instant" speed badge.
+- ⚡ **Deep instant search in the file browser** — results appear **inside the source tree**, not in a separate lookalike panel: the same row layout, checkboxes, rename/delete actions and file sizes, with a sticky header and a back button. Mutations re-run the last search automatically.
 - 📂 **Visible search scope** — the search runs inside the folder shown above it, with a sub-folder menu, «↑ أعلى» and «تحديد مجلد»; narrowing a search never moves the copy source.
 - 🗂️ **Folders-only toggle** — restrict search to folder names only.
 - 💾 **Persistent index** — a built folder index survives an F5 and a server restart (kept in `~/.local/state/sdmp3/search_cache.json`).
 
 ### 🎨 Appearance
-- 🎭 **14 themes** — the warm **Coffee Blues** default plus dark, light and the two **GitHub** palettes (dark `#0d1117` / light `#ffffff`), all contrast-checked (text ≥ 7:1, labels ≥ 4.5:1) when the registry loads.
+- 🎭 **16 contrast-checked themes** — the recalmed **Coffee Blues** default, dark, light, sage/forest and plum variants (`forest-mist`, `dusk-plum`) and the two GitHub palettes, all checked for WCAG contrast when the registry loads. Semantic danger/success and the four storage-kind colours stay identical across themes.
+- 🎛️ **Dropdown settings** — colours, font and text size are three labelled selects (with a live font preview) instead of scrolling card grids; changes apply instantly and are saved to the device.
 - 🔤 **11 Arabic fonts, self-hosted** — including **IBM Plex Sans Arabic** in its four real weights (400/500/600/700). No `fonts.googleapis.com` request: the page must open instantly on an offline phone.
 - 🔍 **Four text sizes** — small, normal, large and extra-large, applied instantly without a reload.
+- ✨ **SVG icons everywhere** — one sprite supplies storage, navigation, folder and status icons; no font glyphs drift with the theme.
 - 🧭 **Foldable route block** — the source/destination pair folds away (the folded line still names both paths) so the page is about copying, not configuring; the open/closed state is remembered.
 
 ### 📝 JOC Index Generator
@@ -57,6 +59,7 @@
 
 ### 🕓 Timestamp Spoofing
 - 🗓️ **This spoof mode** — obfuscate last-modified/last-accessed dates of all files & folders (whole destination, or the entire storage if destination is empty).
+- ⚙️ **Automatic after every copy** — enable «تمويه تواريخ كل الوجهة تلقائياً بعد النسخ» in الإعدادات › عام. It spoofs the **whole destination** inside the copy worker, after verification, skipping your selected sources, protected folders and symlinks — and it still runs if Chrome was closed. Failures keep the copy successful and show a calm warning.
 - 🎲 **Randomised start date** — auto-generates a random timestamp inside **2023**.
 - 🛡️ **Bottom-up traversal** — children are processed before parents so parents' timestamps aren't reset by their own edits.
 
@@ -66,7 +69,8 @@
 - 🧾 **Protected-item reporting** — whatever survives is listed name-by-name with its reason, plus a copy-details button.
 
 ### 🛡️ Reliability
-- ⚡ **Termux wake lock** — keeps the CPU awake during long transfers.
+- 🌐 **Copy continues in the background** — the transfer runs in a Termux worker thread, not in the browser tab. Close Chrome, switch apps or fold the progress dialog: the copy (and optional auto-spoof) finishes with **no loss of speed**, because the writer is one sequential thread either way. Reopen the page and it picks up the same progress.
+- ⚡ **Termux wake lock** — keeps the CPU awake during long transfers; `--no-wakelock` never releases a lock owned by another session.
 - ♻️ **Safe shutdown** — Ctrl+C / SIGTERM cleans up TTS cache cleanly.
 - 🌐 **Network access** — serves on `0.0.0.0:5050` for access from any device.
 - 📊 **Honest progress** — live (last-6-seconds) MB/s and ETA, per-file failure reasons, and a calm amber "الكارت بطيء" state that only becomes the red "الكارت لا يستجيب" after 60s of real silence. A normal `os.sync()` flush no longer triggers a false card warning.

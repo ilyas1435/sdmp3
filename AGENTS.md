@@ -209,9 +209,9 @@ Each storage dict carries `kind` + `icon` so the UI can label it honestly:
 
 `storage_kind()` looks the volume up in `/proc/mounts` as `/mnt/media_rw/<UUID>` and passes the device to `classify_volume_device()`. `df -h` alone cannot tell an SD card from a USB stick — both are `/storage/XXXX-XXXX`. The icons are one SVG sprite (`<symbol id="ico-*">` right after `<body>`) referenced with `<use href="#ico-...">`; the select-based pickers were replaced by `.storage-card` buttons (`chooseStorage()` / `syncStorageCards()`), and the same icons appear in the path picker badge.
 
-Theme = **Coffee Blues** (https://www.color-hex.com/color-palette/102595) is the default of the theme registry (see «Settings, themes and search history»): teal `#39918c`, sand `#d0b49f`, tan `#be9078`, clay `#ab6b51`, slate `#2f435a`. The darks are that slate warmed and softened — page `--bg #17222e`, card `--card #1f2c3a`, one lift `--card-2 #293847` — and the slate's coolness stays in `--border #2b3e52`. `--field #141d27` (a touch deeper than the page) is the recessed surface for inputs, the tree, storage rows and progress tracks. The character is **warm sand on cool slate** (`--text #ebe1d6` 11.0:1 on a card, muted `#aca19a` 5.6:1): do not neutralise either side, or the theme dies. `--radius` is 12px; `--rule` (translucent `--border`) is the hairline between sections, `--field-line` outlines inputs/cards, `--bar-bg`/`--bar-line` belong to the opaque action bar, and `--num-font` (`NUM_FONT_STACK`) is the Latin mono face used by `.num`. These values live in `sdmp3_themes.py` now, not in the template.
+Theme = **Coffee Blues** (https://www.color-hex.com/color-palette/102595) is still the default of the 16-theme registry, but v1.10 hue-rotated it while preserving relative luminance: page `--bg #192133`, card `--card #222b40`, lift `--card-2 #2d374d`, `--field #161c2b`, `--border #2f3c5a`, `--text #e9e2d1`, muted `#aaa297`, accent `--accent #3d8e9c`, accent fill `--accent-fill #327883` (hover `#2a6973`). The warm-sand-on-cool-slate character survives (text ≈ 10.9:1 on a card, muted ≈ 5.6:1); only the hues moved, so contrast stayed inside the contract. `--radius` is 12px; `--rule` (translucent `--border`) is the hairline between sections, `--field-line` outlines inputs/cards, `--bar-bg`/`--bar-line` belong to the opaque action bar, and `--num-font` (`NUM_FONT_STACK`) is the Latin mono face used by `.num`. **No colour literal belongs in the template** — every token, alpha variant and layout colour comes from `sdmp3_themes.py`.
 
-Teal is the accent, with a split because the palette teal is light: `--accent #39918c` marks (icons, focus, checkbox, disk bar — 3.6:1, fine for marks but not for 11px text), while filled buttons use the darker palette teal `--accent-fill #2e7a75` with a white label (4.6:1; hover `--accent-fill-hover #276a66` 5.7:1). `--accent-ink #151e28` labels the warning/success/danger fills (7.8 / 7.4 / 4.6:1). Danger: `--danger #f43f5e` fill and `--danger-ink #fc8b9b` text (6.0:1 on a card, 5.2:1 raised). Success is the calm sage `--success #7fbf93` (6.6:1 as text on a card), not the old neon green. Nothing glows — no gradient, no coloured button shadow, no inset card sheen; secondary buttons stay neutral `btn-outline` so only the primary action wears teal.
+The accent split stays: `--accent` marks (icons, focus, checkbox, disk bar, small status text only where the ratio allows), while filled buttons use `--accent-fill` with `--on-accent`. `--accent-ink #151e28` labels warning/success/danger fills. Danger (`--danger #f43f5e`, text `--danger-ink #fc8b9b`) and success (`--success #7fbf93`) are semantic and were deliberately **not** rotated in v1.10, along with the four `--kind-*` volume hues, so their meaning survives every theme. Nothing glows — no gradient, no coloured button shadow, no inset card sheen; secondary buttons stay neutral `btn-outline` so only the primary action wears the accent.
 
 Each volume kind owns a hue: `.storage-card.kind-*` sets a local `--kind`/`--kind-ink`/`--kind-soft`/`--kind-tile` used by the card's start border, icon tile, active fill, active name and "الحالي/الوجهة" badge; `.pill-kind-*` and `.kind-border-*` reuse the same variables for the picker badge, the header `sdWritePill` and the path inputs. Internal = sand `#d0b49f`, SD = bright clay `#d98b63` (ink `#dda88c`), USB = blue `#8fa9c4` (ink `#a8bfd6`), unknown = olive `#a3b18a` (ink `#b7c39f`). The four are told apart by icon + label as well as hue — the palette only has so many warm earths — and `-ink` exists because the fill colours are too dark for 11px text. Only a writable card gets its kind hue in the header pill; a refusing card stays `pill-warn`.
 
@@ -384,14 +384,16 @@ tab, all in the DOM (`#settingsPaneAppearance` / `General` / `Index` / `About`);
 or lost. `openIndexSettings()` (the create dialog's button) opens the modal
 straight on «الفهرس».
 
-- **المظهر** is the theme grid, rendered server-side by Jinja from `themes`
-  (cards carry `data-theme-id` and a swatch row from `t.swatches`), so the page
-  needs no theme JSON in JS. `pickTheme(id)` POSTs `/api/settings`, then applies
-  the returned `tokens`/`theme_bg` and moves the `active` class.
-- **عام** is typography: the font cards (server-rendered from `fonts`, each card
-  rendered *in its own family* via `style="font-family: {{ f.css_stack }}"`) and
-  the size presets (`font_sizes`). `pickFont(id)` / `pickFontSize(id)` POST one
-  key each and apply `app_font` / `font_scale` from the response.
+- **المظهر** is one labelled dropdown, `#themeSelect`, rendered server-side by
+  Jinja from `themes` (each `<option>` carries `data-theme-id` and is selected
+  server-side), so the page needs no theme JSON in JS. `pickTheme(id)` POSTs
+  `/api/settings`, then `applyTheme()` applies the returned `tokens`/`theme_bg`,
+  sets `<html data-theme>` and syncs the select. No reload, no re-render.
+- **عام** is typography dropdowns: `#fontSelect` (12 options with
+  `data-font-id`), `#sizeSelect` (4 options with `data-size-id`) and a live
+  `#fontPreview` styled with `{{ app_font }}`. `pickFont(id)` /
+  `pickFontSize(id)` POST one key each and apply `app_font` / `font_scale` from
+  the response; the same pane owns the `auto_spoof` switch.
 - **الفهرس** owns the JOC index settings — see «Index settings» below. It is the
   only place they are written.
 - `setSettingsState(text, kind, elementId)` writes one status line per pane
@@ -487,6 +489,13 @@ The search used to walk `currentSourceRoot` silently. It now walks
   and «تحديد مجلد» (`openPathBrowser('search')`, the third `pickerMode`).
 - `enterSearchSubfolder(name)` joins one segment onto the current scope; the
   select resets to its placeholder so the same folder can be chosen again.
+- Search results are **not** a lookalike panel: `searchDeep()` puts them in
+  `#treeContainer` behind a sticky `#searchViewHead` with a back button. Both
+  browsing and searching go through `appendItemRows()` → `itemRowHtml(item, opts)`,
+  so folder toggles, checkboxes, rename, delete and file sizes behave
+  identically; `exitSearchView()` restores the last browsed folder and the last
+  query is re-run after a mutation. `/api/search` returns `size` on file hits
+  for that shared row.
 
 ## Search cache
 The instant-search index (`FOLDER_CACHE`) is mirrored to
@@ -504,7 +513,7 @@ Three JSON files, all written through `sdmp3_state.py` (atomic `tmp` +
 
 | File | Contents |
 |------|----------|
-| `state_file('settings.json')` | `{version, theme, font, font_size, updated}` — schema version 2 |
+| `state_file('settings.json')` | `{version, theme, font, font_size, auto_spoof, updated}` — schema version 2 |
 | `state_file('index_settings.json')` | the JOC index settings — schema version 2, see «Index settings» |
 | `state_file('search_history.json')` | `{items: [last 25 results], queries: [last 25 queries]}` |
 
@@ -512,9 +521,19 @@ All three are loaded in `main()` (so the first request already has them) and ser
 by `GET/POST /api/settings`, `GET/POST /api/index_settings`, `GET /api/history`,
 `POST /api/history/clear`, `POST /api/history/remove`.
 
-`POST /api/settings` takes **any subset** of `theme`, `font`, `font_size`: a
-missing key keeps its stored value, and an unknown id is a 400, so
+`POST /api/settings` takes **any subset** of `theme`, `font`, `font_size` and
+`auto_spoof`: a missing key keeps its stored value, an unknown id is a 400, and
+a bad boolean is dropped (old files default `auto_spoof` to `false`), so
 `settings.json` can never hold a value the page cannot render.
+
+**Auto-spoof (v2 additive setting).** The saved General switch is the consent —
+there is no per-copy prompt, so it also works with the browser closed. When it
+is on, `copy_thread_task()` runs `count_files()` then `spoof_tree()` **inside the
+same worker**, after the final flush and verification. It spoofs the whole
+destination, skipping the selected source paths, protected paths and symlinks;
+a failure or cancellation keeps the copy `status='done'` and reports
+`spoof_total` / `spoof_done` / `spoof_error` / `spoof_cancelled` (error is `''`
+on success). Phase `spoofing` renders «تم تمويه N» in the progress modal.
 
 ### Index settings (`index_settings.json`)
 The JOC form lives in الإعدادات › الفهرس and is written **only** by its
@@ -542,13 +561,13 @@ The JOC form lives in الإعدادات › الفهرس and is written **only*
 ### Theme registry (`sdmp3_themes.py`)
 A theme is one dict of palette colours; **every** alpha variant (`--accent-soft`,
 `--kind-sdcard-tile`, `--pill-bg`, `--shine`, `--shadow-*`, …) is derived in
-`build_tokens()`, so a theme can never drift out of sync with the CSS. 14 themes:
-`coffee-blues` (default, byte-identical to the old hand-written `:root`),
-`midnight-teal`, `slate-sand`, `olive-grove`, `clay-rose`, `graphite`,
-`night-oxford`, `deep-charcoal`, the four light ones `paper`, `sandstone`,
-`clear-dawn` / `pearl-breath`, and the two GitHub palettes `github-dark`
-(`--bg #0d1117`, accent `#2f81f7`) / `github-light` (`--bg #ffffff`, accent
-`#0969da`).
+`build_tokens()`, so a theme can never drift out of sync with the CSS. **16
+themes**: the 14 v1.9 names (`coffee-blues` default — no longer byte-identical
+to the old hand-written `:root` — `midnight-teal`, `slate-sand`, `olive-grove`,
+`clay-rose`, `graphite`, `night-oxford`, `deep-charcoal`, `paper`, `sandstone`,
+`clear-dawn`, `pearl-breath`, `github-dark`, `github-light`) hue-rotated in
+v1.10, plus `forest-mist` (light sage) and `dusk-plum` (dark plum). All 16 keep
+66 derived tokens and pass the contrast contract at import.
 
 - A **dark** theme uses light *fills* (`success_fill`, `danger_fill`,
   `sand_fill`) with a dark label (`on_fill`/`accent_ink`); that is why
@@ -629,5 +648,17 @@ A `jocReviewTxt` checkbox (in الإعدادات › الفهرس) defers txt-do
 
 ## Behavior notes
 - File/dir traversal and copying intentionally use DFS + natural sort so hardware players replay in order.
-- Timestamp spoofing processes children before parents (bottom-up).
-- Wake lock is acquired during transfers via Termux (`acquire_wakelock`).
+- Timestamp spoofing processes children before parents (bottom-up). With
+  `auto_spoof` on it runs in the copy worker itself, after verification.
+- Wake lock is acquired during transfers via Termux (`acquire_wakelock`);
+  `release_wakelock()` is guarded by `WAKELOCK_ENABLED`, so `--no-wakelock`
+  never releases a lock another Termux session owns.
+- **A copy lives in the Termux worker, not in Chrome.** Closing the browser (or
+  the progress dialog) does not stop it and costs no throughput: the writer is
+  one sequential thread either way. `/transfer/status` is a *view* of that
+  worker; `worker_alive` (bool, in every snapshot) is informational and never
+  drives progress. The progress modal says so with `.background-note` and a
+  sprite check icon. Regression proof: a harness POSTs `/transfer/start`, never
+  polls, joins `ACTIVE_THREAD`, and finds `status='done'` in `transfer_state`.
+- Icons are one SVG sprite plus `spriteIcon(id)` for generated markup. Text
+  glyphs (`▶`, `▼`, `↑`, `✎`, `✕`, `✓`) are not used as icons.
