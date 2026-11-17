@@ -2204,9 +2204,9 @@ HTML_TEMPLATE = """
         .route-joc { margin-top:12px; }
         @media (max-width: 480px) { .route-sum-label { display:none; } }
 
-        /* Search scope: one bar that names the folder being searched, plus the
-           same folder's entries so a result can be selected without leaving the
-           section. 300 rows at a time keeps a 4 000-file folder instant. */
+        /* Search scope: one sticky control bar that names the folder being
+           searched and offers its sub-folders. The entries themselves live in
+           the tree below, so this bar stays compact while the keyboard is up. */
         .search-scope { display:flex; flex-direction:column; gap:8px; margin-bottom:12px; padding:9px 10px;
             border-radius:11px; background:var(--field); border:1px solid var(--field-line); }
         .scope-line { display:flex; align-items:center; gap:7px; flex-wrap:wrap; }
@@ -2216,15 +2216,6 @@ HTML_TEMPLATE = """
             white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
         .scope-select { max-width:46%; padding:5px 8px; border-radius:7px; border:1px solid var(--border);
             background:var(--bg); color:var(--text); font-family:inherit; font-size:calc(11.5px * var(--font-scale)); }
-        .scope-items { display:flex; flex-direction:column; gap:5px; max-height:210px; overflow-y:auto; }
-        .scope-item { display:flex; align-items:center; gap:8px; padding:5px 9px; border-radius:9px;
-            background:var(--card); border:1px solid var(--border); }
-        .scope-item .icon { width:14px; height:14px; color:var(--text-muted); flex-shrink:0; }
-        .scope-item-name { flex:1; min-width:0; font-size:calc(11.5px * var(--font-scale)); color:var(--text);
-            white-space:nowrap; overflow:hidden; text-overflow:ellipsis; cursor:pointer; }
-        .scope-item-name:hover { color:var(--accent-text); }
-        .scope-item-size { flex-shrink:0; font-size:calc(10px * var(--font-scale)); color:var(--text-muted); }
-        .scope-empty { padding:6px 2px; font-size:calc(11px * var(--font-scale)); color:var(--text-muted); }
 
         /* Monospace digits: counts and speeds must not jitter between polls. */
         .num { font-family: var(--num-font); font-variant-numeric: tabular-nums; direction:ltr; unicode-bidi:isolate; }
@@ -2770,7 +2761,7 @@ HTML_TEMPLATE = """
     <section class="section">
         <div class="section-head">
             <svg class="icon" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
-            <h2 class="section-title">بحث عن مجلد أو ملف</h2>
+            <h2 class="section-title">البحث</h2>
             <span id="searchSpeedBadge" class="section-kicker" style="display:none; color:var(--accent-text);">
                 <svg class="icon" style="width:12px;height:12px;" viewBox="0 0 24 24"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg> فوري
             </span>
@@ -2789,8 +2780,6 @@ HTML_TEMPLATE = """
                 </button>
                 <button type="button" class="btn btn-outline btn-sm" onclick="openPathBrowser('search')">تحديد مجلد</button>
             </div>
-            <div class="scope-items" id="searchScopeItems"></div>
-            <button type="button" class="btn btn-outline btn-sm" id="searchScopeMore" style="display:none; align-self:flex-start;" onclick="loadMoreScopeItems()">عرض المزيد</button>
         </div>
         <div class="path-line" style="margin-bottom: 12px;">
             <input type="text" id="searchInput" placeholder="اكتب اسم الملف للبحث..." style="margin-bottom:0; flex:1 1 160px;" aria-label="نص البحث">
@@ -4959,12 +4948,8 @@ HTML_TEMPLATE = """
     // ---- search scope: the folder the search runs in ---------------------
     // The old search silently walked currentSourceRoot, so there was no way to
     // narrow it and no hint about where it looked. The scope is its own value
-    // (its own localStorage key) and its entries are listed here, so a result
-    // can be selected without opening another dialog.
-    const SCOPE_FILES_STEP = 300;
+    // (its own localStorage key); its sub-folder menu comes from /api/items.
     let searchScopePath = localStorage.getItem('sdmp3_search_scope') || '';
-    let scopeItems = [];
-    let scopeShown = SCOPE_FILES_STEP;
 
     function setSearchScope(path, remember) {
         let p = String(path || '').trim();
@@ -4992,94 +4977,30 @@ HTML_TEMPLATE = """
         setSearchScope(base + '/' + sub, true);
     }
 
-    // One request fills both the subfolder menu and the first page of entries:
-    // /api/items already returns {name, path, is_dir, size} from a single scandir.
+    // One request fills the subfolder menu. /api/items returns
+    // {name, path, is_dir, size} from a single scandir; the entries themselves
+    // are rendered by the tree below, not repeated in this control bar.
     function loadSearchScope() {
         let path = searchScopePath || '/sdcard';
         let label = document.getElementById('searchScopePath');
         if (label) { label.textContent = path; label.title = path; }
-        let box = document.getElementById('searchScopeItems');
-        if (box) box.innerHTML = '<div class="scope-empty">جاري التحميل…</div>';
         fetch('/api/items?path=' + encodeURIComponent(path) + '&sort=name')
             .then(function(r) { return r.json(); })
-            .then(function(data) {
-                scopeItems = data.items || [];
-                scopeShown = SCOPE_FILES_STEP;
-                renderSearchScopeItems();
-                renderSearchSubfolders();
-            })
-            .catch(function() {
-                scopeItems = [];
-                renderSearchScopeItems();
-            });
+            .then(function(data) { renderSearchSubfolders(data.items || []); })
+            .catch(function() { renderSearchSubfolders([]); });
     }
 
     // The <select> is only rebuilt when a folder is loaded, never on a keystroke
     // or a checkbox toggle: rebuilding it mid-interaction closes the menu.
-    function renderSearchSubfolders() {
+    function renderSearchSubfolders(items) {
         let sel = document.getElementById('searchSubfolder');
         if (!sel) return;
-        let dirs = scopeItems.filter(function(i) { return i.is_dir; });
+        let dirs = (items || []).filter(function(i) { return i.is_dir; });
         let html = '<option value="">مجلد فرعي…</option>';
         dirs.slice(0, 200).forEach(function(d) {
             html += '<option value="' + esc(d.name) + '">' + esc(d.name) + '</option>';
         });
         sel.innerHTML = html;
-    }
-
-    function renderSearchScopeItems() {
-        let box = document.getElementById('searchScopeItems');
-        let more = document.getElementById('searchScopeMore');
-        if (!box) return;
-        if (!scopeItems.length) {
-            box.innerHTML = '<div class="scope-empty">لا توجد عناصر في هذا المجلد.</div>';
-            if (more) more.style.display = 'none';
-            return;
-        }
-        let shown = scopeItems.slice(0, scopeShown);
-        box.innerHTML = shown.map(function(item) {
-            let size = item.is_dir ? '' : '<span class="scope-item-size num">' + esc(formatBytes(item.size || 0)) + '</span>';
-            return '<div class="scope-item">' +
-                '<input type="checkbox" class="checkbox" value="' + esc(item.path) + '"' +
-                    (isPathSelected(item.path) ? ' checked' : '') +
-                    ' onchange="toggleScopeItem(this, ' + (item.is_dir ? 'true' : 'false') + ')" aria-label="تحديد">' +
-                (item.is_dir ? iconDir : iconFile) +
-                '<span class="scope-item-name truncate-text" data-act="' + (item.is_dir ? 'open' : 'pick') +
-                    '" data-path="' + esc(item.path) + '" title="' + esc(item.path) + '">' + esc(item.name) + '</span>' +
-                size +
-            '</div>';
-        }).join('');
-        if (more) {
-            let rest = scopeItems.length - scopeShown;
-            more.style.display = rest > 0 ? 'inline-flex' : 'none';
-            more.textContent = 'عرض المزيد (' + Math.max(rest, 0) + ')';
-        }
-    }
-
-    function loadMoreScopeItems() {
-        scopeShown += SCOPE_FILES_STEP;
-        renderSearchScopeItems();
-    }
-
-    function toggleScopeItem(cb, isDir) {
-        if (cb.checked) includePath(cb.value, isDir);
-        else excludePath(cb.value);
-        refreshCheckboxStates();
-    }
-
-    let scopeItemsEl = document.getElementById('searchScopeItems');
-    if (scopeItemsEl) {
-        scopeItemsEl.addEventListener('click', function(e) {
-            let hit = e.target.closest ? e.target.closest('[data-act]') : null;
-            if (!hit) return;
-            let path = hit.getAttribute('data-path');
-            if (!path) return;
-            if (hit.getAttribute('data-act') === 'open') { setSearchScope(path, true); return; }
-            // A file has nothing to open, so its name toggles its checkbox.
-            let row = hit.closest('.scope-item');
-            let box = row ? row.querySelector('input[type="checkbox"]') : null;
-            if (box) { box.checked = !box.checked; toggleScopeItem(box, false); }
-        });
     }
 
     function searchViewHeaderHtml(q, scope, count, fromCache) {
