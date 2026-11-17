@@ -2121,6 +2121,10 @@ HTML_TEMPLATE = """
         .btn-sm { padding: 8px 12px; min-height: 38px; font-size: calc(12.5px * var(--font-scale)); }
 
         .tree { max-height: 62vh; overflow: auto; background: var(--field); border: 1px solid var(--border); border-radius: 10px; padding: 8px; scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
+        /* Search replaces the tree's contents; the header stays put while rows scroll. */
+        .search-view-head { position: sticky; top: 0; z-index: 2; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 8px; margin: -8px -8px 8px; background: var(--field); border-bottom: 1px solid var(--field-line); }
+        .search-view-head .search-view-label { color: var(--text-muted); font-size: calc(12px * var(--font-scale)); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .search-view-head .search-view-path { color: var(--text-muted); font-size: calc(11px * var(--font-scale)); direction: ltr; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .tree::-webkit-scrollbar, .modal-content .modal-body::-webkit-scrollbar { width: 8px; height: 8px; }
         .tree::-webkit-scrollbar-thumb, .modal-content .modal-body::-webkit-scrollbar-thumb { background: var(--border); border-radius: 999px; }
         .tree::-webkit-scrollbar-track, .modal-content .modal-body::-webkit-scrollbar-track { background: transparent; }
@@ -2676,7 +2680,7 @@ HTML_TEMPLATE = """
             <input type="checkbox" id="foldersOnlyCheck" class="checkbox" checked style="width:16px; height:16px; margin:0;">
             بحث في أسماء المجلدات فقط
         </label>
-        <div id="searchResults" class="tree" style="display:none; max-height: 250px; margin-top: 12px;"></div>
+        <div class="search-scope-hint" style="color:var(--text-muted); font-size:calc(12px * var(--font-scale)); margin-top:8px;">تظهر النتائج داخل متصفح الملفات في القسم التالي.</div>
 
         <div id="historyBlock" class="search-history" style="display:none;">
             <div class="history-head">
@@ -4524,30 +4528,43 @@ HTML_TEMPLATE = """
             });
         });
     }
+    // The ONLY row renderer for the source browser. Browsing and search share
+    // classes, checkbox namespace, actions and folder expansion; only the
+    // checkbox handler differs (a search hit is also remembered in history).
+    function itemRowHtml(item, opts) {
+        opts = opts || {};
+        let isChecked = isPathSelected(item.path) ? 'checked' : '';
+        let excludedMark = isPathExplicitlyExcluded(item.path) ? '<span class="excluded-badge">مستثنى</span>' : '';
+        let onChange = opts.searchMode ? 'toggleSearchResultSelect' : 'toggleSelect';
+        return `
+            <div class="item-row">
+                ${item.is_dir ? `<button class="toggle-btn" data-toggle="1" aria-label="فتح المجلد">▶</button>` : `<span style="width:26px;display:inline-block;"></span>`}
+                <input type="checkbox" class="checkbox" value="${esc(item.path)}" data-name="${esc(item.name)}" ${isChecked} onchange="${onChange}(this, ${item.is_dir})">
+                <div class="item-name" ${item.is_dir ? 'data-toggle="1"' : `onclick="this.previousElementSibling.click()"`}>
+                    ${item.is_dir ? iconDir : iconFile} <span>${esc(item.name)}</span>${excludedMark}
+                </div>
+                ${item.is_dir ? '' : `<span class="file-size">${formatBytes(item.size || 0)}</span>`}
+                ${rowActionsHtml(item.path, item.name, item.is_dir)}
+            </div>
+            ${item.is_dir ? '<div class="children"></div>' : ''}
+        `;
+    }
+
+    function appendItemRows(parentElement, items, opts) {
+        parentElement.innerHTML = '';
+        if (!items.length) { parentElement.innerHTML = '<div style="padding:10px; color:var(--text-muted);">مجلد فارغ</div>'; return; }
+        items.forEach(item => {
+            let div = document.createElement('div');
+            div.innerHTML = itemRowHtml(item, opts);
+            parentElement.appendChild(div);
+        });
+    }
+
     function loadSubFolders(path, parentElement) {
         parentElement.innerHTML = '<div style="padding:10px; color:var(--text-muted);">جاري التحميل...</div>';
         parentElement.dataset.dirPath = path;
         fetch('/api/items?path=' + encodeURIComponent(path) + '&sort=' + encodeURIComponent(currentSort)).then(r=>r.json()).then(data=>{
-            parentElement.innerHTML = '';
-            if (data.items.length === 0) { parentElement.innerHTML = '<div style="padding:10px; color:var(--text-muted);">مجلد فارغ</div>'; return; }
-            data.items.forEach(item => {
-                let isChecked = isPathSelected(item.path) ? 'checked' : '';
-                let excludedMark = isPathExplicitlyExcluded(item.path) ? '<span class="excluded-badge">مستثنى</span>' : '';
-                let div = document.createElement('div');
-                div.innerHTML = `
-                    <div class="item-row">
-                        ${item.is_dir ? `<button class="toggle-btn" data-toggle="1" aria-label="فتح المجلد">▶</button>` : `<span style="width:26px;display:inline-block;"></span>`}
-                        <input type="checkbox" class="checkbox" value="${esc(item.path)}" ${isChecked} onchange="toggleSelect(this, ${item.is_dir})">
-                        <div class="item-name" ${item.is_dir ? 'data-toggle="1"' : `onclick="this.previousElementSibling.click()"`}>
-                            ${item.is_dir ? iconDir : iconFile} <span>${esc(item.name)}</span>${excludedMark}
-                        </div>
-                        ${item.is_dir ? '' : `<span class="file-size">${formatBytes(item.size)}</span>`}
-                        ${rowActionsHtml(item.path, item.name, item.is_dir)}
-                    </div>
-                    ${item.is_dir ? '<div class="children"></div>' : ''}
-                `;
-                parentElement.appendChild(div);
-            });
+            appendItemRows(parentElement, data.items || []);
         });
     }
 
@@ -4648,7 +4665,9 @@ HTML_TEMPLATE = """
     }
 
     function refreshNearestContainer(btnEl) {
-        if (btnEl.closest('#searchResults')) { searchDeep(); return; }
+        // A mutation inside the search view re-runs the same query, so the
+        // view cannot silently fall back to a directory listing.
+        if (resumeSearchAfterMutation()) return;
         if (btnEl.closest('#destTree')) { loadDestBrowser(document.getElementById('currentDestView').value); return; }
         let container = btnEl.closest('.children') || btnEl.closest('#treeContainer');
         if (container && container.dataset && container.dataset.dirPath) loadSubFolders(container.dataset.dirPath, container);
@@ -4806,6 +4825,11 @@ HTML_TEMPLATE = """
 
     let searchDebounceTimer = null;
     let searchRequestToken = 0;
+    // Search is a temporary view of the source tree, not a second list. These
+    // remember enough to restore it after a rename/delete and to leave it.
+    let treeInSearchMode = false;
+    let lastSearchQuery = '';
+    let lastSearchFoldersOnly = true;
     // ---- search scope: the folder the search runs in ---------------------
     // The old search silently walked currentSourceRoot, so there was no way to
     // narrow it and no hint about where it looked. The scope is its own value
@@ -4932,36 +4956,82 @@ HTML_TEMPLATE = """
         });
     }
 
+    function searchViewHeaderHtml(q, scope, count, fromCache) {
+        return `<div id="searchViewHead" class="search-view-head">
+            <button type="button" class="btn btn-outline btn-sm" onclick="exitSearchView()">
+                <svg class="icon" style="width:14px;height:14px;" viewBox="0 0 24 24"><line x1="19" y1="12" x2="5" y2="12"></line><polyline points="12 19 5 12 12 5"></polyline></svg>
+                العودة للتصفح
+            </button>
+            <span class="search-view-label">نتائج البحث: <b>${esc(q)}</b> (${count}${fromCache ? ' • فوري' : ''})</span>
+            <span class="search-view-path">${esc(scope)}</span>
+        </div>`;
+    }
+
+    function exitSearchView() {
+        // Invalidate a request still in flight: its rows must not repaint the
+        // tree after the user has gone back to browsing.
+        searchRequestToken++;
+        treeInSearchMode = false;
+        lastSearchQuery = '';
+        let badge = document.getElementById('searchSpeedBadge');
+        if (badge) badge.style.display = 'none';
+        let tree = document.getElementById('treeContainer');
+        if (tree) {
+            tree.dataset.searchMode = '0';
+            loadSubFolders(currentSourceRoot, tree);
+        }
+    }
+
+    function resumeSearchAfterMutation() {
+        if (!treeInSearchMode || !lastSearchQuery) return false;
+        let input = document.getElementById('searchInput');
+        if (input) input.value = lastSearchQuery;
+        let foldersOnly = document.getElementById('foldersOnlyCheck');
+        if (foldersOnly) foldersOnly.checked = lastSearchFoldersOnly;
+        searchDeep(false);
+        return true;
+    }
+
     function searchDeep(committed) {
-        let q = document.getElementById('searchInput').value.trim();
-        let foldersOnly = document.getElementById('foldersOnlyCheck').checked; 
-        let resBox = document.getElementById('searchResults');
-        if(!q) { resBox.style.display = 'none'; resBox.innerHTML = ''; return; }
-        resBox.style.display = 'block'; resBox.innerHTML = '<div style="padding:10px;color:var(--text-muted);">جاري البحث السريع...</div>';
+        let input = document.getElementById('searchInput');
+        let tree = document.getElementById('treeContainer');
+        if (!input || !tree) return;
+        let q = input.value.trim();
+        if (!q) { exitSearchView(); return; }
+        let foldersOnly = document.getElementById('foldersOnlyCheck').checked;
+        let scope = searchScopePath || currentSourceRoot;
+        treeInSearchMode = true;
+        lastSearchQuery = q;
+        lastSearchFoldersOnly = foldersOnly;
+        tree.dataset.dirPath = scope;
+        tree.dataset.searchMode = '1';
+        let head = searchViewHeaderHtml(q, scope, 0, false);
+        tree.innerHTML = head + '<div style="padding:10px;color:var(--text-muted);">جاري البحث السريع...</div>';
 
         let myToken = ++searchRequestToken;
-        fetch('/api/search?q=' + encodeURIComponent(q) + '&folders_only=' + foldersOnly + '&root=' + encodeURIComponent(searchScopePath || currentSourceRoot) + (committed ? '&remember=1' : ''))
+        fetch('/api/search?q=' + encodeURIComponent(q) + '&folders_only=' + foldersOnly + '&root=' + encodeURIComponent(scope) + (committed ? '&remember=1' : ''))
             .then(r=>r.json()).then(data=>{
-            if (myToken !== searchRequestToken) return; 
+            if (myToken !== searchRequestToken) return;
+            let results = data.results || [];
             document.getElementById('searchSpeedBadge').style.display = data.from_cache ? 'inline-flex' : 'none';
-            resBox.innerHTML = '';
-            if(data.results.length === 0) { resBox.innerHTML = '<div style="padding:10px;color:var(--text-muted);">لم يتم العثور على نتائج.</div>'; }
-            else data.results.forEach(item => {
-                let isChecked = isPathSelected(item.path) ? 'checked' : '';
-                resBox.innerHTML += `<div class="item-row"><input type="checkbox" class="checkbox" value="${esc(item.path)}" data-name="${esc(item.name)}" ${isChecked} onchange="toggleSearchResultSelect(this, ${item.is_dir})">
-                    <div class="item-name" style="flex-direction:column;align-items:start;gap:4px;" onclick="this.previousElementSibling.click()">
-                        <div style="display:flex;gap:6px;">${item.is_dir?iconDir:iconFile}${esc(item.name)}</div>
-                        <div class="ltr-input truncate-text" style="font-size:calc(11px * var(--font-scale));color:var(--text-muted); width: 100%;">${esc(item.path)}</div>
-                    </div>${rowActionsHtml(item.path, item.name, item.is_dir)}</div>`;
-            });
+            head = searchViewHeaderHtml(q, scope, results.length, data.from_cache);
+            if (!results.length) {
+                tree.innerHTML = head + '<div style="padding:10px;color:var(--text-muted);">لم يتم العثور على نتائج.</div>';
+            } else {
+                let body = document.createElement('div');
+                appendItemRows(body, results, {searchMode: true});
+                tree.innerHTML = head + body.innerHTML;
+            }
             // The search that just ran is now the newest history entry.
             if (committed) loadSearchHistory();
-        }).catch(() => { if (myToken === searchRequestToken) resBox.innerHTML = '<div style="padding:10px;color:var(--danger-ink);">تعذر إتمام البحث.</div>'; });
+        }).catch(() => {
+            if (myToken === searchRequestToken) tree.innerHTML = head + '<div style="padding:10px;color:var(--danger-ink);">تعذر إتمام البحث.</div>';
+        });
     }
 
     document.getElementById('searchInput').addEventListener('input', function() {
         clearTimeout(searchDebounceTimer);
-        if (this.value.trim().length === 0) { document.getElementById('searchResults').style.display = 'none'; return; }
+        if (this.value.trim().length === 0) { exitSearchView(); return; }
         searchDebounceTimer = setTimeout(function() { searchDeep(false); }, 400);
     });
     document.getElementById('searchInput').addEventListener('keydown', function(e) {
@@ -6771,6 +6841,18 @@ def cache_clear():
     _save_folder_cache()
     return jsonify({'success': True})
 
+def _fill_search_result_sizes(results):
+    """Add the size a shared tree row needs, for at most 40 file hits."""
+    for item in results:
+        if item.get('is_dir'):
+            continue
+        try:
+            item['size'] = os.path.getsize(item['path'])
+        except OSError:
+            item['size'] = 0
+    return results
+
+
 @app.route('/api/search')
 def deep_search():
     q = request.args.get('q', '').lower().strip()
@@ -6796,7 +6878,7 @@ def deep_search():
         _rank_search_results(results, q)
         if remember:
             remember_search(q, root, results)
-        return jsonify({'results': results[:SEARCH_MAX_RESULTS], 'from_cache': True, 'cache_count': cached['count']})
+        return jsonify({'results': _fill_search_result_sizes(results[:SEARCH_MAX_RESULTS]), 'from_cache': True, 'cache_count': cached['count']})
 
     results = []
     stack = deque([root])  
@@ -6830,7 +6912,7 @@ def deep_search():
     _rank_search_results(results, q)
     if remember:
         remember_search(q, root, results)
-    return jsonify({'results': results, 'from_cache': False})
+    return jsonify({'results': _fill_search_result_sizes(results), 'from_cache': False})
 
 
 # ---------------------------------------------------------------------------
