@@ -2361,49 +2361,20 @@ HTML_TEMPLATE = """
         .settings-tab.active { color:var(--accent-text); border-color:var(--accent); background:var(--accent-soft); }
         .settings-tab:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
         .settings-pane { display:flex; flex-direction:column; gap:12px; }
-        .theme-grid { display:grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap:9px; }
-        .theme-card { display:flex; flex-direction:column; gap:8px; padding:10px; border-radius:12px;
-            border:1px solid var(--border); background:var(--field); cursor:pointer; text-align:right;
-            font-family:inherit; color:var(--text); transition: border-color .15s, background .15s; }
-        .theme-card:hover { border-color:var(--accent); }
-        .theme-card.active { border-color:var(--accent); background:var(--accent-soft); }
-        .theme-card:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
-        .theme-swatches { display:flex; height:26px; border-radius:7px; overflow:hidden; border:1px solid var(--border); }
-        .theme-swatches i { flex:1; display:block; }
-        .theme-card-name { font-size:calc(12.5px * var(--font-scale)); font-weight:600; display:flex; align-items:center; gap:6px; }
-        .theme-card-name .theme-check { margin-inline-start:auto; color:var(--accent-text); font-size:calc(12px * var(--font-scale)); opacity:0; }
-        .theme-card.active .theme-card-name .theme-check { opacity:1; }
-        .theme-card-desc { font-size:calc(10.5px * var(--font-scale)); color:var(--text-muted); line-height:1.5; }
+        /* One labelled dropdown per choice: a grid of 16 colour cards buried the
+           save state and made the settings dialog scroll for a trivial change. */
+        .settings-field { display:flex; flex-direction:column; gap:6px; }
+        .settings-field > label { font-size:calc(12.5px * var(--font-scale)); font-weight:600; color:var(--text); }
+        .settings-field select { width:100%; min-height:44px; padding:9px 12px; border-radius:10px;
+            border:1px solid var(--border); background:var(--field); color:var(--text);
+            font-family:inherit; font-size:calc(13px * var(--font-scale)); cursor:pointer; }
+        .settings-field select:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+        .field-hint { font-size:calc(10.5px * var(--font-scale)); color:var(--text-muted); line-height:1.5; }
+        #fontPreview { font-size:calc(17px * var(--font-scale)); color:var(--text); }
         .settings-note { font-size:calc(10.5px * var(--font-scale)); color:var(--text-muted); line-height:1.6; }
         .settings-save-state { font-size:calc(11.5px * var(--font-scale)); min-height:16px; color:var(--text-muted); }
         .settings-save-state.ok { color:var(--success); }
         .settings-save-state.err { color:var(--danger-ink); }
-
-        /* ---- font picker (General settings) ---------------------------- */
-        /* Each card is rendered *in its own family* so the choice is visible
-           before it is applied. Nothing downloads here: an @font-face is only
-           fetched when text actually uses the family. */
-        .font-grid { display:grid; grid-template-columns: repeat(auto-fill, minmax(146px, 1fr)); gap:9px; }
-        .font-card { display:flex; flex-direction:column; gap:4px; padding:10px 11px; border-radius:12px;
-            border:1px solid var(--border); background:var(--field); cursor:pointer; text-align:right;
-            color:var(--text); transition: border-color .15s, background .15s; }
-        .font-card:hover { border-color:var(--accent); }
-        .font-card.active { border-color:var(--accent); background:var(--accent-soft); }
-        .font-card:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
-        .font-card-name { font-size:calc(16px * var(--font-scale)); font-weight:600;
-            display:flex; align-items:center; gap:6px; line-height:1.5; }
-        .font-card-name .theme-check { margin-inline-start:auto; color:var(--accent-text);
-            font-size:calc(11px * var(--font-scale)); opacity:0; }
-        .font-card.active .font-card-name .theme-check { opacity:1; }
-        .font-card-desc { font-size:calc(10.5px * var(--font-scale)); color:var(--text-muted); line-height:1.5; }
-
-        /* Size presets: same segmented shape as the mask picker, one row. */
-        .size-seg { display:flex; gap:6px; background:var(--field); border:1px solid var(--border); border-radius:10px; padding:4px; }
-        .size-option { flex:1; text-align:center; padding:9px 6px; border-radius:7px; border:0;
-            background:transparent; cursor:pointer; color:var(--text-muted);
-            font-size:calc(12.5px * var(--font-scale)); transition: background .15s, color .15s; }
-        .size-option.active { background:var(--accent-fill); color:var(--on-accent); font-weight:600; }
-        .size-option:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
 
         /* The index pane is the old JOC form, so it keeps block flow: labels and
            inputs already carry their own margins there. */
@@ -2647,6 +2618,13 @@ HTML_TEMPLATE = """
     <symbol id="ico-alert" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"></circle><line x1="12" y1="8" x2="12" y2="13"></line><line x1="12" y1="16.5" x2="12.01" y2="16.5"></line></symbol>
     <symbol id="ico-plus" viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></symbol>
     <symbol id="ico-spark" viewBox="0 0 24 24"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"></path><path d="M18 16.5l.7 1.8 1.8.7-1.8.7-.7 1.8-.7-1.8-1.8-.7 1.8-.7z"></path></symbol>
+    <!-- Navigation / editing glyphs: text arrows vary by font and carry their
+         own metrics, so generated rows use these instead. -->
+    <symbol id="ico-up" viewBox="0 0 24 24"><line x1="12" y1="19" x2="12" y2="5"></line><polyline points="5 12 12 5 19 12"></polyline></symbol>
+    <symbol id="ico-pencil" viewBox="0 0 24 24"><path d="M12 20h9"></path><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4z"></path></symbol>
+    <symbol id="ico-close" viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></symbol>
+    <symbol id="ico-chevron-right" viewBox="0 0 24 24"><polyline points="9 18 15 12 9 6"></polyline></symbol>
+    <symbol id="ico-chevron-down" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"></polyline></symbol>
 </svg>
 
 <div class="container">
@@ -2789,7 +2767,9 @@ HTML_TEMPLATE = """
                 <select class="scope-select" id="searchSubfolder" onchange="enterSearchSubfolder(this.value)" aria-label="مجلد فرعي للبحث">
                     <option value="">مجلد فرعي…</option>
                 </select>
-                <button type="button" class="btn btn-outline btn-sm" onclick="searchScopeUp()" title="مجلد أعلى">↑ أعلى</button>
+                <button type="button" class="btn btn-outline btn-sm" onclick="searchScopeUp()" title="مجلد أعلى">
+                    <svg class="icon" aria-hidden="true"><use href="#ico-up"></use></svg> أعلى
+                </button>
                 <button type="button" class="btn btn-outline btn-sm" onclick="openPathBrowser('search')">تحديد مجلد</button>
             </div>
             <div class="scope-items" id="searchScopeItems"></div>
@@ -2970,7 +2950,7 @@ HTML_TEMPLATE = """
                 <div id="groupStatusHint" class="check-hint" style="display:none; margin:0;"></div>
                 <div id="smartPreview" class="smart-preview" style="display:none;"></div>
                 <div id="groupTree" class="group-tree"></div>
-                <div id="groupEmptyHint" class="group-empty-hint">لا توجد مجلدات بعد. اضغط «مجلد جديد» أو «تنظيم ذكي»، أو اسحب عنصراً من القائمة وأفلته على مجلد. الأسهم تفتح المجلد، و✎ تعيد التسمية داخل النافذة، و✕ تحذف.</div>
+                <div id="groupEmptyHint" class="group-empty-hint">لا توجد مجلدات بعد. اضغط «مجلد جديد» أو «تنظيم ذكي»، أو اسحب عنصراً من القائمة وأفلته على مجلد. الأسهم تفتح المجلد، وزر القلم يعيد التسمية داخل النافذة، وزر الإغلاق يحذف.</div>
             </div>
         </div>
 
@@ -3010,44 +2990,39 @@ HTML_TEMPLATE = """
         <div class="modal-body">
             <div class="settings-pane" id="settingsPaneAppearance">
                 <div class="settings-note">اختر سمة التطبيق. تُحفظ في ملف الإعدادات على جهازك وتُطبَّق فوراً.</div>
-                <div class="theme-grid" id="themeGrid">
-                    {% for t in themes %}
-                    <button type="button" class="theme-card{% if t.id == active_theme.id %} active{% endif %}" data-theme-id="{{ t.id }}" onclick="pickTheme('{{ t.id }}')">
-                        <span class="theme-swatches">
-                            {% for c in t.swatches %}<i style="background: {{ c }};"></i>{% endfor %}
-                        </span>
-                        <span class="theme-card-name">
-                            {{ t.name }}
-                            <span class="theme-check">✓</span>
-                        </span>
-                        <span class="theme-card-desc">{{ t.desc }}</span>
-                    </button>
-                    {% endfor %}
+                <div class="settings-field">
+                    <label for="themeSelect">ألوان الموقع</label>
+                    <select id="themeSelect" onchange="pickTheme(this.value)">
+                        {% for t in themes %}
+                        <option value="{{ t.id }}" data-theme-id="{{ t.id }}"{% if t.id == active_theme.id %} selected{% endif %}>{{ t.name }} — {{ t.desc }}</option>
+                        {% endfor %}
+                    </select>
+                    <div class="field-hint">ست عشرة سمة بين فاتحة وداكنة، كلها مضبوطة لتباين مريح للعين.</div>
                 </div>
                 <div id="settingsSaveState" class="settings-save-state"></div>
             </div>
 
-            <!-- General settings. Starts with typography; future options go in
-                 their own block here, nothing else in the page has to change. -->
+            <!-- General settings: typography as dropdowns plus a live preview,
+                 then the post-copy options. Future options go in their own block
+                 here; nothing else in the page has to change. -->
             <div class="settings-pane" id="settingsPaneGeneral" style="display:none;">
                 <div class="settings-note">الخط وحجمه. كل الخطوط مضمّنة في التطبيق وتعمل دون إنترنت.</div>
-                <label style="margin-bottom:0;">خط الموقع (10 خطوط عربية)</label>
-                <div class="font-grid" id="fontGrid">
-                    {% for f in fonts %}
-                    <button type="button" class="font-card{% if f.id == active_font %} active{% endif %}" data-font-id="{{ f.id }}" onclick="pickFont('{{ f.id }}')" style="font-family: {{ f.css_stack }};">
-                        <span class="font-card-name">
-                            {{ f.name }}
-                            <span class="theme-check">✓</span>
-                        </span>
-                        <span class="font-card-desc">{{ f.desc }}</span>
-                    </button>
-                    {% endfor %}
+                <div class="settings-field">
+                    <label for="fontSelect">خط الموقع (10 خطوط عربية)</label>
+                    <select id="fontSelect" onchange="pickFont(this.value)">
+                        {% for f in fonts %}
+                        <option value="{{ f.id }}" data-font-id="{{ f.id }}"{% if f.id == active_font %} selected{% endif %}>{{ f.name }} — {{ f.desc }}</option>
+                        {% endfor %}
+                    </select>
+                    <div id="fontPreview" class="settings-note" style="font-family: {{ app_font }};">نص تجريبي — سورة البقرة ١٢٣</div>
                 </div>
-                <label style="margin-bottom:0;">حجم الخط</label>
-                <div class="size-seg" id="sizeSeg">
-                    {% for s in font_sizes %}
-                    <button type="button" class="size-option{% if s.id == active_font_size %} active{% endif %}" data-size-id="{{ s.id }}" onclick="pickFontSize('{{ s.id }}')">{{ s.name }}</button>
-                    {% endfor %}
+                <div class="settings-field" style="margin-top:14px;">
+                    <label for="sizeSelect">حجم الخط</label>
+                    <select id="sizeSelect" onchange="pickFontSize(this.value)">
+                        {% for s in font_sizes %}
+                        <option value="{{ s.id }}" data-size-id="{{ s.id }}"{% if s.id == active_font_size %} selected{% endif %}>{{ s.name }}</option>
+                        {% endfor %}
+                    </select>
                 </div>
                 <div class="settings-note" style="margin-top:14px; margin-bottom:6px;">بعد النسخ</div>
                 <label class="auto-spoof-row" for="autoSpoofCheck" style="display:flex; align-items:center; gap:10px; cursor:pointer; color:var(--text); font-size:calc(14px * var(--font-scale));">
@@ -3574,9 +3549,9 @@ HTML_TEMPLATE = """
         let gid = node.group ? node.group.id : 0;
         if (groupRename && groupRename.gid === gid && gid) {
             return '<button type="button" class="gt-btn" data-act="rename-save" title="حفظ (Enter)">' +
-                    '<svg class="icon" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"></polyline></svg></button>' +
+                    spriteIcon('ico-check') + '</button>' +
                 '<button type="button" class="gt-btn danger" data-act="rename-cancel" title="إلغاء (Esc)">' +
-                    '<svg class="icon" viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg></button>';
+                    spriteIcon('ico-close') + '</button>';
         }
         let html = '';
         // Bulk add: only shown while rows are checked, so the normal state of a
@@ -3589,10 +3564,10 @@ HTML_TEMPLATE = """
         let depth = groupPathParts(node.name).length;
         if (groupRename && groupRename.gid === gid) return html;
         html += '<button type="button" class="gt-btn" data-act="rename" title="إعادة التسمية">' +
-                '<svg class="icon" viewBox="0 0 24 24"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path></svg></button>';
+                spriteIcon('ico-pencil') + '</button>';
         html += '<button type="button" class="gt-btn" data-act="child"' +
                 (depth >= GROUP_MAX_DEPTH ? ' disabled title="أقصى تداخل 3 مستويات"' : ' title="مجلد فرعي داخله"') + '>' +
-                '<svg class="icon" viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg></button>';
+                spriteIcon('ico-plus') + '</button>';
         html += '<button type="button" class="gt-btn danger" data-act="delete" title="حذف المجلد (العناصر تبقى محددة)">' +
                 '<svg class="icon" viewBox="0 0 24 24"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"></path></svg></button>';
         return html;
@@ -3610,7 +3585,7 @@ HTML_TEMPLATE = """
                 (selectedPaths.get(p) ? iconDir : iconFile) +
                 '<span class="gt-path-name" title="' + esc(p) + '">' + esc(names[p]) + '</span>' +
                 (gid ? '<button type="button" class="gt-path-x" data-act="unlink" data-path="' + esc(p) +
-                    '" title="أخرجه من المجلد"><svg class="icon" viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg></button>' : '') +
+                    '" title="أخرجه من المجلد">' + spriteIcon('ico-close') + '</button>' : '') +
             '</div>';
         }).join('') + '</div>';
     }
@@ -3626,7 +3601,7 @@ HTML_TEMPLATE = """
                 '" data-key="' + esc(node.key) + '" data-drop="1">' +
                 '<button type="button" class="gt-twisty' + (open ? ' open' : '') + (canToggle ? '' : ' is-leaf') +
                     '" data-act="toggle" data-key="' + esc(node.key) + '" aria-label="' + (open ? 'طي المجلد' : 'فتح المجلد') + '">' +
-                    '<svg class="icon" viewBox="0 0 24 24"><polyline points="9 6 15 12 9 18"></polyline></svg>' +
+                    spriteIcon('ico-chevron-right') +
                 '</button>' +
                 '<svg class="gt-folder icon" viewBox="0 0 24 24"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>' +
                 (renaming ? renameInputHtml(node)
@@ -3649,7 +3624,7 @@ HTML_TEMPLATE = """
         let html = groupTreeRows().map(groupNodeHtml).join('');
         if (copyGroups.length) {
             // The "no folder" node is always present once groups exist: it is
-            // how an item is taken back out (drag onto it, or ✕ on its row).
+            // how an item is taken back out (drag onto it, or its close icon).
             let loose = ungroupedPaths();
             let open = isNodeOpen('');
             html += '<div class="gt-node" data-key="">' +
@@ -4432,7 +4407,7 @@ HTML_TEMPLATE = """
         if (data.cached) {
             let d = new Date(data.built_at * 1000);
             let timeStr = d.toLocaleTimeString('ar-EG', {hour: '2-digit', minute:'2-digit'});
-            el.innerHTML = `<span style="color:var(--success);">✓ مفهرس (${data.count} عنصر) — ${timeStr}</span>`;
+            el.innerHTML = `<span style="color:var(--success);">${spriteIcon('ico-check')} مفهرس (${data.count} عنصر) — ${timeStr}</span>`;
             badge.style.display = 'inline-block';
         } else {
             el.innerHTML = `<span style="color:var(--text-muted);">غير مفهرس — البحث سيكون أبطأ في المجلدات الكبيرة</span>`;
@@ -4668,7 +4643,7 @@ HTML_TEMPLATE = """
         let onChange = opts.searchMode ? 'toggleSearchResultSelect' : 'toggleSelect';
         return `
             <div class="item-row">
-                ${item.is_dir ? `<button class="toggle-btn" data-toggle="1" aria-label="فتح المجلد">▶</button>` : `<span style="width:26px;display:inline-block;"></span>`}
+                ${item.is_dir ? `<button class="toggle-btn" data-toggle="1" aria-label="فتح المجلد">${spriteIcon('ico-chevron-right')}</button>` : `<span style="width:26px;display:inline-block;"></span>`}
                 <input type="checkbox" class="checkbox" value="${esc(item.path)}" data-name="${esc(item.name)}" ${isChecked} onchange="${onChange}(this, ${item.is_dir})">
                 <div class="item-name" ${item.is_dir ? 'data-toggle="1"' : `onclick="this.previousElementSibling.click()"`}>
                     ${item.is_dir ? iconDir : iconFile} <span>${esc(item.name)}</span>${excludedMark}
@@ -4893,7 +4868,7 @@ HTML_TEMPLATE = """
         if (!text) return;
         let done = function() {
             let btn = document.getElementById('copyDeleteErrBtn');
-            if (btn) { btn.textContent = 'تم النسخ ✓'; setTimeout(function(){ btn.textContent = 'نسخ التفاصيل'; }, 1800); }
+            if (btn) { btn.innerHTML = spriteIcon('ico-check') + ' تم النسخ'; setTimeout(function(){ btn.textContent = 'نسخ التفاصيل'; }, 1800); }
         };
         if (navigator.clipboard && navigator.clipboard.writeText) {
             navigator.clipboard.writeText(text).then(done).catch(function(){ fallbackCopyDeleteErrors(text, done); });
@@ -4923,11 +4898,11 @@ HTML_TEMPLATE = """
         let arrow = row.querySelector('.toggle-btn');
         if (children.classList.contains('open')) {
             children.classList.remove('open');
-            if (arrow) arrow.innerText = '▶';
+            if (arrow) arrow.innerHTML = spriteIcon('ico-chevron-right');
         } else {
             if (!children.innerHTML) loadSubFolders(path, children);
             children.classList.add('open');
-            if (arrow) arrow.innerText = '▼';
+            if (arrow) arrow.innerHTML = spriteIcon('ico-chevron-down');
         }
     }
 
@@ -5339,10 +5314,9 @@ HTML_TEMPLATE = """
         if (id) {
             activeThemeId = id;
             document.documentElement.setAttribute('data-theme', id);
+            let select = document.getElementById('themeSelect');
+            if (select) select.value = id;
         }
-        document.querySelectorAll('.theme-card').forEach(function(card) {
-            card.classList.toggle('active', card.getAttribute('data-theme-id') === activeThemeId);
-        });
     }
 
     function setSettingsState(text, kind, elementId) {
@@ -5358,6 +5332,8 @@ HTML_TEMPLATE = """
     function applyFont(appFont, scale) {
         if (appFont) document.documentElement.style.setProperty('--app-font', appFont);
         if (scale) document.documentElement.style.setProperty('--font-scale', scale);
+        let preview = document.getElementById('fontPreview');
+        if (preview && appFont) preview.style.fontFamily = appFont;
     }
 
     // Save one font/size choice. The server validates the id against the
@@ -5378,18 +5354,16 @@ HTML_TEMPLATE = """
 
     function pickFont(id) {
         if (!id || id === activeFontId) return;
-        document.querySelectorAll('.font-card').forEach(function(card) {
-            card.classList.toggle('active', card.getAttribute('data-font-id') === id);
-        });
+        let select = document.getElementById('fontSelect');
+        if (select) select.value = id;
         activeFontId = id;
         saveTypography({ font: id }, 'generalSaveState');
     }
 
     function pickFontSize(id) {
         if (!id || id === activeFontSizeId) return;
-        document.querySelectorAll('.size-option').forEach(function(btn) {
-            btn.classList.toggle('active', btn.getAttribute('data-size-id') === id);
-        });
+        let select = document.getElementById('sizeSelect');
+        if (select) select.value = id;
         activeFontSizeId = id;
         saveTypography({ font_size: id }, 'generalSaveState');
     }
