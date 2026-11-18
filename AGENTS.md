@@ -388,23 +388,25 @@ tab, all in the DOM (`#settingsPaneAppearance` / `General` / `Index` / `About`);
 or lost. `openIndexSettings()` (the create dialog's button) opens the modal
 straight on «الفهرس».
 
-- **المظهر** is one labelled dropdown, `#themeSelect`, rendered server-side by
-  Jinja from `themes` (each `<option>` carries `data-theme-id` and is selected
-  server-side), so the page needs no theme JSON in JS. `pickTheme(id)` POSTs
-  `/api/settings`, then `applyTheme()` applies the returned `tokens`/`theme_bg`,
-  sets `<html data-theme>` and syncs the select. No reload, no re-render.
-- **عام** is typography dropdowns: `#fontSelect` (12 options with
-  `data-font-id`), `#sizeSelect` (4 options with `data-size-id`) and a live
-  `#fontPreview` styled with `{{ app_font }}`. `pickFont(id)` /
-  `pickFontSize(id)` POST one key each and apply `app_font` / `font_scale` from
-  the response; the same pane owns the `auto_spoof` switch.
+- **المظهر** owns the look: `#themeSelect` **and** the typography controls —
+  `#fontSelect` (12 options with `data-font-id`), `#sizeSelect` (4 options with
+  `data-size-id`) and a live `#fontPreview` styled with `{{ app_font }}`. The
+  theme select is rendered server-side by Jinja from `themes` (each `<option>`
+  carries `data-theme-id` and is selected server-side), so the page needs no
+  theme JSON in JS. `pickTheme(id)` POSTs `/api/settings`, then `applyTheme()`
+  applies the returned `tokens`/`theme_bg`, sets `<html data-theme>` and syncs
+  the select. `pickFont(id)` / `pickFontSize(id)` POST one key each, apply
+  `app_font` / `font_scale` from the response and report in
+  `#settingsSaveState`. No reload, no re-render.
+- **عام** owns only the `auto_spoof` switch (`#autoSpoofCheck` →
+  `pickAutoSpoof`), which reports in `#generalSaveState`.
 - **الفهرس** owns the JOC index settings — see «Index settings» below. It is the
   only place they are written.
 - `setSettingsState(text, kind, elementId)` writes one status line per pane
   (`#settingsSaveState`, `#generalSaveState`, `#indexSaveState`). The header gear
   button (`.header-settings`) opens the modal on «المظهر».
 
-## General settings: fonts (`sdmp3_fonts.py` + `static/fonts/`)
+## Typography: fonts (`sdmp3_fonts.py` + `static/fonts/`)
 Eleven Arabic Google fonts plus the `system` default, all **self-hosted**: 28
 woff2 files in `static/fonts/`. Ten families are variable 400..700 and ship an
 `arabic` + `latin` subset each (20 files); `IBM Plex Sans Arabic` is only

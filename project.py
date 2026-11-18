@@ -3024,15 +3024,7 @@ HTML_TEMPLATE = """
                     </select>
                     <div class="field-hint">ست عشرة سمة بين فاتحة وداكنة، كلها مضبوطة لتباين مريح للعين.</div>
                 </div>
-                <div id="settingsSaveState" class="settings-save-state"></div>
-            </div>
-
-            <!-- General settings: typography as dropdowns plus a live preview,
-                 then the post-copy options. Future options go in their own block
-                 here; nothing else in the page has to change. -->
-            <div class="settings-pane" id="settingsPaneGeneral" style="display:none;">
-                <div class="settings-note">الخط وحجمه. كل الخطوط مضمّنة في التطبيق وتعمل دون إنترنت.</div>
-                <div class="settings-field">
+                <div class="settings-field" style="margin-top:14px;">
                     <label for="fontSelect">خط الموقع (10 خطوط عربية)</label>
                     <select id="fontSelect" onchange="pickFont(this.value)">
                         {% for f in fonts %}
@@ -3049,7 +3041,13 @@ HTML_TEMPLATE = """
                         {% endfor %}
                     </select>
                 </div>
-                <div class="settings-note" style="margin-top:14px; margin-bottom:6px;">بعد النسخ</div>
+                <div id="settingsSaveState" class="settings-save-state"></div>
+            </div>
+
+            <!-- General settings: what happens after a copy. Typography lives in
+                 «المظهر» next to the theme it visually belongs with. -->
+            <div class="settings-pane" id="settingsPaneGeneral" style="display:none;">
+                <div class="settings-note" style="margin-bottom:6px;">بعد النسخ</div>
                 <label class="auto-spoof-row" for="autoSpoofCheck" style="display:flex; align-items:center; gap:10px; cursor:pointer; color:var(--text); font-size:calc(14px * var(--font-scale));">
                     <input type="checkbox" id="autoSpoofCheck" class="checkbox" style="margin:0;" {% if auto_spoof %}checked{% endif %} onchange="pickAutoSpoof(this.checked)">
                     <span>تمويه تواريخ كل الوجهة تلقائياً بعد النسخ</span>
@@ -5415,7 +5413,7 @@ HTML_TEMPLATE = """
         let select = document.getElementById('fontSelect');
         if (select) select.value = id;
         activeFontId = id;
-        saveTypography({ font: id }, 'generalSaveState');
+        saveTypography({ font: id }, 'settingsSaveState');
     }
 
     function pickFontSize(id) {
@@ -5423,7 +5421,7 @@ HTML_TEMPLATE = """
         let select = document.getElementById('sizeSelect');
         if (select) select.value = id;
         activeFontSizeId = id;
-        saveTypography({ font_size: id }, 'generalSaveState');
+        saveTypography({ font_size: id }, 'settingsSaveState');
     }
 
     // The saved switch IS the consent: no per-copy prompt, so it also works
