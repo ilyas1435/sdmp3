@@ -56,6 +56,47 @@ def contrast_ratio(fg, bg):
     return (l1 + 0.05) / (l2 + 0.05)
 
 
+def colour_hue(hex_colour):
+    """Hue of a colour in degrees (0..360). Neutral greys get 0."""
+    r, g, b = (c / 255.0 for c in _parse_hex(hex_colour))
+    high, low = max(r, g, b), min(r, g, b)
+    if high == low:
+        return 0.0
+    delta = high - low
+    if high == r:
+        hue = ((g - b) / delta) % 6
+    elif high == g:
+        hue = (b - r) / delta + 2
+    else:
+        hue = (r - g) / delta + 4
+    return hue * 60.0
+
+
+def hue_gap(first, second):
+    """Shortest angular distance between two hues, in degrees (0..180)."""
+    delta = abs(colour_hue(first) - colour_hue(second)) % 360.0
+    return min(delta, 360.0 - delta)
+
+
+# Every volume kind is told apart by icon + caption, but the hue has to help and
+# never blur: internal storage is sand in almost every theme, so the SD card may
+# not sit on the same warm hue — two tiles then read as one volume.
+KIND_HUE_RULES = (
+    ('internal vs sd card', 'kind_internal', 'kind_sdcard', 45.0),
+    ('sd card vs memory card', 'kind_sdcard', 'kind_card', 25.0),
+)
+
+
+def check_kind_hues(defn):
+    """Return the (label, gap, floor) entries whose hues sit too close."""
+    failures = []
+    for label, first, second, floor in KIND_HUE_RULES:
+        gap = hue_gap(defn[first], defn[second])
+        if gap < floor:
+            failures.append((label, round(gap, 1), floor))
+    return failures
+
+
 # --------------------------------------------------------------------------
 # token schema
 # --------------------------------------------------------------------------
@@ -267,8 +308,8 @@ _THEME_DEFS = [{'id': 'coffee-blues',
   'sand_fill_hover': '#c4a88f',
   'kind_internal': '#d0b49f',
   'kind_internal_ink': '#d0b49f',
-  'kind_sdcard': '#d98b63',
-  'kind_sdcard_ink': '#dda88c',
+  'kind_sdcard': '#2eb9cb',
+  'kind_sdcard_ink': '#8fdde9',
   'kind_usb': '#8fa9c4',
   'kind_usb_ink': '#a8bfd6',
   'kind_card': '#a3b18a',
@@ -305,8 +346,8 @@ _THEME_DEFS = [{'id': 'coffee-blues',
   'sand_fill_hover': '#c9b192',
   'kind_internal': '#d8c3a5',
   'kind_internal_ink': '#d8c3a5',
-  'kind_sdcard': '#e2926a',
-  'kind_sdcard_ink': '#f0b28c',
+  'kind_sdcard': '#25b6c6',
+  'kind_sdcard_ink': '#8ce0ec',
   'kind_usb': '#86b0d8',
   'kind_usb_ink': '#a8c8ea',
   'kind_card': '#a4b981',
@@ -343,8 +384,8 @@ _THEME_DEFS = [{'id': 'coffee-blues',
   'sand_fill_hover': '#c4a88f',
   'kind_internal': '#d0b49f',
   'kind_internal_ink': '#d6bfae',
-  'kind_sdcard': '#dfa070',
-  'kind_sdcard_ink': '#f0c09a',
+  'kind_sdcard': '#35b7c9',
+  'kind_sdcard_ink': '#95e0ec',
   'kind_usb': '#88b0d8',
   'kind_usb_ink': '#b3cfe9',
   'kind_card': '#a8bb8c',
@@ -381,8 +422,8 @@ _THEME_DEFS = [{'id': 'coffee-blues',
   'sand_fill_hover': '#bfa87f',
   'kind_internal': '#cdb992',
   'kind_internal_ink': '#cdb992',
-  'kind_sdcard': '#da9569',
-  'kind_sdcard_ink': '#eeb48e',
+  'kind_sdcard': '#2fb9c6',
+  'kind_sdcard_ink': '#8fe0e8',
   'kind_usb': '#87aec9',
   'kind_usb_ink': '#aacbe4',
   'kind_card': '#a0b87c',
@@ -419,8 +460,8 @@ _THEME_DEFS = [{'id': 'coffee-blues',
   'sand_fill_hover': '#c6a382',
   'kind_internal': '#d5b394',
   'kind_internal_ink': '#d5b394',
-  'kind_sdcard': '#de9066',
-  'kind_sdcard_ink': '#f2ad86',
+  'kind_sdcard': '#2fb6c8',
+  'kind_sdcard_ink': '#91deea',
   'kind_usb': '#8caac6',
   'kind_usb_ink': '#b0c8de',
   'kind_card': '#a7b383',
@@ -457,8 +498,8 @@ _THEME_DEFS = [{'id': 'coffee-blues',
   'sand_fill_hover': '#c8b9a4',
   'kind_internal': '#d8cbb8',
   'kind_internal_ink': '#d8cbb8',
-  'kind_sdcard': '#e0a06a',
-  'kind_sdcard_ink': '#f3bd8c',
+  'kind_sdcard': '#2fb8c9',
+  'kind_sdcard_ink': '#8fdfeb',
   'kind_usb': '#8fb4cf',
   'kind_usb_ink': '#b3d0e6',
   'kind_card': '#aab98c',
@@ -495,8 +536,8 @@ _THEME_DEFS = [{'id': 'coffee-blues',
   'sand_fill_hover': '#84522f',
   'kind_internal': '#8a6a48',
   'kind_internal_ink': '#7c5c3c',
-  'kind_sdcard': '#b3542a',
-  'kind_sdcard_ink': '#9c4520',
+  'kind_sdcard': '#0e7490',
+  'kind_sdcard_ink': '#0e7490',
   'kind_usb': '#3f6b96',
   'kind_usb_ink': '#35597e',
   'kind_card': '#5f7540',
@@ -533,8 +574,8 @@ _THEME_DEFS = [{'id': 'coffee-blues',
   'sand_fill_hover': '#7e552d',
   'kind_internal': '#8a6a48',
   'kind_internal_ink': '#7a5b3a',
-  'kind_sdcard': '#a8491f',
-  'kind_sdcard_ink': '#92401a',
+  'kind_sdcard': '#0f6f86',
+  'kind_sdcard_ink': '#0f6f86',
   'kind_usb': '#3b6289',
   'kind_usb_ink': '#325271',
   'kind_card': '#5b7038',
@@ -571,8 +612,8 @@ _THEME_DEFS = [{'id': 'coffee-blues',
   'sand_fill_hover': '#d97706',
   'kind_internal': '#fbbf24',
   'kind_internal_ink': '#fbbf24',
-  'kind_sdcard': '#f59e0b',
-  'kind_sdcard_ink': '#fdba74',
+  'kind_sdcard': '#22d3ee',
+  'kind_sdcard_ink': '#a5f3fc',
   'kind_usb': '#60a5fa',
   'kind_usb_ink': '#93c5fd',
   'kind_card': '#a3e635',
@@ -607,10 +648,10 @@ _THEME_DEFS = [{'id': 'coffee-blues',
   'warning': '#fbbf24',
   'sand_fill': '#2dd4bf',
   'sand_fill_hover': '#14b8a6',
-  'kind_internal': '#0f766e',
-  'kind_internal_ink': '#eaeaea',
+  'kind_internal': '#d0b49f',
+  'kind_internal_ink': '#e6d6c6',
   'kind_sdcard': '#2dd4bf',
-  'kind_sdcard_ink': '#eaeaea',
+  'kind_sdcard_ink': '#5eead4',
   'kind_usb': '#60a5fa',
   'kind_usb_ink': '#eaeaea',
   'kind_card': '#4ade80',
@@ -647,8 +688,8 @@ _THEME_DEFS = [{'id': 'coffee-blues',
   'sand_fill_hover': '#d97706',
   'kind_internal': '#d97706',
   'kind_internal_ink': '#92400e',
-  'kind_sdcard': '#c2410c',
-  'kind_sdcard_ink': '#b45309',
+  'kind_sdcard': '#0e7490',
+  'kind_sdcard_ink': '#0d6b84',
   'kind_usb': '#1d4ed8',
   'kind_usb_ink': '#1d4ed8',
   'kind_card': '#14532d',
@@ -723,8 +764,8 @@ _THEME_DEFS = [{'id': 'coffee-blues',
   'sand_fill_hover': '#bb8009',
   'kind_internal': '#d29922',
   'kind_internal_ink': '#e3b341',
-  'kind_sdcard': '#db6d28',
-  'kind_sdcard_ink': '#ffa657',
+  'kind_sdcard': '#39c5cf',
+  'kind_sdcard_ink': '#76e3ea',
   'kind_usb': '#58a6ff',
   'kind_usb_ink': '#79c0ff',
   'kind_card': '#3fb950',
@@ -761,8 +802,8 @@ _THEME_DEFS = [{'id': 'coffee-blues',
   'sand_fill_hover': '#7d5200',
   'kind_internal': '#9a6700',
   'kind_internal_ink': '#7d4e00',
-  'kind_sdcard': '#bc4c00',
-  'kind_sdcard_ink': '#953800',
+  'kind_sdcard': '#1b7c83',
+  'kind_sdcard_ink': '#1b7c83',
   'kind_usb': '#0969da',
   'kind_usb_ink': '#0550ae',
   'kind_card': '#1a7f37',
@@ -799,8 +840,8 @@ _THEME_DEFS = [{'id': 'coffee-blues',
   'sand_fill_hover': '#76583a',
   'kind_internal': '#8a6a48',
   'kind_internal_ink': '#795a3c',
-  'kind_sdcard': '#b3542a',
-  'kind_sdcard_ink': '#9c4520',
+  'kind_sdcard': '#0f766e',
+  'kind_sdcard_ink': '#0f766e',
   'kind_usb': '#3f6b96',
   'kind_usb_ink': '#35597e',
   'kind_card': '#5f7540',
@@ -837,8 +878,8 @@ _THEME_DEFS = [{'id': 'coffee-blues',
   'sand_fill_hover': '#c8aa8d',
   'kind_internal': '#d9bfa5',
   'kind_internal_ink': '#d9bfa5',
-  'kind_sdcard': '#e39a72',
-  'kind_sdcard_ink': '#f0b894',
+  'kind_sdcard': '#38c3d6',
+  'kind_sdcard_ink': '#9be7f2',
   'kind_usb': '#93b6dd',
   'kind_usb_ink': '#b6d0ea',
   'kind_card': '#a9bf8d',
@@ -853,6 +894,8 @@ for _defn in _THEME_DEFS:
     _tokens = build_tokens(_defn)
     for _fail in check_contrast(_defn):
         _THEME_FAILURES.append('{}: {}={:.2f} (<{})'.format(_defn['id'], *_fail))
+    for _fail in check_kind_hues(_defn):
+        _THEME_FAILURES.append('{}: {}={}deg (<{}deg)'.format(_defn['id'], *_fail))
     THEMES[_defn['id']] = {
         'id': _defn['id'],
         'name': _defn['name'],
@@ -868,7 +911,7 @@ for _defn in _THEME_DEFS:
 DEFAULT_THEME = 'coffee-blues'
 
 if _THEME_FAILURES:
-    raise ValueError('theme contrast failures: ' + '; '.join(_THEME_FAILURES))
+    raise ValueError('theme failures: ' + '; '.join(_THEME_FAILURES))
 
 
 def theme_ids():
@@ -901,15 +944,17 @@ def catalog():
 
 
 if __name__ == '__main__':  # pragma: no cover - manual report
-    print('{:<14} {:<12} {:>7}  {}'.format('theme', 'text/card', 'min', 'checks'))
+    print('{:<14} {:<12} {:>7}  {:<22} {:>6}'.format(
+        'theme', 'text/card', 'min', 'worst check', 'int/sd'))
     for theme_id in THEMES:
         defn = next(d for d in _THEME_DEFS if d['id'] == theme_id)
         ratios = [(label, contrast_ratio(defn[f], defn[b]))
                   for label, f, b, _floor in CONTRAST_RULES]
         worst_label, worst = min(ratios, key=lambda kv: kv[1])
-        print('{:<14} {:<12} {:>7.2f}  {}'.format(
+        print('{:<14} {:<12} {:>7.2f}  {:<22} {:>5.0f}°'.format(
             theme_id,
             '{:.2f}'.format(contrast_ratio(defn['text'], defn['card'])),
-            worst, worst_label))
-    print('\n{} themes, {} tokens each, all contrast rules satisfied.'.format(
+            worst, worst_label,
+            hue_gap(defn['kind_internal'], defn['kind_sdcard'])))
+    print('\n{} themes, {} tokens each, all contrast and hue rules satisfied.'.format(
         len(THEMES), len(TOKEN_ORDER)))

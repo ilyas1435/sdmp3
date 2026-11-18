@@ -147,10 +147,24 @@ byte-identical (DFS pre-order + `natural_sort_key`) and stay single-threaded.
   `copy_seconds` ends after the final flush, `verify_seconds` covers only
   `verify_copied_files()`. `avg_mbps = bytes / copy_seconds` (verify never
   inflates it), `speed_mbps` stays the 6s-window EMA. The UI shows
-  «اللحظية … • المتوسط …» while running and «النسخ X ث • متوسط السرعة … • التحقق Y ث»
-  when done. Do not hide these numbers: the cost is ~2 ms/file for verify and
-  negligible CPU for the display, and without them a slow card is indistinguishable
-  from a slow app.
+  «اللحظية … • المتوسط …» while running and the same numbers as report rows when
+  done. Do not hide them: the cost is ~2 ms/file for verify and negligible CPU
+  for the display, and without them a slow card is indistinguishable from a slow
+  app.
+- **The end-of-run report is rows, not a paragraph.** `#timeTakenDiv` is
+  `.report` and is filled by `buildTransferReport(data)` → `renderTransferReport()`
+  (`checkTransferStatus` done branch), never by string concatenation: a row is
+  `reportRow(iconId, label, value, tone)` — a sprite icon, a muted label and a
+  bold value pushed to the far end — and a row with nothing to say is simply not
+  built. The shape is one headline row (icon + «اكتمل النسخ» / «تم الحذف» /
+  «تم إنشاء الفهرس الصوتي» / «اكتمل التمويه» + count), then «النسخ»
+  (`copy_seconds` · `avg_mbps`, one row because they are two halves of the same
+  statement) or «الزمن» for the non-copy actions, «التحقق من الحجم»
+  (`verified/total` + `verify_seconds`, `warn` when cancelled, `bad` when
+  mismatches exist), «تمويه التواريخ» when it ran, and the saved file name for a
+  TTS run. `tone` is `ok`/`warn`/`bad` and only colours the icon. A cancelled run
+  is one `warn` row with its time; failures keep the detailed `#errorsBox`, which
+  is the only place paths and reasons belong.
 - **Card speed probe**: before a copy whose total is ≥ `CARD_SPEED_PROBE_MIN_BYTES`
   (48 MB), the worker writes `CARD_SPEED_PROBE_MB` (8 MB) sequentially with one
   end flush (`probe_card_speed`) and stores `card_mbps`; below `SLOW_CARD_MBPS`
@@ -207,13 +221,13 @@ Each storage dict carries `kind` + `icon` so the UI can label it honestly:
 | `usb` | device major **8** (SCSI/USB OTG) | `ico-usb` — USB OTG (UUID) | `--kind-usb` blue `#8fa9c4` (ink `#a8bfd6`) |
 | `card` | anything unrecognised (dm-*, unknown fs) | `ico-card` — كارت ذاكرة (UUID) | `--kind-card` olive `#a3b18a` (ink `#b7c39f`) |
 
-`storage_kind()` looks the volume up in `/proc/mounts` as `/mnt/media_rw/<UUID>` and passes the device to `classify_volume_device()`. `df -h` alone cannot tell an SD card from a USB stick — both are `/storage/XXXX-XXXX`. The icons are one SVG sprite (`<symbol id="ico-*">` right after `<body>`) referenced with `<use href="#ico-...">`; the pickers are `.storage-card` **icon tiles** in one horizontal row (`chooseStorage()` / `syncStorageCards()`), captioned with `STORAGE_KINDS[*]['short']` (الهاتف / SD / OTG / كارت) that `get_available_storages()` copies onto each dict — no UUID name, no raw path (the full name + path are in its `title`). A tile is `flex: 0 0 auto` with 5px/7px padding, i.e. barely bigger than its 26px icon: three volumes must not fill the row. The kind hue is always present but **only the selected tile wears it at full strength**: an unselected `.storage-ico` is `--kind` at `opacity:.42` on `--field`, the active one switches to `--kind-tile` at `opacity:1`, and only the active caption uses `--kind-ink`. The single badge a tile can carry is the cache bolt (`.storage-fresh`, `is-fresh` on the active **source** tile only, painted by `renderCacheStatus`/`syncFreshBadge`) — it is not a volume badge.
+`storage_kind()` looks the volume up in `/proc/mounts` as `/mnt/media_rw/<UUID>` and passes the device to `classify_volume_device()`. `df -h` alone cannot tell an SD card from a USB stick — both are `/storage/XXXX-XXXX`. The icons are one SVG sprite (`<symbol id="ico-*">` right after `<body>`) referenced with `<use href="#ico-...">`; the pickers are `.storage-card` **icon tiles** in one horizontal row (`chooseStorage()` / `syncStorageCards()`), captioned with `STORAGE_KINDS[*]['short']` (الهاتف / SD / OTG / كارت) that `get_available_storages()` copies onto each dict — no UUID name, no raw path (the full name + path are in its `title`). A tile is `flex: 0 0 auto` with 5px/6px padding around a 32px icon, i.e. barely bigger than the icon: three volumes must not fill the row, and the whole row is centred so the pair hugs the arrow. The kind hue is always present but **only the selected tile wears it at full strength**: an unselected `.storage-ico` is `--kind` at `opacity:.42` on `--field`, the active one switches to `--kind-tile` at `opacity:1`, and only the active caption uses `--kind-ink`. The single badge a tile can carry is the cache bolt (`.storage-fresh`, `is-fresh` on the active **source** tile only, painted by `renderCacheStatus`/`syncFreshBadge`) — it is not a volume badge.
 
 Theme = **Coffee Blues** (https://www.color-hex.com/color-palette/102595) is still the default of the 16-theme registry, but v1.10 hue-rotated it while preserving relative luminance: page `--bg #192133`, card `--card #222b40`, lift `--card-2 #2d374d`, `--field #161c2b`, `--border #2f3c5a`, `--text #e9e2d1`, muted `#aaa297`, accent `--accent #3d8e9c`, accent fill `--accent-fill #327883` (hover `#2a6973`). The warm-sand-on-cool-slate character survives (text ≈ 10.9:1 on a card, muted ≈ 5.6:1); only the hues moved, so contrast stayed inside the contract. `--radius` is 12px; `--rule` (translucent `--border`) is the hairline between sections, `--field-line` outlines inputs/cards, `--bar-bg`/`--bar-line` belong to the opaque action bar, and `--num-font` (`NUM_FONT_STACK`) is the Latin mono face used by `.num`. **No colour literal belongs in the template** — every token, alpha variant and layout colour comes from `sdmp3_themes.py`.
 
 The accent split stays: `--accent` marks (icons, focus, checkbox, disk bar, small status text only where the ratio allows), while filled buttons use `--accent-fill` with `--on-accent`. `--accent-ink #151e28` labels warning/success/danger fills. Danger (`--danger #f43f5e`, text `--danger-ink #fc8b9b`) and success (`--success #7fbf93`) are semantic and were deliberately **not** rotated in v1.10, along with the four `--kind-*` volume hues, so their meaning survives every theme. Nothing glows — no gradient, no coloured button shadow, no inset card sheen; secondary buttons stay neutral `btn-outline` so only the primary action wears the accent.
 
-Each volume kind owns a hue: `.storage-card.kind-*` sets a local `--kind`/`--kind-ink`/`--kind-soft`/`--kind-tile` used by the tile's border, icon tile, active fill and active caption; `.pill-kind-*` and `.kind-border-*` reuse the same variables for the route kind pills, the header `sdWritePill` and the path inputs. Internal = sand `#d0b49f`, SD = bright clay `#d98b63` (ink `#dda88c`), USB = blue `#8fa9c4` (ink `#a8bfd6`), unknown = olive `#a3b18a` (ink `#b7c39f`). The four are told apart by icon + label as well as hue — the palette only has so many warm earths — and `-ink` exists because the fill colours are too dark for 11px text. Only a writable card gets its kind hue in the header pill; a refusing card stays `pill-warn`.
+Each volume kind owns a hue: `.storage-card.kind-*` sets a local `--kind`/`--kind-ink`/`--kind-soft`/`--kind-tile` used by the tile's border, icon tile, active fill and active caption; `.pill-kind-*` and `.kind-border-*` reuse the same variables for the route kind pills, the header `sdWritePill` and the path inputs. Internal = sand `#d0b49f`, **SD = cyan** (`#2eb9cb` / ink `#8fdde9` in `coffee-blues`; `#0e7490` in the light themes), USB = blue `#8fa9c4` (ink `#a8bfd6`), unknown = olive `#a3b18a` (ink `#b7c39f`). SD used to be a second warm clay, which made it read as internal storage on the same row — `KIND_HUE_RULES` in `sdmp3_themes.py` now refuses any theme whose internal-vs-SD hue gap is under 45° (actual minimum 143°), so the two can never blur again. The four are still told apart by icon + label as well as hue, and `-ink` exists because the fill colours are too dark for 11px text. Only a writable card gets its kind hue in the header pill; a refusing card stays `pill-warn`.
 
 The spoofing button is `btn-sand` (`--sand-fill #d0b49f` on `--accent-ink`), not amber: `--warning` is reserved for text and warning pills, so no button introduces a hue the palette does not own.
 
@@ -230,30 +244,49 @@ three `<section class="section">` blocks separated by a hairline (`.section + .s
   stays `--text-muted` so it clears 4.5:1 on every theme. Pills outside the header
   (picker badge, group chip) keep the older tinted-chip look.
 - **Route section**: one always-visible `.route-row`, no `<details>`/`<summary>`
-  and no heading at all. It is a 3-column grid `1fr auto 1fr` — `.storage-grid`
+  and no heading at all. It is a centred flex row — `.storage-grid`
   `#source_storage_cards` → `.route-arrow` → `.storage-grid`
-  `#dest_storage_cards` — so the two sides stay equal and the arrow never falls
-  onto its own line. The words «المسار» / «المصدر» / «الوجهة» are gone from this
+  `#dest_storage_cards` — not a `1fr auto 1fr` grid, so both groups sit next to
+  the arrow instead of in the two corners of a wide bar (`justify-content:center`
+  plus a `safe center` fallback for the rare four-volume phone, where the row
+  scrolls sideways). The words «المسار» / «المصدر» / «الوجهة» are gone from this
   block (the section has no `.section-head`): the captions under the icons are
   the only labels. There is **no source path** in the UI — the source is the
   folder open in the browser (`currentSourceRoot`), which is also where
-  `openPathBrowser('source')` starts. Under the tiles sits `.dest-line`: a small
-  «تحديد» (`openPathBrowser('dest')`) plus the still-editable `#custom_dest_path`
-  input, and `#diskSpaceDiv` under that. `chooseStorage()` / `syncStorageCards()`
-  are unchanged, so the tile state and the destination box tint keep working.
+  `openPathBrowser('source')` starts. Under the tiles sits `.dest-line`:
+  deliberately quiet and on the destination side (`justify-content:flex-end`,
+  i.e. the left edge in RTL) — a 30px «تحديد» (`openPathBrowser('dest')`) and the
+  still-editable `#custom_dest_path`, which renders as plain muted text
+  (`transparent` background, no border) until it is focused. It is secondary by
+  design: the tiles say where the copy goes, this line only says which folder.
+  `#diskSpaceDiv` stays under it. `chooseStorage()` / `syncStorageCards()` are
+  unchanged, so the tile state and the destination box tint keep working.
 - **File browser section**: the sort row, the search row (`#searchControls`) and
   `#treeContainer` are one attached block; search sits directly above the
-  results, so typing never leaves the input far from them. Focusing `#searchInput`
-  scrolls this section to the top edge with `scrollIntoView({block:'start',
-  behavior:'auto'})` — instant on purpose, because the phone keyboard resizes the
-  viewport and a smooth animation would fight it. The folder-scope controls are
-  **not** inline: they live in `#searchScopeModal` (see «Search scope»).
+  results, so typing never leaves the input far from them. The row is the input
+  plus three 32px `.icon-btn`s on one non-wrapping line: a magnifier
+  (`.search-go`, `searchDeep(true)`), a clock (`#historyToggleBtn` →
+  `toggleHistoryBlock()`) and a sliders icon (`#scopeToggleBtn` →
+  `openSearchScope()`, the folder the search runs in). No word buttons any more:
+  «بحث» / «السجل» / «مجلد البحث» were costing a third of the row for three
+  symbols. Focusing `#searchInput` calls `this.select()` (the next keystroke
+  replaces the old query) and scrolls this section to the top edge with
+  `scrollIntoView({block:'start', behavior:'auto'})` — instant on purpose,
+  because the phone keyboard resizes the viewport and a smooth animation would
+  fight it. `revealSearchResults()` then brings the first result rows above the
+  keyboard with the same instant behaviour (a 96px margin keeps the sticky head
+  plus one row clear). The folder-scope *options* are still in
+  `#searchScopeModal` (see «Search scope»).
 - **Tools section**: the last section of the page. Two visible `.tools-actions`
-  rows: «إنشاء فهرس JOC» + «مجلد البحث» (`#scopeToggleBtn` →
-  `openSearchScope()`), then «تخزين الفهرس (بحث فوري)» (`#cacheFolderBtn`,
-  `#cacheStatusText` under it) + «فحص السرعة» (`runDiagnostic()`). Spoofing lives
-  in `<details class="tools">`, closed by default — an occasional action must
-  not out-weigh the copy.
+  rows: «إنشاء فهرس JOC» alone, and then «تخزين الفهرس (بحث فوري)»
+  (`#cacheFolderBtn`, `#cacheStatusText` under it) + «فحص السرعة»
+  (`runDiagnostic()`). The JOC button is the one accented control here
+  (`btn-joc`: `--accent-soft` fill, `--accent` border, `--accent-text` label, the
+  `ico-spark` icon) because the index is the important tool — a filled accent is
+  still reserved for «بدء النسخ». Spoofing lives in `<details class="tools">`,
+  closed by default — an occasional action must not out-weigh the copy — and
+  **«تطبيق التمويه» runs immediately**: there is no `confirm()` at all, and an
+  empty destination means `/sdcard`, exactly as the hint under the field says.
 - **Action bar** (`#actionBar`, `.actionbar`): fixed, **opaque** `--bar-bg` with a
   `--bar-line` top border (never `backdrop-filter`), and a 3px
   `.actionbar-progress` line at its top edge. The left side is a button
@@ -508,7 +541,7 @@ The search used to walk `currentSourceRoot` silently. It now walks
   writes the label (`#searchScopePath`), reloads the sub-folder menu and schedules
   a UI save. `searchDeep()` sends it as `&root=`.
 - The folder picker is a **dismissible dialog** (`#searchScopeModal`), opened by
-  `#scopeToggleBtn` in the Tools section's `.tools-actions` row via
+  `#scopeToggleBtn` (the sliders icon at the end of the search row) via
   `openSearchScope()`, and closed by `closeSearchScope(event)` (backdrop
   click, «إغلاق», or Esc). Inside: `#searchScopePath`, `#searchSubfolder`,
   «أعلى» (`searchScopeUp`), «تحديد مجلد» (`openPathBrowser('search')`, the third
@@ -656,7 +689,13 @@ mutation returns the new list so client and file cannot drift.
 - **MP3 straight into the destination** (`mp3_to_dest`, saved index setting,
   default on): `/api/tts_index` takes `save_to_dest` + `save_dir`, validates that
   the folder exists, is writable and has no file of that name, then runs
-  `check_destination()` before ffmpeg starts. `tts_thread_task(..., dest_dir)`
+  `check_destination()` **before** `reset_state()` or the worker exists — a dead
+  folder is refused without spawning a thread. Proof lives outside the checkout
+  (`$TMPDIR/uitest/test_tts.py`): it stubs only the Edge synthesiser and runs the
+  real `tts_thread_task` + real ffmpeg merge into a temp destination, checking
+  the merged MP3 is there and playable, `tts_saved_path` points at it, the
+  `chunk_*` files are gone, and a second run with the same name is refused.
+  `tts_thread_task(..., dest_dir)`
   makes the final path `dest_dir/out_name`, so ffmpeg builds the MP3 **in place**
   — no copy, no download, playback order untouched. The result travels in the
   state snapshot as `tts_name` + `tts_saved_path` (`''` when it went to the temp

@@ -2179,27 +2179,46 @@ HTML_TEMPLATE = """
         .inline-note { font-size:calc(11.5px * var(--font-scale)); color:var(--text-muted); }
         @media (max-width: 480px) { .section { padding: 17px 0 19px; } body { padding: 12px 12px 116px; } }
 
-        /* Route: one row — source tiles, a small arrow, destination tiles. No
-           headings and no fold: this block is read at a glance, and the folder
-           pair is chosen in the browser right below it. */
-        .route-row { display:grid; grid-template-columns:1fr auto 1fr; align-items:center; gap:10px; }
-        .route-row .storage-grid { margin-bottom:0; justify-content:center; }
-        .route-arrow { display:flex; align-items:center; justify-content:center; color:var(--text-muted); }
-        .route-arrow .icon { width:16px; height:16px; }
-        /* The chosen folder, one line under the tiles: a small picker button and
-           the path itself, so the destination is never a mystery. */
-        .dest-line { display:flex; align-items:center; gap:8px; margin-top:10px; }
-        .dest-line > .btn { flex:0 0 auto; }
-        .dest-line > input { margin-bottom:0; flex:1 1 0; min-width:0;
-            font-size:calc(12px * var(--font-scale)); }
+        /* Route: one row — source tiles, a small arrow, destination tiles, all
+           pulled to the middle so the two groups read as one pair instead of two
+           corners of a wide bar. `safe center` keeps the first tile reachable if
+           a phone ever has four volumes and the row has to scroll. */
+        .route-row { display:flex; align-items:center; justify-content:center;
+            justify-content:safe center; gap:12px; overflow-x:auto; scrollbar-width:none; }
+        .route-row::-webkit-scrollbar { display:none; }
+        .route-row .storage-grid { margin-bottom:0; flex:0 1 auto; justify-content:center; }
+        .route-arrow { flex:0 0 auto; display:flex; align-items:center; justify-content:center; color:var(--text-muted); }
+        .route-arrow .icon { width:15px; height:15px; }
+        /* The chosen folder: deliberately quiet. It belongs to the destination
+           tiles above it, so it sits on their side, reads like plain text until
+           tapped, and never competes with the tiles or the copy button. */
+        .dest-line { display:flex; align-items:center; justify-content:flex-end; gap:6px;
+            margin-top:8px; margin-inline:auto; max-width:520px; }
+        .dest-line > .btn { flex:0 0 auto; min-height:30px; padding:3px 9px; gap:4px;
+            border-radius:8px; font-size:calc(11px * var(--font-scale)); color:var(--text-muted); }
+        .dest-line > .btn .icon { width:12px; height:12px; }
+        .dest-line > .btn:hover { color:var(--accent-text); }
+        /* An id, because the generic input rule further down would otherwise win
+           the cascade (same specificity, later position). */
+        #custom_dest_path { flex:0 1 auto; width:auto; max-width:66%; min-width:0;
+            min-height:30px; margin-bottom:0; padding:3px 8px;
+            font-size:calc(11px * var(--font-scale)); color:var(--text-muted);
+            background:transparent; border-color:transparent; }
+        #custom_dest_path:focus { color:var(--text); background:var(--field); border-color:var(--accent); }
+        #custom_dest_path::placeholder { color:var(--text-muted); opacity:.75; }
         /* Occasional actions, side by side, in the Tools section. */
         .tools-actions { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:10px; }
         .tools-actions .btn { flex:1 1 0; min-width:150px; }
         .tools-note { display:block; margin:-2px 0 12px; }
         @media (max-width: 480px) {
-            .route-row { gap:6px; }
-            .storage-card { padding:4px 6px; }
-            .dest-line > input { font-size:calc(11px * var(--font-scale)); }
+            .route-row { gap:9px; }
+            #custom_dest_path { max-width:60%; }
+        }
+        @media (max-width: 380px) {
+            .route-row { gap:7px; }
+            .route-row .storage-grid { gap:4px; }
+            .storage-card { padding:4px 5px; }
+            .storage-card .storage-ico { width:27px; height:27px; padding:4px; }
         }
 
         /* The file browser is one attached block: the sort row, the search row
@@ -2210,8 +2229,15 @@ HTML_TEMPLATE = """
         .browser-sort { display:flex; align-items:center; gap:8px; padding:6px 11px;
             font-size:calc(12px * var(--font-scale)); color:var(--text-muted);
             border-bottom:1px solid var(--field-line); }
-        .browser-search { display:flex; align-items:center; gap:8px; flex-wrap:wrap; padding:8px 10px; }
-        .browser-search > .btn { white-space:nowrap; }
+        /* Input + three icon buttons on one line: the words «بحث»/«السجل»/
+           «مجلد البحث» are icons now, so they cost 30px each, not a third of
+           the row. */
+        .browser-search { display:flex; align-items:center; gap:6px; flex-wrap:nowrap; padding:7px 9px; }
+        .browser-search > input { flex:1 1 auto; min-width:0; }
+        .browser-search > .icon-btn { width:32px; height:32px; }
+        .browser-search > .icon-btn svg { width:15px; height:15px; }
+        .browser-search > .search-go { color:var(--accent-text); border-color:var(--accent); background:var(--accent-soft); }
+        .browser-search > .search-go:hover { color:var(--on-accent); background:var(--accent-fill); border-color:var(--accent-fill); }
         .scope-line { display:flex; align-items:center; gap:7px; flex-wrap:wrap; }
         .scope-line > .icon { width:15px; height:15px; color:var(--accent); flex-shrink:0; }
         .scope-path { flex:1 1 130px; min-width:0; font-family:var(--num-font); direction:ltr; text-align:left;
@@ -2219,7 +2245,8 @@ HTML_TEMPLATE = """
             white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
         .scope-select { max-width:46%; padding:5px 8px; border-radius:7px; border:1px solid var(--border);
             background:var(--bg); color:var(--text); font-family:inherit; font-size:calc(11.5px * var(--font-scale)); }
-        @media (max-width: 480px) { .browser-search { padding:6px 8px; } }
+        @media (max-width: 480px) { .browser-search { padding:6px 8px; gap:5px; }
+            .browser-search > .icon-btn { width:30px; height:30px; } }
 
         /* Monospace digits: counts and speeds must not jitter between polls. */
         .num { font-family: var(--num-font); font-variant-numeric: tabular-nums; direction:ltr; unicode-bidi:isolate; }
@@ -2247,6 +2274,32 @@ HTML_TEMPLATE = """
         .btn-outline.is-open { background: var(--accent-soft); border-color: var(--accent); color: var(--accent-text); }
         .btn-outline:hover { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent-soft); }
         .btn-sm { padding: 8px 12px; min-height: 38px; font-size: calc(12.5px * var(--font-scale)); }
+        /* The index is the one tool that matters, so it wears the accent — as a
+           soft tint, because the filled button belongs to «بدء النسخ». */
+        .btn-joc { background: var(--accent-soft); border: 1px solid var(--accent); color: var(--accent-text); }
+        .btn-joc .icon { color: var(--accent); }
+        .btn-joc:hover { background: var(--accent-fill); border-color: var(--accent-fill); color: var(--on-accent); }
+        .btn-joc:hover .icon { color: var(--on-accent); }
+
+        /* End-of-run report: one row per fact, each with its own icon. A finished
+           copy used to be one long line of numbers; half of them repeated the
+           progress bar, and none of them was scannable. */
+        .report { display:flex; flex-direction:column; gap:0; margin-top:14px;
+            border:1px solid var(--field-line); border-radius:10px; overflow:hidden;
+            background:var(--field); text-align:start; }
+        .report-row { display:flex; align-items:center; gap:9px; padding:9px 11px;
+            font-size:calc(12.5px * var(--font-scale)); line-height:1.5; }
+        .report-row + .report-row { border-top:1px solid var(--rule); }
+        .report-row .icon { width:16px; height:16px; flex-shrink:0; color:var(--accent); }
+        .report-row.is-ok .icon { color:var(--success); }
+        .report-row.is-warn .icon { color:var(--warning); }
+        .report-row.is-bad .icon { color:var(--danger-ink); }
+        .report-label { color:var(--text-muted); }
+        .report-value { margin-inline-start:auto; font-weight:600; color:var(--text);
+            font-variant-numeric:tabular-nums; white-space:nowrap; }
+        .report-row.is-bad .report-value { color:var(--danger-ink); }
+        .report-row:first-child { font-size:calc(13.5px * var(--font-scale)); }
+        .report-row:first-child .report-label { color:var(--text); font-weight:700; }
 
         .tree { max-height: max(180px, calc(62vh - var(--kb-inset))); overflow: auto; background: var(--field); border: 1px solid var(--border); border-radius: 10px; padding: 8px; scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
         /* Search replaces the tree's contents; the header stays put while rows scroll. */
@@ -2279,27 +2332,27 @@ HTML_TEMPLATE = """
            single word. Each kind sets --kind/--kind-soft so a tile is coloured by
            *what it is* (SD / USB / internal) instead of by the global accent. */
         .storage-grid { display: flex; flex-direction: row; gap: 6px; margin-bottom: 10px; flex-wrap: wrap; align-items: flex-start; justify-content: center; }
-        /* A tile is barely bigger than its icon: two volumes must not own a whole
-           row, and the caption under the icon carries the name. */
-        .storage-card { position: relative; display: flex; flex: 0 0 auto; flex-direction: column; align-items: center; gap: 3px;
-            padding: 5px 7px; border: 1px solid var(--field-line); border-radius: 10px;
+        /* The tile is an icon with a one-word caption: big enough to be the first
+           thing the thumb hits, small enough that three volumes still fit one row. */
+        .storage-card { position: relative; display: flex; flex: 0 0 auto; flex-direction: column; align-items: center; gap: 4px;
+            padding: 6px 8px; border: 1px solid var(--field-line); border-radius: 11px;
             background: var(--field); color: var(--text); cursor: pointer; text-align: center;
             transition: border-color .15s, background .15s; font-family: inherit; appearance: none; -webkit-appearance: none; }
         .storage-card:hover { border-color: var(--kind, var(--accent)); }
         /* The kind hue is always there, but only the selected volume wears it at
            full strength: an unselected tile stays quiet without losing its identity. */
-        .storage-card .storage-ico { width: 26px; height: 26px; padding: 4px; flex-shrink: 0; box-sizing: border-box;
-            border-radius: 8px; background: var(--field); color: var(--kind, var(--text-muted));
+        .storage-card .storage-ico { width: 32px; height: 32px; padding: 5px; flex-shrink: 0; box-sizing: border-box;
+            border-radius: 9px; background: var(--field); color: var(--kind, var(--text-muted));
             opacity: .42; transition: opacity .15s, background .15s; }
-        .storage-short { font-size: calc(10.5px * var(--font-scale)); font-weight: 600; color: var(--text-muted); line-height:1.2; opacity: .8; }
+        .storage-short { font-size: calc(11px * var(--font-scale)); font-weight: 600; color: var(--text-muted); line-height:1.2; opacity: .8; }
         .storage-card.active { border-color: var(--kind, var(--accent)); background: var(--kind-soft, var(--accent-soft)); }
         .storage-card.active .storage-ico { background: var(--kind-tile, var(--accent-soft)); color: var(--kind, var(--accent)); opacity: 1; }
         .storage-card.active .storage-short { color: var(--kind-ink, var(--accent)); opacity: 1; }
         /* A cached source folder is announced by one small bolt above the tile. */
         .storage-fresh { display:none; position:absolute; top:-7px; inset-inline-start:-5px;
-            width:15px; height:15px; align-items:center; justify-content:center;
+            width:16px; height:16px; align-items:center; justify-content:center;
             border-radius:50%; background:var(--accent-fill); color:var(--on-accent); }
-        .storage-fresh svg { width:9px; height:9px; fill:currentColor; }
+        .storage-fresh svg { width:10px; height:10px; fill:currentColor; }
         .storage-card.is-fresh .storage-fresh { display:flex; }
         .storage-card.kind-internal { --kind: var(--kind-internal); --kind-ink: var(--kind-internal-ink); --kind-soft: var(--kind-internal-soft); --kind-tile: var(--kind-internal-tile); }
         .storage-card.kind-sdcard { --kind: var(--kind-sdcard); --kind-ink: var(--kind-sdcard-ink); --kind-soft: var(--kind-sdcard-soft); --kind-tile: var(--kind-sdcard-tile); }
@@ -2314,6 +2367,7 @@ HTML_TEMPLATE = """
         .picker-file-row .item-name { color: var(--text-muted); cursor: default; }
         .file-size { margin-inline-start: auto; font-size: calc(11px * var(--font-scale)); color: var(--text-muted); direction: ltr; padding-inline-start: 10px; }
         .icon-btn:hover { color: var(--accent); border-color: var(--accent); }
+        .icon-btn.is-open { color: var(--accent-text); border-color: var(--accent); background: var(--accent-soft); }
         .icon-btn.danger:hover { color: var(--danger-ink); border-color: var(--danger); }
 
         /* ---- action bar ------------------------------------------------- */
@@ -2640,6 +2694,10 @@ HTML_TEMPLATE = """
     <symbol id="ico-alert" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"></circle><line x1="12" y1="8" x2="12" y2="13"></line><line x1="12" y1="16.5" x2="12.01" y2="16.5"></line></symbol>
     <symbol id="ico-plus" viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></symbol>
     <symbol id="ico-spark" viewBox="0 0 24 24"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"></path><path d="M18 16.5l.7 1.8 1.8.7-1.8.7-.7 1.8-.7-1.8-1.8-.7 1.8-.7z"></path></symbol>
+    <symbol id="ico-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"></circle><polyline points="12 7 12 12 16 14"></polyline></symbol>
+    <symbol id="ico-bolt" viewBox="0 0 24 24"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></symbol>
+    <symbol id="ico-shield" viewBox="0 0 24 24"><path d="M12 3l7 3v6c0 4-3 7.5-7 9-4-1.5-7-5-7-9V6z"></path><polyline points="9 12 11.2 14.2 15.2 10"></polyline></symbol>
+    <symbol id="ico-music" viewBox="0 0 24 24"><path d="M9 18V6l10-2v12"></path><circle cx="6.5" cy="18" r="2.5"></circle><circle cx="16.5" cy="16" r="2.5"></circle></symbol>
     <!-- Navigation / editing glyphs: text arrows vary by font and carry their
          own metrics, so generated rows use these instead. -->
     <symbol id="ico-up" viewBox="0 0 24 24"><line x1="12" y1="19" x2="12" y2="5"></line><polyline points="5 12 12 5 19 12"></polyline></symbol>
@@ -2735,9 +2793,16 @@ HTML_TEMPLATE = """
             </div>
             <div id="searchControls">
                 <div class="browser-search">
-                    <input type="text" id="searchInput" placeholder="ابحث في مجلد البحث..." style="margin-bottom:0; flex:1 1 160px;" aria-label="نص البحث">
-                    <button class="btn btn-primary" onclick="searchDeep(true)">بحث</button>
-                    <button type="button" class="btn btn-outline" id="historyToggleBtn" onclick="toggleHistoryBlock()" title="يعرض المجلدات التي حدّدتها سابقاً من البحث — اضغط عنصراً لإعادته إلى التحديد">السجل</button>
+                    <input type="text" id="searchInput" placeholder="ابحث في مجلد البحث..." style="margin-bottom:0;" aria-label="نص البحث">
+                    <button type="button" class="icon-btn search-go" onclick="searchDeep(true)" title="بحث" aria-label="بحث">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"></circle><line x1="16.5" y1="16.5" x2="21" y2="21"></line></svg>
+                    </button>
+                    <button type="button" class="icon-btn" id="historyToggleBtn" onclick="toggleHistoryBlock()" title="سجل البحث: آخر النتائج والمجلدات التي حدّدتها" aria-label="سجل البحث">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"></circle><polyline points="12 7 12 12 16 14"></polyline></svg>
+                    </button>
+                    <button type="button" class="icon-btn" id="scopeToggleBtn" onclick="openSearchScope()" aria-haspopup="dialog" aria-controls="searchScopeModal" title="مجلد البحث وخياراته" aria-label="مجلد البحث">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="7" x2="20" y2="7"></line><circle cx="9" cy="7" r="2.2"></circle><line x1="4" y1="17" x2="20" y2="17"></line><circle cx="15" cy="17" r="2.2"></circle></svg>
+                    </button>
                 </div>
             </div>
         </div>
@@ -2759,15 +2824,12 @@ HTML_TEMPLATE = """
             <h2 class="section-title">أدوات</h2>
             <span class="section-kicker">اختياري</span>
         </div>
-        <!-- The two occasional flows: one tap each, outside any fold. -->
+        <!-- The index is the one tool that matters: it gets the accent tint and
+             the whole row, so it can never be mistaken for a minor action. -->
         <div class="tools-actions">
-            <button type="button" class="btn btn-outline" onclick="openJocModal()">
-                <svg class="icon" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path></svg>
+            <button type="button" class="btn btn-joc" onclick="openJocModal()">
+                <svg class="icon" aria-hidden="true"><use href="#ico-spark"></use></svg>
                 إنشاء فهرس JOC
-            </button>
-            <button type="button" class="btn btn-outline" id="scopeToggleBtn" onclick="openSearchScope()" aria-haspopup="dialog" aria-controls="searchScopeModal" title="مجلد البحث وخياراته">
-                <svg class="icon" aria-hidden="true"><use href="#ico-folder"></use></svg>
-                مجلد البحث
             </button>
         </div>
         <div class="tools-actions">
@@ -3217,7 +3279,7 @@ HTML_TEMPLATE = """
         </div>
         <div id="cardWarningBox" style="display:none; margin-top:10px; padding:10px 12px; border-radius:10px; font-size:calc(12px * var(--font-scale)); line-height:1.7; background:var(--warning-soft); border:1px solid var(--warning-line); color:var(--warning);"></div>
         <div id="errorsBox" style="display:none; max-height:200px; overflow:auto; background:var(--field); border:1px solid var(--border); border-radius:6px; padding:10px; margin-top:10px; font-size:calc(12px * var(--font-scale)); color:var(--danger-ink);"></div>
-        <div id="timeTakenDiv" style="display:none; color:var(--success); font-weight:500; margin-top:15px; font-size:calc(13px * var(--font-scale)); text-align:center;"></div>
+        <div id="timeTakenDiv" class="report" style="display:none;"></div>
         <div id="queueBlock" class="queue-block" style="display:none;">
             <div class="queue-head">
                 <span class="queue-title">قائمة الانتظار</span>
@@ -5054,9 +5116,12 @@ HTML_TEMPLATE = """
             if (barTop > 0) viewHeight = Math.min(viewHeight, barTop - vvTop);
         }
         let top = rect.top - vvTop;
-        if (top < 0 || top > viewHeight - 72) {
+        // Instant, not smooth: the keyboard is still animating its own resize,
+        // and a smooth scroll would lose that race and leave the first rows
+        // under the keyboard. A 96px margin keeps the head plus one row clear.
+        if (top < 0 || top > viewHeight - 96) {
             let delta = top - 12;
-            if (window.scrollBy) window.scrollBy({ top: delta, behavior: 'smooth' });
+            if (window.scrollBy) window.scrollBy({ top: delta, behavior: 'auto' });
             else document.documentElement.scrollTop += delta;
         }
     }
@@ -5156,8 +5221,10 @@ HTML_TEMPLATE = """
     });
     // On a phone the keyboard covers the lower half of the screen. Put the
     // browser block at the top edge the moment the field gets focus, without an
-    // animation: a smooth scroll would fight the keyboard's own resize.
+    // animation: a smooth scroll would fight the keyboard's own resize. The old
+    // query is selected so the next keystroke replaces it instead of appending.
     document.getElementById('searchInput').addEventListener('focus', function() {
+        try { this.select(); } catch (e) {}
         let section = this.closest('section');
         if (section && section.scrollIntoView) {
             section.scrollIntoView({ block: 'start', inline: 'nearest', behavior: 'auto' });
@@ -5736,15 +5803,11 @@ HTML_TEMPLATE = """
         let spoofDate = document.getElementById('spoofDateInput').value;
         if(!spoofDate) return alert('حدد التاريخ والوقت أولاً.');
 
-        if(!dest) {
-            if(confirm('لم تقم بتحديد مسار وجهة.\\nهل تريد تطبيق التمويه على كامل الذاكرة الداخلية (/sdcard)؟')) {
-                dest = '/sdcard';
-            } else {
-                return;
-            }
-        } else {
-            if(!confirm(`سيتم تغيير تواريخ كل شيء داخل:\\n${dest}\\nهل أنت متأكد؟`)) return;
-        }
+        // Applying spoof is the button's whole meaning: it is allowed to touch
+        // the destination already shown above it. No confirmation dialog — the
+        // empty-destination case falls back to the internal storage, exactly as
+        // the hint under the field says.
+        if (!dest) dest = '/sdcard';
 
         fetch('/transfer/spoof_only', {
             method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({dest: dest, spoof_date: spoofDate})
@@ -6404,6 +6467,88 @@ HTML_TEMPLATE = """
     function showInlineDone(msg) { showInlineNotify(spriteIcon('ico-check') + ' ' + msg, 'success'); }
     function showInlineError(msg) { showInlineNotify(spriteIcon('ico-alert') + ' ' + esc(msg), 'error'); }
 
+    // ---- the end-of-run report -------------------------------------------
+    // A finished copy used to print one long line of concatenated numbers (total
+    // time, copy time, average speed, verify time, spoof count) in a single
+    // centred string: nothing in it was scannable. The same facts are rows now,
+    // each with an icon, and a row with nothing to say is not rendered at all.
+    function reportRow(iconId, label, value, tone) {
+        return '<div class="report-row' + (tone ? ' is-' + tone : '') + '">'
+            + spriteIcon(iconId)
+            + '<span class="report-label">' + esc(label) + '</span>'
+            + (value ? '<span class="report-value">' + esc(String(value)) + '</span>' : '')
+            + '</div>';
+    }
+
+    function renderTransferReport(rows) {
+        let box = document.getElementById('timeTakenDiv');
+        if (!box) return;
+        let html = (rows || []).filter(Boolean).join('');
+        if (!html) { box.style.display = 'none'; box.innerHTML = ''; return; }
+        box.innerHTML = html;
+        box.style.display = 'flex';
+    }
+
+    function buildTransferReport(data) {
+        let action = data.action || '';
+        let isCopy = action === 'copy';
+        let isDelete = action === 'delete';
+        let isTts = action === 'tts';
+        let isSpoof = action === 'spoof';
+        let headline = isTts ? 'تم إنشاء الفهرس الصوتي'
+            : isDelete ? 'تم الحذف'
+            : isCopy ? 'اكتمل النسخ'
+            : isSpoof ? 'اكتمل التمويه'
+            : 'اكتملت العملية';
+        let unit = isCopy ? 'ملف' : 'عنصر';
+        // `copied` is chunks for TTS, not files: only the file-moving actions
+        // have a count worth printing.
+        let count = (isCopy || isDelete || isSpoof) ? (data.copied || 0) : 0;
+        let rows = [reportRow(isTts ? 'ico-music' : 'ico-check', headline,
+                              count ? count + ' ' + unit : '', 'ok')];
+
+        if (isCopy) {
+            // Copy time and average speed share one row: they are the two halves
+            // of the same honest statement ("how fast was the card").
+            let speed = data.avg_mbps ? data.avg_mbps + ' MB/s' : '';
+            let copyLine = [data.copy_seconds ? data.copy_seconds + ' ث' : '', speed]
+                .filter(Boolean).join(' · ');
+            rows.push(reportRow('ico-bolt', 'النسخ', copyLine));
+        } else if (data.time_taken) {
+            rows.push(reportRow('ico-clock', 'الزمن', data.time_taken));
+        }
+
+        if (data.verify_total > 0) {
+            let tone = 'ok';
+            let value = (data.verified || 0) + '/' + data.verify_total + ' سليم';
+            if (data.verify_cancelled) {
+                tone = 'warn';
+                value = 'تم الإيقاف';
+            } else if (data.verify_failed && data.verify_failed.length) {
+                tone = 'bad';
+                value = (data.verified || 0) + '/' + data.verify_total
+                    + ' — ' + data.verify_failed.length + ' مخالف';
+            }
+            if (data.verify_seconds) value += ' · ' + data.verify_seconds + ' ث';
+            rows.push(reportRow('ico-shield', 'التحقق من الحجم', value, tone));
+        }
+
+        if (data.spoof_total) {
+            rows.push(reportRow('ico-spark', 'تمويه التواريخ',
+                (data.spoof_done || 0) + '/' + data.spoof_total, 'ok'));
+        } else if (data.spoof_cancelled) {
+            rows.push(reportRow('ico-spark', 'تمويه التواريخ', 'تم الإيقاف', 'warn'));
+        } else if (data.spoof_error) {
+            rows.push(reportRow('ico-spark', 'تمويه التواريخ', 'تعذر', 'bad'));
+        }
+
+        if (isTts && data.tts_saved_path) {
+            rows.push(reportRow('ico-folder', 'حُفظ في الوجهة',
+                data.tts_saved_path.split('/').pop(), 'ok'));
+        }
+        return rows;
+    }
+
     function cancelTransfer() {
         if(confirm('متأكد من الإيقاف؟')) {
             document.getElementById('cancelProgressBtn').disabled = true;
@@ -6616,32 +6761,7 @@ HTML_TEMPLATE = """
                         document.getElementById('currentFile').style.color = 'var(--danger-ink)';
                         showInlineError('فشلت العملية: ' + data.log);
                     } else if (data.status === 'done' && data.time_taken) {
-                        let verifyNote = '';
-                        if (data.verify_total > 0) {
-                            if (data.verify_cancelled) {
-                                verifyNote = ' • تم إيقاف التحقق';
-                            } else if (data.verify_failed && data.verify_failed.length) {
-                                verifyNote = ' • التحقق: ' + data.verified + '/' + data.verify_total + ' (مخالف)';
-                            } else {
-                                verifyNote = ' • التحقق: ' + data.verified + '/' + data.verify_total + ' سليم';
-                            }
-                        }
-                        let spoofNote = '';
-                        if (data.action === 'copy') {
-                            if (data.spoof_cancelled) {
-                                spoofNote = ' • تم إيقاف التمويه';
-                            } else if (data.spoof_error) {
-                                spoofNote = ' • تعذر تمويه التواريخ';
-                            } else if (data.spoof_total) {
-                                spoofNote = ' • تمويه ' + (data.spoof_done || 0) + '/' + data.spoof_total;
-                            }
-                        }
-                        document.getElementById('timeTakenDiv').style.display = 'block';
-                        document.getElementById('timeTakenDiv').innerText = 'استغرق: ' + data.time_taken
-                            + (data.copy_seconds ? ' • النسخ ' + data.copy_seconds + ' ث' : '')
-                            + (data.avg_mbps ? ' • متوسط السرعة: ' + data.avg_mbps + ' MB/s' : '')
-                            + (data.verify_seconds ? ' • التحقق ' + data.verify_seconds + ' ث' : '')
-                            + verifyNote + spoofNote;
+                        renderTransferReport(buildTransferReport(data));
                         // Remember this card's measured throughput: it is the only
                         // honest basis for the action bar's ETA next time.
                         if (data.action === 'copy' && data.avg_mbps > 0) {
@@ -6655,8 +6775,9 @@ HTML_TEMPLATE = """
                             renderGroupUI();
                         }
                     } else if (data.status === 'cancelled' && data.time_taken) {
-                        document.getElementById('timeTakenDiv').style.display = 'block';
-                        document.getElementById('timeTakenDiv').innerText = 'تم الإيقاف بعد: ' + data.time_taken;
+                        renderTransferReport([
+                            reportRow('ico-alert', 'تم الإيقاف', data.time_taken, 'warn')
+                        ]);
                     }
                     
                     // Show why items failed (path + reason) and which source
