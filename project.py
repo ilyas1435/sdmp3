@@ -585,11 +585,13 @@ def classify_volume_device(device):
 
 # Icon (SVG symbol id) + Arabic label per volume kind. Anything unrecognised
 # still gets a usable card icon and label, never a blank entry.
+# `short` is the one-word caption under the picker's icon tile: the full label
+# and the raw path are too long for a row of three volumes.
 STORAGE_KINDS = {
-    'internal': {'label': 'الذاكرة الداخلية', 'icon': 'ico-internal'},
-    'sdcard': {'label': 'كارت SD', 'icon': 'ico-sd'},
-    'usb': {'label': 'USB OTG', 'icon': 'ico-usb'},
-    'card': {'label': 'كارت ذاكرة', 'icon': 'ico-card'},
+    'internal': {'label': 'الذاكرة الداخلية', 'short': 'الهاتف', 'icon': 'ico-internal'},
+    'sdcard': {'label': 'كارت SD', 'short': 'SD', 'icon': 'ico-sd'},
+    'usb': {'label': 'USB OTG', 'short': 'OTG', 'icon': 'ico-usb'},
+    'card': {'label': 'كارت ذاكرة', 'short': 'كارت', 'icon': 'ico-card'},
 }
 
 
@@ -602,6 +604,7 @@ def get_available_storages():
             'path': '/sdcard',
             'kind': 'internal',
             'icon': STORAGE_KINDS['internal']['icon'],
+            'short': STORAGE_KINDS['internal']['short'],
         })
     try:
         df_output = subprocess.check_output("df -h", shell=True, text=True, timeout=5)
@@ -617,6 +620,7 @@ def get_available_storages():
                         'path': mount_point,
                         'kind': kind,
                         'icon': STORAGE_KINDS[kind]['icon'],
+                        'short': STORAGE_KINDS[kind]['short'],
                     })
                     seen_names.add(name)
     except Exception:
@@ -2285,31 +2289,24 @@ HTML_TEMPLATE = """
         .icon-btn svg { width:14px; height:14px; }
         .icon-btn:active { transform: scale(0.92); }
 
-        /* Storage picker: one card per volume, icon + Arabic label + real path.
-           Each kind sets --kind/--kind-soft so the card is coloured by *what it
-           is* (SD / USB / internal) instead of by the global accent. */
-        .storage-grid { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; }
-        .storage-card { display: flex; align-items: center; gap: 10px; width: 100%; padding: 8px 11px;
-            border: 1px solid var(--field-line); border-inline-start: 3px solid var(--kind, var(--border));
-            border-radius: 10px; background: var(--field); color: var(--text);
-            cursor: pointer; text-align: right; transition: border-color .15s, background .15s;
-            font-family: inherit; appearance: none; -webkit-appearance: none; }
+        /* Storage picker: one horizontal row of icon tiles, each captioned with a
+           single word. Each kind sets --kind/--kind-soft so a tile is coloured by
+           *what it is* (SD / USB / internal) instead of by the global accent. */
+        .storage-grid { display: flex; flex-direction: row; gap: 8px; margin-bottom: 10px; flex-wrap: wrap; }
+        .storage-card { display: flex; flex: 1 1 0; min-width: 78px; flex-direction: column; align-items: center; gap: 6px;
+            padding: 9px 6px; border: 1px solid var(--field-line); border-radius: 12px;
+            background: var(--field); color: var(--text); cursor: pointer; text-align: center;
+            transition: border-color .15s, background .15s; font-family: inherit; appearance: none; -webkit-appearance: none; }
         .storage-card:hover { border-color: var(--kind, var(--accent)); }
         .storage-card.active { border-color: var(--kind, var(--accent)); background: var(--kind-soft, var(--accent-soft)); }
-        .storage-card .storage-ico { width: 32px; height: 32px; padding: 6px; flex-shrink: 0; box-sizing: border-box;
+        .storage-card .storage-ico { width: 30px; height: 30px; padding: 5px; flex-shrink: 0; box-sizing: border-box;
             border-radius: 9px; background: var(--kind-tile, var(--accent-soft)); color: var(--kind, var(--text-muted)); }
+        .storage-short { font-size: calc(11.5px * var(--font-scale)); font-weight: 600; color: var(--text-muted); }
+        .storage-card.active .storage-short { color: var(--kind-ink, var(--accent)); }
         .storage-card.kind-internal { --kind: var(--kind-internal); --kind-ink: var(--kind-internal-ink); --kind-soft: var(--kind-internal-soft); --kind-tile: var(--kind-internal-tile); }
         .storage-card.kind-sdcard { --kind: var(--kind-sdcard); --kind-ink: var(--kind-sdcard-ink); --kind-soft: var(--kind-sdcard-soft); --kind-tile: var(--kind-sdcard-tile); }
         .storage-card.kind-usb { --kind: var(--kind-usb); --kind-ink: var(--kind-usb-ink); --kind-soft: var(--kind-usb-soft); --kind-tile: var(--kind-usb-tile); }
         .storage-card.kind-card { --kind: var(--kind-card); --kind-ink: var(--kind-card-ink); --kind-soft: var(--kind-card-soft); --kind-tile: var(--kind-card-tile); }
-        .storage-meta { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex-grow: 1; }
-        .storage-name { font-size: calc(14px * var(--font-scale)); font-weight: 600; }
-        .storage-path { font-family: var(--num-font); font-size: calc(11px * var(--font-scale)); color: var(--text-muted); direction: ltr; text-align: right;
-            overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-        .storage-card.active .storage-name { color: var(--kind-ink, var(--accent)); }
-        .storage-badge { display: none; margin-inline-start: auto; font-size: calc(10px * var(--font-scale)); padding: 3px 7px; border-radius: 999px;
-            border: 1px solid var(--border); color: var(--text-muted); white-space: nowrap; }
-        .storage-card.active .storage-badge { display: inline-block; color: var(--kind-ink, var(--accent)); border-color: var(--kind, var(--accent)); }
         /* Path box in the picker: border says which volume you are browsing. */
         .kind-border-internal { border-color: var(--kind-internal) !important; }
         .kind-border-sdcard { border-color: var(--kind-sdcard) !important; }
@@ -2698,13 +2695,9 @@ HTML_TEMPLATE = """
                 <div class="route-label"><span class="section-step">١</span> مصدر الملفات</div>
                 <div class="storage-grid" id="source_storage_cards">
                     {% for st in storages %}
-                    <button type="button" class="storage-card kind-{{ st.kind }}" data-path="{{ st.path }}" onclick="chooseStorage('source', this)">
+                    <button type="button" class="storage-card kind-{{ st.kind }}" data-path="{{ st.path }}" onclick="chooseStorage('source', this)" title="{{ st.name }} — {{ st.path }}">
                         <svg class="icon storage-ico"><use href="#{{ st.icon }}"></use></svg>
-                        <span class="storage-meta">
-                            <span class="storage-name">{{ st.name }}</span>
-                            <span class="storage-path">{{ st.path }}</span>
-                        </span>
-                        <span class="storage-badge">الحالي</span>
+                        <span class="storage-short">{{ st.short }}</span>
                     </button>
                     {% endfor %}
                 </div>
@@ -2729,13 +2722,9 @@ HTML_TEMPLATE = """
                 <div class="route-label"><span class="section-step">٢</span> وجهة النقل</div>
                 <div class="storage-grid" id="dest_storage_cards">
                     {% for st in storages %}
-                    <button type="button" class="storage-card kind-{{ st.kind }}" data-path="{{ st.path }}" onclick="chooseStorage('dest', this)">
+                    <button type="button" class="storage-card kind-{{ st.kind }}" data-path="{{ st.path }}" onclick="chooseStorage('dest', this)" title="{{ st.name }} — {{ st.path }}">
                         <svg class="icon storage-ico"><use href="#{{ st.icon }}"></use></svg>
-                        <span class="storage-meta">
-                            <span class="storage-name">{{ st.name }}</span>
-                            <span class="storage-path">{{ st.path }}</span>
-                        </span>
-                        <span class="storage-badge">الوجهة</span>
+                        <span class="storage-short">{{ st.short }}</span>
                     </button>
                     {% endfor %}
                 </div>
