@@ -2204,7 +2204,9 @@ HTML_TEMPLATE = """
         .route-chev { width:15px; height:15px; flex-shrink:0; color:var(--text-muted); transition:transform .15s ease; }
         .route-details[open] .route-chev { transform:rotate(180deg); }
         .route-details .route { margin-top:14px; }
-        .route-joc { margin-top:12px; }
+        /* Two occasional actions, side by side, outside the fold. */
+        .route-joc-row { display:flex; gap:8px; flex-wrap:wrap; margin-top:12px; }
+        .route-joc-row .route-joc { margin-top:0; }
         @media (max-width: 480px) {
             .kind-tag { padding:2px 6px; }
             .source-path-input { flex-basis:120px; }
@@ -2220,11 +2222,10 @@ HTML_TEMPLATE = """
             border-bottom:1px solid var(--field-line); }
         .browser-search { display:flex; align-items:center; gap:8px; flex-wrap:wrap; padding:8px 10px; }
         .browser-search > .btn { white-space:nowrap; }
-        .browser-scope { display:flex; flex-direction:column; gap:8px; padding:0 10px 10px; }
         .scope-line { display:flex; align-items:center; gap:7px; flex-wrap:wrap; }
         .scope-line > .icon { width:15px; height:15px; color:var(--accent); flex-shrink:0; }
         .scope-path { flex:1 1 130px; min-width:0; font-family:var(--num-font); direction:ltr; text-align:left;
-            font-size:calc(11px * var(--font-scale)); color:var(--text);
+            font-size:calc(11.5px * var(--font-scale)); color:var(--text);
             white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
         .scope-select { max-width:46%; padding:5px 8px; border-radius:7px; border:1px solid var(--border);
             background:var(--bg); color:var(--text); font-family:inherit; font-size:calc(11.5px * var(--font-scale)); }
@@ -2768,12 +2769,18 @@ HTML_TEMPLATE = """
         </div>
         </details>
 
-        <!-- The index generator is a separate flow: it stays one tap away
-             whether or not the route block is folded. -->
-        <button class="btn btn-outline route-joc" onclick="openJocModal()">
-            <svg class="icon" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path></svg>
-            إنشاء فهرس JOC
-        </button>
+        <!-- The index generator and the search folder are separate flows, so
+             they stay one tap away whether or not the route block is folded. -->
+        <div class="route-joc-row">
+            <button class="btn btn-outline route-joc" onclick="openJocModal()">
+                <svg class="icon" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path></svg>
+                إنشاء فهرس JOC
+            </button>
+            <button type="button" class="btn btn-outline route-joc" id="scopeToggleBtn" onclick="openSearchScope()" aria-haspopup="dialog" aria-controls="searchScopeModal" title="مجلد البحث وخياراته">
+                <svg class="icon" aria-hidden="true"><use href="#ico-folder"></use></svg>
+                مجلد البحث
+            </button>
+        </div>
     </section>
 
     <section class="section">
@@ -2802,28 +2809,6 @@ HTML_TEMPLATE = """
                     <input type="text" id="searchInput" placeholder="ابحث في مجلد البحث..." style="margin-bottom:0; flex:1 1 160px;" aria-label="نص البحث">
                     <button class="btn btn-primary" onclick="searchDeep(true)">بحث</button>
                     <button type="button" class="btn btn-outline" id="historyToggleBtn" onclick="toggleHistoryBlock()" title="يعرض المجلدات التي حدّدتها سابقاً من البحث — اضغط عنصراً لإعادته إلى التحديد">السجل</button>
-                    <button type="button" class="btn btn-outline btn-sm" id="scopeToggleBtn" onclick="toggleSearchScope()" aria-expanded="false" aria-controls="searchScopePanel" title="مجلد البحث وخياراته">
-                        <svg class="icon" aria-hidden="true"><use href="#ico-folder"></use></svg>
-                        مجلد البحث
-                    </button>
-                </div>
-                <div class="browser-scope" id="searchScopePanel" style="display:none;">
-                    <div class="scope-line">
-                        <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#ico-folder"></use></svg>
-                        <div class="scope-path" id="searchScopePath" title="مجلد البحث الحالي">/sdcard</div>
-                        <select class="scope-select" id="searchSubfolder" onchange="enterSearchSubfolder(this.value)" aria-label="مجلد فرعي للبحث">
-                            <option value="">مجلد فرعي…</option>
-                        </select>
-                        <button type="button" class="btn btn-outline btn-sm" onclick="searchScopeUp()" title="مجلد أعلى">
-                            <svg class="icon" aria-hidden="true"><use href="#ico-up"></use></svg> أعلى
-                        </button>
-                        <button type="button" class="btn btn-outline btn-sm" onclick="openPathBrowser('search')">تحديد مجلد</button>
-                    </div>
-                    <label style="display:flex; align-items:center; gap:8px; cursor:pointer; color: var(--text-muted); font-size:calc(13px * var(--font-scale)); margin:0;">
-                        <input type="checkbox" id="foldersOnlyCheck" class="checkbox" checked style="width:16px; height:16px; margin:0;">
-                        بحث في أسماء المجلدات فقط
-                    </label>
-                    <div class="search-scope-hint" style="color:var(--text-muted); font-size:calc(12px * var(--font-scale));">تظهر النتائج داخل شجرة الملفات أسفل مربع البحث مباشرة.</div>
                 </div>
             </div>
         </div>
@@ -3281,6 +3266,35 @@ HTML_TEMPLATE = """
         <div style="display:flex; gap:12px; margin-top:20px;">
             <button class="btn btn-danger" id="cancelProgressBtn" style="width:100%; padding: 12px;" onclick="cancelTransfer()">إيقاف وإلغاء</button>
             <button class="btn btn-primary" id="closeProgressBtn" style="display:none; width:100%; padding: 12px;" onclick="resetTransfer()">تم وإغلاق</button>
+        </div>
+    </div>
+</div>
+
+<!-- Where the search runs. It is its own value (`searchScopePath`) and its own
+     dialog: narrowing a search must never move the browsed folder. -->
+<div class="modal" id="searchScopeModal" onclick="closeSearchScope(event)">
+    <div class="modal-content" style="max-width:460px;">
+        <h3 style="margin-top:0; font-size:calc(16px * var(--font-scale)); border-bottom:1px solid var(--border); padding-bottom:15px;">مجلد البحث</h3>
+        <div class="settings-note">البحث يجري داخل هذا المجلد وحده، ولا يغيّر مجلد التصفح.</div>
+        <div class="scope-line">
+            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#ico-folder"></use></svg>
+            <div class="scope-path" id="searchScopePath" title="مجلد البحث الحالي">/sdcard</div>
+            <select class="scope-select" id="searchSubfolder" onchange="enterSearchSubfolder(this.value)" aria-label="مجلد فرعي للبحث">
+                <option value="">مجلد فرعي…</option>
+            </select>
+        </div>
+        <div class="scope-line" style="margin-top:8px;">
+            <button type="button" class="btn btn-outline btn-sm" onclick="searchScopeUp()" title="مجلد أعلى">
+                <svg class="icon" aria-hidden="true"><use href="#ico-up"></use></svg> أعلى
+            </button>
+            <button type="button" class="btn btn-outline btn-sm" onclick="openPathBrowser('search')">تحديد مجلد</button>
+        </div>
+        <label style="display:flex; align-items:center; gap:8px; cursor:pointer; color:var(--text-muted); font-size:calc(13px * var(--font-scale)); margin:12px 0 0;">
+            <input type="checkbox" id="foldersOnlyCheck" class="checkbox" checked style="width:16px; height:16px; margin:0;">
+            بحث في أسماء المجلدات فقط
+        </label>
+        <div style="display:flex; gap:10px; margin-top:16px;">
+            <button class="btn btn-outline" style="flex:1;" onclick="closeSearchScope()">إغلاق</button>
         </div>
     </div>
 </div>
@@ -5033,15 +5047,21 @@ HTML_TEMPLATE = """
         setSearchScope('/' + parts.join('/'), true);
     }
 
-    // The folder picker is occasional: folded until asked for, so the search
-    // row and the results tree stay adjacent.
-    function toggleSearchScope() {
-        let panel = document.getElementById('searchScopePanel');
-        let btn = document.getElementById('scopeToggleBtn');
-        if (!panel) return;
-        let open = panel.style.display === 'none' || !panel.style.display;
-        panel.style.display = open ? 'flex' : 'none';
-        if (btn) btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+    // The scope picker is occasional, so it is a dialog instead of a permanent
+    // block: the search row and the results tree stay adjacent.
+    function openSearchScope() {
+        let modal = document.getElementById('searchScopeModal');
+        if (!modal) return;
+        modal.style.display = 'flex';
+        loadSearchScope();
+    }
+
+    // Called by the backdrop and by «إغلاق»; a click inside the content must
+    // not close it, which is why the target id is checked.
+    function closeSearchScope(e) {
+        if (e && e.target && e.target.id !== 'searchScopeModal') return;
+        let modal = document.getElementById('searchScopeModal');
+        if (modal) modal.style.display = 'none';
     }
 
     function enterSearchSubfolder(sub) {
