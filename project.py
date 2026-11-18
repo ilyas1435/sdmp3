@@ -81,9 +81,15 @@ SENDFILE_UNSUPPORTED = {
 # time in DFS order - never by fsync - so dropping the per-file flush changes
 # speed only, not the on-disk playback order.
 # os.sync() flushes *every* filesystem on the device, not just this copy, so a
-# small threshold turns a big transfer into hundreds of short stalls. Ordering
+# tiny threshold turns a big transfer into hundreds of short stalls. Ordering
 # comes from the sequential writes themselves, never from syncing.
-SYNC_THRESHOLD = 1024 * 1024 * 1024
+#
+# The threshold is also the *length* of the single «تثبيت البيانات على الكارت»
+# step: 1 GB of dirty pages on a card that writes at 10 MB/s is a 100-second
+# blocking syscall, which users read as a hang. 256 MB caps that step at ~25s
+# worst case on a slow card, and on internal storage it is still one flush per
+# couple of seconds of copying - nowhere near a per-file flush.
+SYNC_THRESHOLD = 256 * 1024 * 1024
 
 # os.sync() is one long syscall that cannot report progress. Without a heartbeat
 # the UI used to mistake a normal 30-60s flush for a dead card and tell the user
@@ -301,7 +307,7 @@ def sync_with_heartbeat(phase_after='copying', dest=None):
     everything, which is correct but much slower.
     """
     set_state(syncing=True, sync_started=time.time(), phase='syncing',
-              file='جاري تثبيت البيانات على الكارت...')
+              file='تثبيت البيانات على الكارت…')
     # Mark the start of the flush as progress too: the last chunk may have been
     # written a while ago (a long folder scan, a slow file close).
     touch_progress()
@@ -2144,19 +2150,10 @@ HTML_TEMPLATE = """
         .app-header .header-settings { margin-inline-start: auto; width:34px; height:34px; flex-shrink:0; }
         .pill-row { display:flex; flex-wrap:wrap; align-items:center; row-gap:4px; margin-top:7px; }
         .app-header .pill { display:inline-flex; align-items:center; gap:6px; padding:0; border:0; background:none; border-radius:0; color:var(--text-muted); font-size:calc(11px * var(--font-scale)); line-height:1.5; white-space:nowrap; }
-        .app-header .pill + .pill { border-inline-start:1px solid var(--rule); margin-inline-start:9px; padding-inline-start:9px; }
-        .app-header .pill::before { content:''; width:6px; height:6px; border-radius:50%; background:var(--border); flex-shrink:0; }
-        /* The version is the app's signature, so it wears the accent. */
+        /* The header carries the version only. State that can be wrong (Shizuku,
+           «كتابة الكارت») lives in الإعدادات › عام, so no header dot is left to
+           colour — the card answer is a real write test now. */
         .app-header #appVersionPill { color: var(--accent-text); font-weight:600; }
-        .app-header #appVersionPill::before { display:none; }
-        /* State lives in the dot, not the label: the label stays --text-muted,
-           which clears 4.5:1 on every theme's page background. */
-        .app-header .pill-ok::before { background: var(--success); }
-        .app-header .pill-warn::before { background: var(--warning); }
-        .app-header .pill-kind-internal::before { background: var(--kind-internal); }
-        .app-header .pill-kind-sdcard::before { background: var(--kind-sdcard); }
-        .app-header .pill-kind-usb::before { background: var(--kind-usb); }
-        .app-header .pill-kind-card::before { background: var(--kind-card); }
         /* Pills used outside the header (picker badge, group chip) stay tinted by
            volume type; text uses the -ink variant so 11px labels stay legible. */
         .pill { font-size: calc(11px * var(--font-scale)); line-height: 1; padding: 6px 10px; border-radius: 999px; border: 1px solid var(--border); color: var(--text-muted); background: var(--pill-bg); white-space: nowrap; }
@@ -2181,11 +2178,11 @@ HTML_TEMPLATE = """
 
         /* Route: one row — source tiles, a small arrow, destination tiles, all
            pulled to the middle so the two groups read as one pair instead of two
-           corners of a wide bar. `safe center` keeps the first tile reachable if
-           a phone ever has four volumes and the row has to scroll. */
+           corners of a wide bar. The row wraps (it never scrolls): `overflow`
+           on this container clipped the `.storage-fresh` badge, which sits at
+           `top:-7px` on the source tile. */
         .route-row { display:flex; align-items:center; justify-content:center;
-            justify-content:safe center; gap:12px; overflow-x:auto; scrollbar-width:none; }
-        .route-row::-webkit-scrollbar { display:none; }
+            justify-content:safe center; gap:12px; flex-wrap:wrap; row-gap:9px; }
         .route-row .storage-grid { margin-bottom:0; flex:0 1 auto; justify-content:center; }
         .route-arrow { flex:0 0 auto; display:flex; align-items:center; justify-content:center; color:var(--text-muted); }
         .route-arrow .icon { width:15px; height:15px; }
@@ -2229,24 +2226,22 @@ HTML_TEMPLATE = """
         .browser-sort { display:flex; align-items:center; gap:8px; padding:6px 11px;
             font-size:calc(12px * var(--font-scale)); color:var(--text-muted);
             border-bottom:1px solid var(--field-line); }
-        /* Input + three icon buttons on one line: the words «بحث»/«السجل»/
-           «مجلد البحث» are icons now, so they cost 30px each, not a third of
-           the row. */
+        /* Input + two icon buttons on one line. The magnifier button is gone:
+           Enter runs the search, so a third control was only stealing width
+           from the field. The two neighbours are 36px — big enough to hit. */
         .browser-search { display:flex; align-items:center; gap:6px; flex-wrap:nowrap; padding:7px 9px; }
         .browser-search > input { flex:1 1 auto; min-width:0; }
-        .browser-search > .icon-btn { width:32px; height:32px; }
-        .browser-search > .icon-btn svg { width:15px; height:15px; }
-        .browser-search > .search-go { color:var(--accent-text); border-color:var(--accent); background:var(--accent-soft); }
-        .browser-search > .search-go:hover { color:var(--on-accent); background:var(--accent-fill); border-color:var(--accent-fill); }
+        .browser-search > .icon-btn { width:36px; height:36px; }
+        .browser-search > .icon-btn svg { width:19px; height:19px; }
         .scope-line { display:flex; align-items:center; gap:7px; flex-wrap:wrap; }
         .scope-line > .icon { width:15px; height:15px; color:var(--accent); flex-shrink:0; }
-        .scope-path { flex:1 1 130px; min-width:0; font-family:var(--num-font); direction:ltr; text-align:left;
-            font-size:calc(11.5px * var(--font-scale)); color:var(--text);
-            white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-        .scope-select { max-width:46%; padding:5px 8px; border-radius:7px; border:1px solid var(--border);
-            background:var(--bg); color:var(--text); font-family:inherit; font-size:calc(11.5px * var(--font-scale)); }
+        /* The scope path is a field like the destination's, so both pickers read
+           the same: a locked path on one line, «تحديد» underneath. */
+        #searchScopePath { flex:1 1 auto; min-width:0; margin-bottom:0; background:var(--field);
+            font-family:var(--num-font); color:var(--text); }
         @media (max-width: 480px) { .browser-search { padding:6px 8px; gap:5px; }
-            .browser-search > .icon-btn { width:30px; height:30px; } }
+            .browser-search > .icon-btn { width:34px; height:34px; }
+            .browser-search > .icon-btn svg { width:18px; height:18px; } }
 
         /* Monospace digits: counts and speeds must not jitter between polls. */
         .num { font-family: var(--num-font); font-variant-numeric: tabular-nums; direction:ltr; unicode-bidi:isolate; }
@@ -2438,6 +2433,18 @@ HTML_TEMPLATE = """
         .settings-save-state { font-size:calc(11.5px * var(--font-scale)); min-height:16px; color:var(--text-muted); }
         .settings-save-state.ok { color:var(--success); }
         .settings-save-state.err { color:var(--danger-ink); }
+        /* Read-only status rows (device state): a label and a value, no chrome. */
+        .status-list { display:flex; flex-direction:column; border:1px solid var(--field-line);
+            border-radius:10px; background:var(--field); }
+        .status-row { display:flex; align-items:center; gap:10px; padding:9px 11px;
+            font-size:calc(12.5px * var(--font-scale)); }
+        .status-row + .status-row { border-top:1px solid var(--rule); }
+        .status-label { color:var(--text-muted); }
+        .status-value { margin-inline-start:auto; font-weight:600; color:var(--text); text-align:end;
+            min-width:0; overflow:hidden; text-overflow:ellipsis; }
+        .status-value.ok { color:var(--success); }
+        .status-value.warn { color:var(--warning); }
+        .status-value.bad { color:var(--danger-ink); }
 
         /* The index pane is the old JOC form, so it keeps block flow: labels and
            inputs already carry their own margins there. */
@@ -2694,6 +2701,7 @@ HTML_TEMPLATE = """
     <symbol id="ico-alert" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"></circle><line x1="12" y1="8" x2="12" y2="13"></line><line x1="12" y1="16.5" x2="12.01" y2="16.5"></line></symbol>
     <symbol id="ico-plus" viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></symbol>
     <symbol id="ico-spark" viewBox="0 0 24 24"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"></path><path d="M18 16.5l.7 1.8 1.8.7-1.8.7-.7 1.8-.7-1.8-1.8-.7 1.8-.7z"></path></symbol>
+    <symbol id="ico-index" viewBox="0 0 24 24"><rect x="4" y="3" width="16" height="18" rx="2"></rect><circle cx="8.2" cy="7.6" r="1.3"></circle><line x1="11.6" y1="7.6" x2="17" y2="7.6"></line><line x1="7" y1="12.2" x2="17" y2="12.2"></line><line x1="7" y1="16.4" x2="13.5" y2="16.4"></line></symbol>
     <symbol id="ico-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"></circle><polyline points="12 7 12 12 16 14"></polyline></symbol>
     <symbol id="ico-bolt" viewBox="0 0 24 24"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></symbol>
     <symbol id="ico-shield" viewBox="0 0 24 24"><path d="M12 3l7 3v6c0 4-3 7.5-7 9-4-1.5-7-5-7-9V6z"></path><polyline points="9 12 11.2 14.2 15.2 10"></polyline></symbol>
@@ -2716,9 +2724,11 @@ HTML_TEMPLATE = """
         <div class="header-text">
             <h1>SD Card Coffee</h1>
             <div class="pill-row">
+                <!-- One pill only: a status claim that can be wrong (Shizuku,
+                     «كتابة الكارت») does not belong in the header. Both moved
+                     to الإعدادات › عام, and the card one is now the result of a
+                     real write test instead of a probe that can lie. -->
                 <span class="pill num" id="appVersionPill">v{{ app_version }}</span>
-                <span class="pill" id="shizukuPill" title="Shizuku أداة اختيارية: تمنح Termux وصولاً كاملاً لكارت الذاكرة">Shizuku: جاري الفحص</span>
-                <span class="pill" id="sdWritePill" title="هل يمكن الكتابة على كارت الذاكرة الخارجي؟">كتابة الكارت: جاري الفحص</span>
             </div>
         </div>
         <button type="button" class="icon-btn header-settings" onclick="openSettings()" aria-label="الإعدادات" title="الإعدادات والمظهر">
@@ -2793,14 +2803,11 @@ HTML_TEMPLATE = """
             </div>
             <div id="searchControls">
                 <div class="browser-search">
-                    <input type="text" id="searchInput" placeholder="ابحث في مجلد البحث..." style="margin-bottom:0;" aria-label="نص البحث">
-                    <button type="button" class="icon-btn search-go" onclick="searchDeep(true)" title="بحث" aria-label="بحث">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"></circle><line x1="16.5" y1="16.5" x2="21" y2="21"></line></svg>
-                    </button>
-                    <button type="button" class="icon-btn" id="historyToggleBtn" onclick="toggleHistoryBlock()" title="سجل البحث: آخر النتائج والمجلدات التي حدّدتها" aria-label="سجل البحث">
+                    <input type="text" id="searchInput" placeholder="ابحث في مجلد البحث — ثم Enter" style="margin-bottom:0;" aria-label="نص البحث">
+                    <button type="button" class="icon-btn search-tool" id="historyToggleBtn" onclick="toggleHistoryBlock()" title="سجل البحث: آخر النتائج والمجلدات التي حدّدتها" aria-label="سجل البحث">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"></circle><polyline points="12 7 12 12 16 14"></polyline></svg>
                     </button>
-                    <button type="button" class="icon-btn" id="scopeToggleBtn" onclick="openSearchScope()" aria-haspopup="dialog" aria-controls="searchScopeModal" title="مجلد البحث وخياراته" aria-label="مجلد البحث">
+                    <button type="button" class="icon-btn search-tool" id="scopeToggleBtn" onclick="openSearchScope()" aria-haspopup="dialog" aria-controls="searchScopeModal" title="إعدادات البحث: المجلد والخيارات" aria-label="إعدادات البحث">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="7" x2="20" y2="7"></line><circle cx="9" cy="7" r="2.2"></circle><line x1="4" y1="17" x2="20" y2="17"></line><circle cx="15" cy="17" r="2.2"></circle></svg>
                     </button>
                 </div>
@@ -2824,22 +2831,18 @@ HTML_TEMPLATE = """
             <h2 class="section-title">أدوات</h2>
             <span class="section-kicker">اختياري</span>
         </div>
-        <!-- The index is the one tool that matters: it gets the accent tint and
-             the whole row, so it can never be mistaken for a minor action. -->
+        <!-- The index is the one tool that matters: it gets the accent tint,
+             and the instant-search index sits beside it — both are index
+             actions, so they belong on one row. The card speed test moved to
+             the destination picker, where the destination is already chosen. -->
         <div class="tools-actions">
             <button type="button" class="btn btn-joc" onclick="openJocModal()">
-                <svg class="icon" aria-hidden="true"><use href="#ico-spark"></use></svg>
+                <svg class="icon" aria-hidden="true"><use href="#ico-index"></use></svg>
                 إنشاء فهرس JOC
             </button>
-        </div>
-        <div class="tools-actions">
             <button type="button" class="btn btn-outline" id="cacheFolderBtn" onclick="cacheCurrentFolder()">
-                <svg class="icon" viewBox="0 0 24 24"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg>
-                تخزين الفهرس (بحث فوري)
-            </button>
-            <button type="button" class="btn btn-outline" onclick="runDiagnostic()">
-                <svg class="icon" viewBox="0 0 24 24"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline></svg>
-                فحص السرعة
+                <svg class="icon" aria-hidden="true"><use href="#ico-bolt"></use></svg>
+                بحث فوري
             </button>
         </div>
         <div id="cacheStatusText" class="inline-note tools-note">جاري التحقق من الفهرس...</div>
@@ -2871,7 +2874,6 @@ HTML_TEMPLATE = """
                 <span class="actionbar-nums">
                     <b id="selectedCount" class="num">0</b>
                     <span class="actionbar-size num" id="barSize">—</span>
-                    <span class="actionbar-eta" id="barEta" style="display:none;"></span>
                     <span id="barQueueBadge" class="actionbar-eta" style="display:none;"></span>
                 </span>
             </button>
@@ -2900,8 +2902,17 @@ HTML_TEMPLATE = """
         </div>
         <div class="picker-hint">المجلدات قابلة للاختيار • الملفات يمكن حذفها أو إعادة تسميتها</div>
         <div id="destTree" class="tree" style="flex: 1 1 auto; min-height: 0;"></div>
-        <div style="display:flex; justify-content:space-between; margin-top:15px; padding-top: 15px; border-top: 1px solid var(--border);">
-            <button class="btn btn-outline btn-sm" onclick="createNewFolder()">+ مجلد جديد</button>
+        <div style="display:flex; justify-content:space-between; gap:8px; flex-wrap:wrap; margin-top:15px; padding-top: 15px; border-top: 1px solid var(--border);">
+            <div style="display:flex; gap:8px; flex-wrap:wrap;">
+                <button class="btn btn-outline btn-sm" onclick="createNewFolder()">+ مجلد جديد</button>
+                <!-- The card check lives where the folder is already chosen: it
+                     writes 32MB into this folder, so «هل الكارت يكتب؟» is answered
+                     by a measurement, not by a status pill guessing from a stat. -->
+                <button class="btn btn-outline btn-sm" id="cardCheckBtn" onclick="runDiagnostic()" title="يكتب 32 ميجابايت في المجلد المفتوح ويقيس السرعة الفعلية — هذه النتيجة هي التي تظهر في الإعدادات › عام">
+                    <svg class="icon" aria-hidden="true"><use href="#ico-bolt"></use></svg>
+                    فحص الكارت
+                </button>
+            </div>
             <div style="display:flex; gap: 10px;">
                 <button class="btn btn-outline btn-sm" onclick="document.getElementById('destBrowserModal').style.display='none'">إلغاء</button>
                 <button class="btn btn-primary btn-sm" onclick="confirmPathPicker()">تأكيد</button>
@@ -3066,6 +3077,25 @@ HTML_TEMPLATE = """
                     <div class="settings-note" style="margin-top:6px;">جولة واحدة بعد النسخ: تقارن حجم كل ملف على مجلد الحفظ بما كُتب فعلاً، ولا تقرأ محتوى الملفات ولا تعدّل المصدر.</div>
                 </div>
                 <div id="generalSaveState" class="settings-save-state"></div>
+
+                <!-- Device state lives here, never in the header: Shizuku is
+                     optional, and «الكارت» is only claimed after a real write
+                     test (the 5-byte probe used to report a healthy card as
+                     dead, so no boolean is shown without a measurement). -->
+                <div class="settings-field" style="margin-top:18px;">
+                    <label>حالة الجهاز</label>
+                    <div class="status-list">
+                        <div class="status-row">
+                            <span class="status-label">Shizuku</span>
+                            <span class="status-value" id="generalShizukuStatus">جاري الفحص…</span>
+                        </div>
+                        <div class="status-row">
+                            <span class="status-label">الكارت</span>
+                            <span class="status-value" id="generalCardStatus">لم يُفحص بعد</span>
+                        </div>
+                    </div>
+                    <div class="settings-note">Shizuku اختياري: التطبيق يعمل كاملاً بدونه، ويُستخدم فقط لحذف مجلدات Android المحمية. «الكارت» لا يُحكم عليه إلا بعد كتابة فعلية من زر «فحص الكارت» في نافذة اختيار الوجهة.</div>
+                </div>
             </div>
 
             <!-- Index settings. These are the *saved* values: the create dialog
@@ -3296,25 +3326,26 @@ HTML_TEMPLATE = """
 </div>
 
 <!-- Where the search runs. It is its own value (`searchScopePath`) and its own
-     dialog: narrowing a search must never move the browsed folder. -->
+     dialog: narrowing a search must never move the browsed folder. The folder
+     is chosen exactly like the destination — one path field plus «تحديد» that
+     opens the same picker — instead of a path line with a second sub-folder
+     dropdown. -->
 <div class="modal" id="searchScopeModal" onclick="closeSearchScope(event)">
     <div class="modal-content" style="max-width:460px;">
-        <h3 style="margin-top:0; font-size:calc(16px * var(--font-scale)); border-bottom:1px solid var(--border); padding-bottom:15px;">مجلد البحث</h3>
+        <h3 style="margin-top:0; font-size:calc(16px * var(--font-scale)); border-bottom:1px solid var(--border); padding-bottom:15px;">إعدادات البحث</h3>
         <div class="settings-note">البحث يجري داخل هذا المجلد وحده، ولا يغيّر مجلد التصفح.</div>
-        <div class="scope-line">
-            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#ico-folder"></use></svg>
-            <div class="scope-path" id="searchScopePath" title="مجلد البحث الحالي">/sdcard</div>
-            <select class="scope-select" id="searchSubfolder" onchange="enterSearchSubfolder(this.value)" aria-label="مجلد فرعي للبحث">
-                <option value="">مجلد فرعي…</option>
-            </select>
+        <div class="scope-line" style="margin-top:12px;">
+            <input type="text" id="searchScopePath" class="ltr-input" readonly value="/sdcard" aria-label="مجلد البحث الحالي" style="margin:0;">
         </div>
         <div class="scope-line" style="margin-top:8px;">
             <button type="button" class="btn btn-outline btn-sm" onclick="searchScopeUp()" title="مجلد أعلى">
                 <svg class="icon" aria-hidden="true"><use href="#ico-up"></use></svg> أعلى
             </button>
-            <button type="button" class="btn btn-outline btn-sm" onclick="openPathBrowser('search')">تحديد مجلد</button>
+            <button type="button" class="btn btn-outline btn-sm" onclick="openPathBrowser('search')" title="اختيار مجلد البحث من نفس نافذة الوجهة">
+                <svg class="icon" aria-hidden="true"><use href="#ico-folder"></use></svg> تحديد مجلد
+            </button>
         </div>
-        <label style="display:flex; align-items:center; gap:8px; cursor:pointer; color:var(--text-muted); font-size:calc(13px * var(--font-scale)); margin:12px 0 0;">
+        <label style="display:flex; align-items:center; gap:8px; cursor:pointer; color:var(--text-muted); font-size:calc(13px * var(--font-scale)); margin:14px 0 0;">
             <input type="checkbox" id="foldersOnlyCheck" class="checkbox" checked style="width:16px; height:16px; margin:0;">
             بحث في أسماء المجلدات فقط
         </label>
@@ -5013,8 +5044,6 @@ HTML_TEMPLATE = """
         if (!p) p = '/sdcard';
         searchScopePath = p;
         if (remember) { try { localStorage.setItem('sdmp3_search_scope', p); } catch (_e) {} }
-        let label = document.getElementById('searchScopePath');
-        if (label) { label.textContent = p; label.title = p; }
         loadSearchScope();
         scheduleUiSave();
     }
@@ -5042,38 +5071,14 @@ HTML_TEMPLATE = """
         if (modal) modal.style.display = 'none';
     }
 
-    function enterSearchSubfolder(sub) {
-        let sel = document.getElementById('searchSubfolder');
-        if (sel) sel.value = '';
-        if (!sub) return;
-        let base = String(searchScopePath || '/sdcard').replace(/\\/+$/, '');
-        setSearchScope(base + '/' + sub, true);
-    }
-
-    // One request fills the subfolder menu. /api/items returns
-    // {name, path, is_dir, size} from a single scandir; the entries themselves
-    // are rendered by the tree below, not repeated in this control bar.
+    // The dialog mirrors the destination picker: one locked path field and a
+    // «تحديد مجلد» button that opens the same browser, which writes the chosen
+    // folder back through setSearchScope(). No second sub-folder control.
     function loadSearchScope() {
         let path = searchScopePath || '/sdcard';
-        let label = document.getElementById('searchScopePath');
-        if (label) { label.textContent = path; label.title = path; }
-        fetch('/api/items?path=' + encodeURIComponent(path) + '&sort=name')
-            .then(function(r) { return r.json(); })
-            .then(function(data) { renderSearchSubfolders(data.items || []); })
-            .catch(function() { renderSearchSubfolders([]); });
-    }
-
-    // The <select> is only rebuilt when a folder is loaded, never on a keystroke
-    // or a checkbox toggle: rebuilding it mid-interaction closes the menu.
-    function renderSearchSubfolders(items) {
-        let sel = document.getElementById('searchSubfolder');
-        if (!sel) return;
-        let dirs = (items || []).filter(function(i) { return i.is_dir; });
-        let html = '<option value="">مجلد فرعي…</option>';
-        dirs.slice(0, 200).forEach(function(d) {
-            html += '<option value="' + esc(d.name) + '">' + esc(d.name) + '</option>';
-        });
-        sel.innerHTML = html;
+        let field = document.getElementById('searchScopePath');
+        if (field && 'value' in field) { field.value = path; field.title = path; }
+        else if (field) { field.textContent = path; field.title = path; }
     }
 
     // The Android keyboard owns the lower part of the screen. visualViewport is
@@ -5509,37 +5514,9 @@ HTML_TEMPLATE = """
         }).catch(function() {});
     }
 
-    // Remembered throughput (avg_mbps of the last completed copy) drives a rough
-    // ETA in the action bar. It is a guess, so it is written with a tilde and
-    // stays hidden until a copy has actually measured this card.
-    let lastSelectionBytes = 0;
-    const LAST_SPEED_KEY = 'sdmp3_last_mbps';
-
-    function rememberedSpeed() {
-        let v = parseFloat(localStorage.getItem(LAST_SPEED_KEY) || '0');
-        return (isFinite(v) && v > 0) ? v : 0;
-    }
-
-    function formatDuration(seconds) {
-        if (!isFinite(seconds) || seconds <= 0) return '';
-        if (seconds < 60) return '~' + Math.max(1, Math.round(seconds)) + ' ث';
-        let m = Math.round(seconds / 60);
-        if (m < 60) return '~' + m + ' د';
-        return '~' + Math.floor(m / 60) + ' س ' + (m % 60) + ' د';
-    }
-
-    function updateBarEta() {
-        let etaEl = document.getElementById('barEta');
-        if (!etaEl) return;
-        let mbps = rememberedSpeed();
-        if (!mbps || lastSelectionBytes <= 0) {
-            etaEl.style.display = 'none';
-            return;
-        }
-        etaEl.textContent = '· ' + formatDuration(lastSelectionBytes / (mbps * 1024 * 1024));
-        etaEl.style.display = 'inline';
-    }
-
+    // The action bar shows the selection size only. A time estimate was tried
+    // and removed: it was derived from one remembered throughput and was wrong
+    // by a wide margin on every real card, which is worse than no number.
     function updateSizeDisplay(totalBytes) {
         let formattedSize = '';
         let mbThreshold = 1000 * 1024 * 1024; 
@@ -5548,10 +5525,8 @@ HTML_TEMPLATE = """
 
         // The action bar repeats the selection size: the dialog is closed most
         // of the time, and "how much am I copying" must stay one glance away.
-        lastSelectionBytes = totalBytes || 0;
         let barSizeEl = document.getElementById('barSize');
         if (barSizeEl) barSizeEl.textContent = totalBytes > 0 ? formattedSize : '—';
-        updateBarEta();
 
         let sizeHtml = `إجمالي الحجم المحدد: <span class="num" style="color:var(--text); font-size:calc(14px * var(--font-scale)); font-weight:600;">${formattedSize}</span>`;
         if (currentDestFreeBytes > 0) {
@@ -5814,31 +5789,55 @@ HTML_TEMPLATE = """
         }).then(r=>r.json()).then(data=>{ if(data.error) showInlineError('تعذر بدء التمويه: ' + data.error); else { showProgressModal(); checkTransferStatus(); } });
     }
 
+    // Card check. It writes real data (32MB, one end flush — the same shape as
+    // a copy), so its result is the only honest answer to «هل الكارت يكتب؟», and
+    // the result is what الإعدادات › عام shows. It runs from the destination
+    // picker, where the folder to write into is already on screen.
     function runDiagnostic() {
-        let dest = document.getElementById('custom_dest_path').value;
-        if(!dest) return alert('حدد مسار الوجهة أولاً للفحص.');
-        
-        document.getElementById('currentFile').innerText = 'جاري إجراء اختبار كتابة البيانات الفعلي (I/O)...';
+        if (transferRunning) { restoreProgressModal(); return; }
+        let pickerView = document.getElementById('currentDestView');
+        let pickerOpen = document.getElementById('destBrowserModal').style.display === 'flex';
+        let dest = (pickerOpen && pickerView && pickerView.value)
+            ? pickerView.value
+            : document.getElementById('custom_dest_path').value;
+        if (!dest) { alert('افتح نافذة الوجهة واختر مجلداً أولاً.'); return; }
+
+        renderTransferReport([]);
         showProgressModal();
-        document.getElementById('modalTitle').innerText = 'جاري فحص الوجهة...';
+        document.getElementById('modalTitle').innerText = 'جاري فحص الكارت…';
         document.getElementById('cancelProgressBtn').style.display = 'none';
+        document.getElementById('countText').innerText = '';
+        document.getElementById('speedText').textContent = '';
+        document.getElementById('currentFile').innerText = 'كتابة 32 ميجابايت في ' + dest;
 
         fetch('/api/benchmark', {
             method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({dest: dest})
         }).then(r=>r.json()).then(data => {
-            if(data.error) {
-                alert('خطأ أثناء الفحص: ' + data.error);
-                resetTransfer();
-            } else {
-                let estMin = Math.round(data.est_10gb / 60);
-                let est = estMin >= 60 ? (estMin / 60).toFixed(1) + ' ساعة' : estMin + ' دقيقة';
-                let msg = 'سرعة الكتابة على الوجهة: ' + data.speed_mbps + ' MB/s\\n\\n';
-                msg += 'الوقت التقديري لنسخ 10 جيجابايت: حوالي ' + est + '.\\n\\n';
-                msg += 'القياس يتم بنفس طريقة النسخ الحقيقية (' + (data.size_mb || 32) + ' ميجابايت، دفعة واحدة).';
-                alert(msg);
-                resetTransfer();
-                document.getElementById('modalTitle').innerText = 'العملية قيد التنفيذ...';
+            document.getElementById('modalTitle').innerText = 'فحص الكارت';
+            if (data.error) {
+                rememberCardCheck(dest, {error: data.error});
+                document.getElementById('currentFile').innerText = dest;
+                showInlineError('تعذّرت الكتابة على هذا المجلد: ' + data.error);
+                return;
             }
+            rememberCardCheck(dest, data);
+            let estMin = Math.round((data.est_10gb || 0) / 60);
+            let est = estMin >= 60 ? (estMin / 60).toFixed(1) + ' ساعة' : Math.max(1, estMin) + ' دقيقة';
+            renderTransferReport([
+                reportRow('ico-check', 'الكارت يكتب بنجاح', data.speed_mbps + ' MB/s', 'ok'),
+                reportRow('ico-clock', 'نسخ 10 جيجابايت', 'حوالي ' + est),
+                reportRow('ico-folder', 'المجلد', dest)
+            ]);
+            document.getElementById('currentFile').innerText =
+                'القياس بنفس طريقة النسخ الحقيقية (' + (data.size_mb || 32) + ' ميجابايت، دفعة واحدة).';
+            document.getElementById('currentFile').style.color = 'var(--text-muted)';
+            document.getElementById('cancelProgressBtn').style.display = 'none';
+            document.getElementById('closeProgressBtn').style.display = 'block';
+            document.getElementById('failedText').innerText = '';
+        }).catch(function() {
+            document.getElementById('modalTitle').innerText = 'فحص الكارت';
+            rememberCardCheck(dest, {error: 'تعذر الاتصال بالخادم'});
+            showInlineError('تعذر الاتصال بالخادم أثناء فحص الكارت.');
         });
     }
 
@@ -5886,32 +5885,62 @@ HTML_TEMPLATE = """
                 if (vEl && d.version) vEl.textContent = 'v' + d.version;
 
                 var s = d.shizuku || {};
-                var sEl = document.getElementById('shizukuPill');
+                // Shizuku is optional; it is a quiet row in الإعدادات › عام now.
+                var sEl = document.getElementById('generalShizukuStatus');
                 if (sEl) {
-                    if (!s.installed) { sEl.textContent = 'Shizuku: غير مثبت'; sEl.className = 'pill'; }
-                    else if (!s.running) { sEl.textContent = 'Shizuku: متوقف'; sEl.className = 'pill pill-warn'; }
-                    else { sEl.textContent = 'Shizuku: مفعّل'; sEl.className = 'pill pill-ok'; }
+                    if (!s.installed) { sEl.textContent = 'غير مثبّت'; sEl.className = 'status-value'; }
+                    else if (!s.running) { sEl.textContent = 'متوقف'; sEl.className = 'status-value warn'; }
+                    else { sEl.textContent = 'مفعّل'; sEl.className = 'status-value ok'; }
                 }
-
-                var sd = d.sd || {};
-                var sdEl = document.getElementById('sdWritePill');
-                if (sdEl) {
-                    // Say *which* volume it is (SD card / USB OTG), not just "الكارت".
-                    var kindLabel = {sdcard: 'كارت SD', usb: 'USB OTG', card: 'كارت', internal: 'ذاكرة'}[sd.kind] || 'الكارت';
-                    // Writable -> the volume's own hue; refusing -> warning amber,
-                    // so a dead card can never look healthy.
-                    if (sd.writable === true) { sdEl.textContent = 'كتابة ' + kindLabel + ': نعم'; sdEl.className = 'pill pill-kind-' + (sd.kind || 'card'); }
-                    else if (sd.writable === false) { sdEl.textContent = 'كتابة ' + kindLabel + ': لا'; sdEl.className = 'pill pill-warn'; }
-                    else { sdEl.textContent = 'كتابة الكارت: لا يوجد كارت'; sdEl.className = 'pill'; }
-                    // Hovering explains *why* the card is not writable (EIO, lock, ...).
-                    sdEl.title = sd.error || (sd.path ? sd.path : '');
-                }
+                // No card claim from this response: `sd.writable` is a 5-byte
+                // probe with a 5s timeout and reports a slow card as dead. The
+                // card row is filled by the real write test (renderCardStatus).
+                renderCardStatus();
 
                 if (s.checked === false && !isRetry) {
                     setTimeout(function(){ loadSystemInfo(true, true); }, 2000);
                 }
             })
             .catch(function(){});
+    }
+
+    // ---- card check (the only honest source of «هل الكارت يكتب؟») ----------
+    // A measurement, not a probe: /api/benchmark writes 32 MB the same way the
+    // copy does. Its result is remembered so the settings row can answer
+    // without touching the card again.
+    const CARD_CHECK_KEY = 'sdmp3_card_check';
+
+    function renderCardStatus() {
+        let el = document.getElementById('generalCardStatus');
+        if (!el) return;
+        let saved = null;
+        try { saved = JSON.parse(localStorage.getItem(CARD_CHECK_KEY) || 'null'); } catch (_e) { saved = null; }
+        el.className = 'status-value';
+        if (!saved || !saved.at) {
+            el.textContent = 'لم يُفحص بعد';
+            el.title = 'افحصه من نافذة اختيار الوجهة: زر «فحص الكارت»';
+            return;
+        }
+        el.title = saved.path || '';
+        if (saved.error) {
+            el.textContent = 'تعذّرت الكتابة · ' + relativeTime(saved.at);
+            el.className = 'status-value bad';
+            el.title = saved.error;
+        } else {
+            el.textContent = saved.mbps + ' MB/s · ' + relativeTime(saved.at);
+            el.className = 'status-value ok';
+        }
+    }
+
+    function rememberCardCheck(path, data) {
+        let entry = {path: path || '', at: Math.floor(Date.now() / 1000)};
+        if (data && data.error) {
+            entry.error = String(data.error);
+        } else if (data) {
+            entry.mbps = data.speed_mbps;
+        }
+        try { localStorage.setItem(CARD_CHECK_KEY, JSON.stringify(entry)); } catch (_e) {}
+        renderCardStatus();
     }
 
     document.addEventListener('DOMContentLoaded', function() {
@@ -6635,7 +6664,7 @@ HTML_TEMPLATE = """
                 // slow without any volume being in trouble.
                 let currentEl = document.getElementById('currentFile');
                 if (data.phase === 'syncing' && data.action !== 'tts') {
-                    currentEl.innerText = 'جاري تثبيت البيانات على الكارت...'
+                    currentEl.innerText = 'تثبيت البيانات على الكارت…'
                         + (data.sync_seconds ? ' (' + data.sync_seconds + ' ث)' : '');
                     currentEl.style.color = 'var(--text-muted)';
                 } else if (data.phase === 'verifying') {
@@ -6658,6 +6687,12 @@ HTML_TEMPLATE = """
                         ? 'الكارت بطيء — لم يُحذف عنصر جديد منذ ' + data.slow_seconds + ' ثانية. العملية مستمرة، لا تُخرج الكارت.'
                         : 'الكارت بطيء — لم تصل بيانات جديدة منذ ' + data.slow_seconds + ' ثانية. العملية مستمرة، لا تُخرج الكارت.';
                     currentEl.style.color = 'var(--warning)';
+                } else if (data.status !== 'copying') {
+                    // The run is over. Its result belongs to the icon rows below;
+                    // echoing the server's one-sentence summary here printed the
+                    // same information twice in the same dialog.
+                    currentEl.innerText = '';
+                    currentEl.style.color = 'var(--text-muted)';
                 } else {
                     currentEl.innerText = data.file;
                     currentEl.style.color = 'var(--text-muted)';
@@ -6680,27 +6715,24 @@ HTML_TEMPLATE = """
                     }
                 }
 
-                // Live throughput + remaining time, so "slow" is a number.
+                // One figure, not two: the instantaneous rate dips with every
+                // small file and only made the average look untrustworthy. The
+                // average is the number the report will show too.
                 let speedEl = document.getElementById('speedText');
                 if (speedEl) {
                     if (data.phase === 'syncing' || data.phase === 'verifying'
                         || data.phase === 'spoofing') {
-                        speedEl.innerText = '';
-                    } else if (data.speed_mbps > 0) {
+                        speedEl.textContent = '';
+                    } else if (data.avg_mbps > 0) {
                         let eta = '';
                         if (data.eta_seconds > 0) {
                             let m = Math.floor(data.eta_seconds / 60);
                             let s = data.eta_seconds % 60;
                             eta = ' • متبقي ~' + (m > 0 ? m + ' د ' : '') + s + ' ث';
                         }
-                        // Instant and average side by side: a momentary dip is
-                        // not a slow card, and the average is what the copy got.
-                        let avg = (data.avg_mbps > 0)
-                            ? ' • المتوسط ' + data.avg_mbps + ' MB/s'
-                            : '';
-                        speedEl.innerText = 'اللحظية ' + data.speed_mbps + ' MB/s' + avg + eta;
+                        speedEl.textContent = 'المتوسط ' + data.avg_mbps + ' MB/s' + eta;
                     } else {
-                        speedEl.innerText = '';
+                        speedEl.textContent = '';
                     }
                 }
 
@@ -6745,6 +6777,10 @@ HTML_TEMPLATE = """
                     // A finished run is never silent: the result, verification
                     // and error list only exist inside the dialog.
                     transferRunning = false;
+                    // The live rate is meaningless once the run is over; the
+                    // report rows carry the final average.
+                    let liveSpeed = document.getElementById('speedText');
+                    if (liveSpeed) liveSpeed.textContent = '';
                     // Minimizing a finished run would be undone by the next
                     // poll, so the control is gone once there is nothing left
                     // to keep running in the background.
@@ -6762,12 +6798,6 @@ HTML_TEMPLATE = """
                         showInlineError('فشلت العملية: ' + data.log);
                     } else if (data.status === 'done' && data.time_taken) {
                         renderTransferReport(buildTransferReport(data));
-                        // Remember this card's measured throughput: it is the only
-                        // honest basis for the action bar's ETA next time.
-                        if (data.action === 'copy' && data.avg_mbps > 0) {
-                            try { localStorage.setItem(LAST_SPEED_KEY, String(data.avg_mbps)); } catch (e) {}
-                            updateBarEta();
-                        }
                         // The parent folders belonged to the copy that just ran.
                         if (data.action === 'copy' && copyGroups.length) {
                             copyGroups = [];

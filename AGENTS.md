@@ -58,10 +58,20 @@ thread so no HTTP request ever blocks on a shell call.
 
 ## Version + status in the UI
 `VERSION` is rendered into the header as `v{{ app_version }}` (`.pill.num`) and also
-served by `/api/system` together with the Shizuku state and SD write access; the JS
-`loadSystemInfo()` fills the three header items (version / `Shizuku` /
-`كتابة الكارت`) and sets `pill-ok`/`pill-warn`/`pill-kind-*`, which colour the
-status **dot** (see «Page layout»). Bump `VERSION` for user-visible changes.
+served by `/api/system`; `loadSystemInfo()` refreshes it. The header carries **that
+one pill** — no Shizuku and no card-write claim — because a status that can be
+wrong is worse than no status. Both moved to الإعدادات › عام:
+
+- `#generalShizukuStatus` — a read-only row: غير مثبّت / متوقف / مفعّل from
+  `/api/system`. Shizuku stays optional; the note under the rows says so.
+- `#generalCardStatus` — filled **only** by a real write test
+  (`/api/benchmark`, button «فحص الكارت» in the destination picker), stored in
+  `localStorage sdmp3_card_check` as `{path, at, mbps|error}` and rendered by
+  `renderCardStatus()`. `/api/system`'s `sd.writable` is deliberately **not**
+  shown any more: it is a 5-byte, 5-second probe that reports a healthy but slow
+  card as dead. Before any test the row says «لم يُفحص بعد».
+
+Bump `VERSION` for user-visible changes.
 
 ## CRITICAL: escape handling inside HTML_TEMPLATE
 `HTML_TEMPLATE` is a **plain `"""..."""` Python string**, not raw and not an f-string. Python processes backslash escapes in the embedded JS at parse time. To emit a literal backslash sequence to the browser you must **double the backslash**:
@@ -138,7 +148,7 @@ byte-identical (DFS pre-order + `natural_sort_key`) and stay single-threaded.
   `verified`/`verify_total`/`verify_failed`, never reads file contents, and never
   changes the playback order. `verify: false` from the UI skips the pass.
 - **`copy_file_sequential()`** opens src/dst with `os.open`, `posix_fadvise(POSIX_FADV_SEQUENTIAL)` hints, then uses `os.sendfile` (4 MB chunks) when the kernel/filesystem supports it; on `EINVAL`/`ENOSYS`/`EXDEV`/`EOPNOTSUPP`/`EAGAIN` it continues with the 4 MB buffered loop from the same offset. sendfile measured ~2× faster on Android FUSE. Both paths write front-to-back, and on any error the half-written destination file is deleted so playback order can't be polluted.
-- **No `fsync` per file.** The transfer calls `sync_with_heartbeat()` every `SYNC_THRESHOLD` (1 GB) and once at the end. Ordering comes from *sequential writes*, never from fsync — the per-file fsync was removed because it cost tens of ms per MP3 (the main cause of "copy is very slow"). Do not add it back, and keep the threshold large: a small value turns one big copy into hundreds of short stalls.
+- **No `fsync` per file.** The transfer calls `sync_with_heartbeat()` every `SYNC_THRESHOLD` (256 MB) and once at the end. The threshold is also the length of the single «تثبيت البيانات على الكارت…» step: 1 GB of dirty pages on a card writing at 10 MB/s was a 100-second blocking `syncfs`, which users read as a hang. 256 MB caps that step at ~25 s worst case on a slow card and still flushes once per ~1 GB of a real internal copy. Ordering comes from *sequential writes*, never from fsync — the per-file fsync was removed because it cost tens of ms per MP3 (the main cause of "copy is very slow"). Do not add it back, and keep the threshold large: a small value turns one big copy into hundreds of short stalls.
   - `sync_with_heartbeat(phase, dest=...)` flushes with **`flush_destination(dest)`**:
     `syncfs(fd)` from libc via `ctypes` (one filesystem) and only falls back to
     `os.sync()` (every filesystem on the phone) when libc has no `syncfs`. The
@@ -146,11 +156,13 @@ byte-identical (DFS pre-order + `natural_sort_key`) and stay single-threaded.
 - **Honest speeds and times.** Copy time and verify time are measured separately:
   `copy_seconds` ends after the final flush, `verify_seconds` covers only
   `verify_copied_files()`. `avg_mbps = bytes / copy_seconds` (verify never
-  inflates it), `speed_mbps` stays the 6s-window EMA. The UI shows
-  «اللحظية … • المتوسط …» while running and the same numbers as report rows when
-  done. Do not hide them: the cost is ~2 ms/file for verify and negligible CPU
-  for the display, and without them a slow card is indistinguishable from a slow
-  app.
+  inflates it), `speed_mbps` stays the 6s-window EMA. The progress dialog shows
+  **one** figure — «المتوسط N MB/s» (plus the server's remaining time) — and the
+  same average appears in the report's «النسخ» row. Printing the instantaneous
+  rate beside it was removed: it dips with every small file and made the honest
+  number look wrong. Do not hide either measurement: the cost is ~2 ms/file for
+  verify and negligible CPU for the display, and without them a slow card is
+  indistinguishable from a slow app.
 - **The end-of-run report is rows, not a paragraph.** `#timeTakenDiv` is
   `.report` and is filled by `buildTransferReport(data)` → `renderTransferReport()`
   (`checkTransferStatus` done branch), never by string concatenation: a row is
@@ -164,7 +176,12 @@ byte-identical (DFS pre-order + `natural_sort_key`) and stay single-threaded.
   mismatches exist), «تمويه التواريخ» when it ran, and the saved file name for a
   TTS run. `tone` is `ok`/`warn`/`bad` and only colours the icon. A cancelled run
   is one `warn` row with its time; failures keep the detailed `#errorsBox`, which
-  is the only place paths and reasons belong.
+  is the only place paths and reasons belong. **The report is the only completion
+  summary**: `finish_transfer()` puts the one-sentence summary in the state's
+  `file`, and `checkTransferStatus()` used to echo it into `#currentFile` under
+  the rows — the same facts twice. Every terminal state now blanks
+  `#currentFile` (`data.status !== 'copying'`), so the icon rows are all the user
+  reads. The same `report` renderer also serves the card check.
 - **Card speed probe**: before a copy whose total is ≥ `CARD_SPEED_PROBE_MIN_BYTES`
   (48 MB), the worker writes `CARD_SPEED_PROBE_MB` (8 MB) sequentially with one
   end flush (`probe_card_speed`) and stores `card_mbps`; below `SLOW_CARD_MBPS`
@@ -204,7 +221,12 @@ byte-identical (DFS pre-order + `natural_sort_key`) and stay single-threaded.
   launching the thread, so a poll can't read the previous run's `done`/`error`.
 - **`/api/benchmark`** writes 32 MB with 4 MB blocks and a single end-of-file
   flush — the same shape as a real copy. The old version fsynced every 1 MB, which
-  measured flush latency and always looked slow.
+  measured flush latency and always looked slow. It is the **card check** now:
+  the UI button «فحص الكارت» (`runDiagnostic()`, destination picker footer) calls
+  it with the folder being browsed, shows the result as `report` rows (speed,
+  estimated 10 GB time, folder) instead of a blocking `alert()`, and records it in
+  `localStorage sdmp3_card_check` — that record is the only card-write status the
+  app shows.
 - Expected numbers on this device: ~180 MB/s (5×40 MB files) and ~28 MB/s for
   150×160 KB MP3s on internal storage. Small-file speed is bound by per-file FUSE
   create/close, not by the buffer size.
@@ -227,7 +249,7 @@ Theme = **Coffee Blues** (https://www.color-hex.com/color-palette/102595) is sti
 
 The accent split stays: `--accent` marks (icons, focus, checkbox, disk bar, small status text only where the ratio allows), while filled buttons use `--accent-fill` with `--on-accent`. `--accent-ink #151e28` labels warning/success/danger fills. Danger (`--danger #f43f5e`, text `--danger-ink #fc8b9b`) and success (`--success #7fbf93`) are semantic and were deliberately **not** rotated in v1.10, along with the four `--kind-*` volume hues, so their meaning survives every theme. Nothing glows — no gradient, no coloured button shadow, no inset card sheen; secondary buttons stay neutral `btn-outline` so only the primary action wears the accent.
 
-Each volume kind owns a hue: `.storage-card.kind-*` sets a local `--kind`/`--kind-ink`/`--kind-soft`/`--kind-tile` used by the tile's border, icon tile, active fill and active caption; `.pill-kind-*` and `.kind-border-*` reuse the same variables for the route kind pills, the header `sdWritePill` and the path inputs. Internal = sand `#d0b49f`, **SD = cyan** (`#2eb9cb` / ink `#8fdde9` in `coffee-blues`; `#0e7490` in the light themes), USB = blue `#8fa9c4` (ink `#a8bfd6`), unknown = olive `#a3b18a` (ink `#b7c39f`). SD used to be a second warm clay, which made it read as internal storage on the same row — `KIND_HUE_RULES` in `sdmp3_themes.py` now refuses any theme whose internal-vs-SD hue gap is under 45° (actual minimum 143°), so the two can never blur again. The four are still told apart by icon + label as well as hue, and `-ink` exists because the fill colours are too dark for 11px text. Only a writable card gets its kind hue in the header pill; a refusing card stays `pill-warn`.
+Each volume kind owns a hue: `.storage-card.kind-*` sets a local `--kind`/`--kind-ink`/`--kind-soft`/`--kind-tile` used by the tile's border, icon tile, active fill and active caption; `.pill-kind-*` and `.kind-border-*` reuse the same variables for the picker's volume badge and the path inputs. Internal = sand `#d0b49f`, **SD = cyan** (`#2eb9cb` / ink `#8fdde9` in `coffee-blues`; `#0e7490` in the light themes), USB = blue `#8fa9c4` (ink `#a8bfd6`), unknown = olive `#a3b18a` (ink `#b7c39f`). SD used to be a second warm clay, which made it read as internal storage on the same row — `KIND_HUE_RULES` in `sdmp3_themes.py` now refuses any theme whose internal-vs-SD hue gap is under 45° (actual minimum 143°), so the two can never blur again. The four are still told apart by icon + label as well as hue, and `-ink` exists because the fill colours are too dark for 11px text. The header no longer carries a card pill at all: the card answer is a measured `#generalCardStatus` row in الإعدادات › عام.
 
 The spoofing button is `btn-sand` (`--sand-fill #d0b49f` on `--accent-ink`), not amber: `--warning` is reserved for text and warning pills, so no button introduces a hue the palette does not own.
 
@@ -238,18 +260,21 @@ three `<section class="section">` blocks separated by a hairline (`.section + .s
 { border-top: 1px solid var(--rule) }`), each with `.section-head` / `.section-title`
 / `.section-kicker`. There is **no `.card`** and no `.card-title` any more.
 
-- **Header**: 36px badge, `h1` at 17px, no tagline; the status items (version,
-  Shizuku, card write) are one quiet `.pill-row`. State is carried by a 6px dot
-  (`.pill::before` plus `.pill-ok`/`.pill-warn`/`.pill-kind-*`), while the label
-  stays `--text-muted` so it clears 4.5:1 on every theme. Pills outside the header
-  (picker badge, group chip) keep the older tinted-chip look.
+- **Header**: 36px badge, `h1` at 17px, no tagline, and exactly **one** pill:
+  the version (`#appVersionPill`, accent text). Shizuku and «كتابة الكارت» are not
+  header material — a status that can be wrong out-shouts the page for nothing —
+  so they are rows in الإعدادات › عام (see «Version + status in the UI»). `.pill`
+  outside the header (picker badge, group chip, action-bar badge) keeps the
+  tinted-chip look.
 - **Route section**: one always-visible `.route-row`, no `<details>`/`<summary>`
   and no heading at all. It is a centred flex row — `.storage-grid`
   `#source_storage_cards` → `.route-arrow` → `.storage-grid`
   `#dest_storage_cards` — not a `1fr auto 1fr` grid, so both groups sit next to
   the arrow instead of in the two corners of a wide bar (`justify-content:center`
   plus a `safe center` fallback for the rare four-volume phone, where the row
-  scrolls sideways). The words «المسار» / «المصدر» / «الوجهة» are gone from this
+  **wraps**). The row must never set `overflow`: any overflow on this container
+  clips `.storage-fresh` — the cache bolt sits at `top:-7px` on the source tile
+  and was cut in half once the icons grew. The words «المسار» / «المصدر» / «الوجهة» are gone from this
   block (the section has no `.section-head`): the captions under the icons are
   the only labels. There is **no source path** in the UI — the source is the
   folder open in the browser (`currentSourceRoot`), which is also where
@@ -264,12 +289,14 @@ three `<section class="section">` blocks separated by a hairline (`.section + .s
 - **File browser section**: the sort row, the search row (`#searchControls`) and
   `#treeContainer` are one attached block; search sits directly above the
   results, so typing never leaves the input far from them. The row is the input
-  plus three 32px `.icon-btn`s on one non-wrapping line: a magnifier
-  (`.search-go`, `searchDeep(true)`), a clock (`#historyToggleBtn` →
-  `toggleHistoryBlock()`) and a sliders icon (`#scopeToggleBtn` →
-  `openSearchScope()`, the folder the search runs in). No word buttons any more:
-  «بحث» / «السجل» / «مجلد البحث» were costing a third of the row for three
-  symbols. Focusing `#searchInput` calls `this.select()` (the next keystroke
+  plus **two** 36px `.icon-btn.search-tool`s on one non-wrapping line: a clock
+  (`#historyToggleBtn` → `toggleHistoryBlock()`) and a sliders icon
+  (`#scopeToggleBtn` → `openSearchScope()`, the folder and options the search runs
+  in, dialog titled «إعدادات البحث»). There is **no magnifier button**: Enter
+  (`.keydown` → `searchDeep(true)`) runs and commits the search, while typing
+  still runs the 400 ms debounced preview. No word buttons either — «بحث» /
+  «السجل» / «مجلد البحث» were costing a third of the row for symbols, and the
+  magnifier was the third icon on a row that only needs two. Focusing `#searchInput` calls `this.select()` (the next keystroke
   replaces the old query) and scrolls this section to the top edge with
   `scrollIntoView({block:'start', behavior:'auto'})` — instant on purpose,
   because the phone keyboard resizes the viewport and a smooth animation would
@@ -277,31 +304,35 @@ three `<section class="section">` blocks separated by a hairline (`.section + .s
   keyboard with the same instant behaviour (a 96px margin keeps the sticky head
   plus one row clear). The folder-scope *options* are still in
   `#searchScopeModal` (see «Search scope»).
-- **Tools section**: the last section of the page. Two visible `.tools-actions`
-  rows: «إنشاء فهرس JOC» alone, and then «تخزين الفهرس (بحث فوري)»
-  (`#cacheFolderBtn`, `#cacheStatusText` under it) + «فحص السرعة»
-  (`runDiagnostic()`). The JOC button is the one accented control here
-  (`btn-joc`: `--accent-soft` fill, `--accent` border, `--accent-text` label, the
-  `ico-spark` icon) because the index is the important tool — a filled accent is
-  still reserved for «بدء النسخ». Spoofing lives in `<details class="tools">`,
+- **Tools section**: the last section of the page. **One** `.tools-actions` row
+  with two index tools side by side: «إنشاء فهرس JOC» and «بحث فوري»
+  (`#cacheFolderBtn`, with `#cacheStatusText` under the row). They are the same
+  kind of action (build an index), so they share a row. The JOC button is the one
+  accented control (`btn-joc`: `--accent-soft` fill, `--accent` border,
+  `--accent-text` label, the `ico-index` sprite icon — a sheet with lines and a
+  radio dot), because the index is the important tool; a filled accent is still
+  reserved for «بدء النسخ». The card speed test is **not** here any more: it lives
+  in the destination picker as «فحص الكارت» (`#cardCheckBtn`, `btn-sm`), where a
+  folder is already chosen. Spoofing lives in `<details class="tools">`,
   closed by default — an occasional action must not out-weigh the copy — and
   **«تطبيق التمويه» runs immediately**: there is no `confirm()` at all, and an
   empty destination means `/sdcard`, exactly as the hint under the field says.
 - **Action bar** (`#actionBar`, `.actionbar`): fixed, **opaque** `--bar-bg` with a
   `--bar-line` top border (never `backdrop-filter`), and a 3px
   `.actionbar-progress` line at its top edge. The left side is a button
-  (`.actionbar-summary` → `openSelectedModal()`) showing `#selectedCount`,
-  `#barSize`, `#barEta`; the primary «بدء النسخ» is the only filled control. Body
-  bottom padding is 112px (116px on phones) to clear it.
+  (`.actionbar-summary` → `openSelectedModal()`) showing `#selectedCount` and
+  `#barSize`; the primary «بدء النسخ» is the only filled control. Body bottom
+  padding is 112px (116px on phones) to clear it.
 - `#barSize` is filled by `scheduleSelectionSize()`: a 400ms debounced
   `POST /api/sizes` whose signature (`selectionSignature()` = sorted selected keys
   + excludes) also prevents refetches; `updateSizeDisplay()` writes it. «عرض
   المحدد» is therefore optional, not the only way to see the copy size.
-- `#barEta` is a guess, so it is written with a tilde: it reads `sdmp3_last_mbps`
-  from `localStorage`, saved from `avg_mbps` when a copy finishes, and stays hidden
-  until a copy has measured that card. `mirrorProgressInBar(data)` is called from
-  `checkTransferStatus()` and paints the bar's line (a delete sweeps it,
-  verification uses `verify_progress`).
+- **No time estimate in the action bar.** A `#barEta` used to extrapolate a
+  duration from one remembered `avg_mbps`; it was wrong by a wide margin on every
+  real card, so the element, `LAST_SPEED_KEY`, `rememberedSpeed`, `formatDuration`
+  and `updateBarEta` are gone. Size is the only honest number before a copy.
+  `mirrorProgressInBar(data)` is called from `checkTransferStatus()` and paints the
+  bar's line (a delete sweeps it, verification uses `verify_progress`).
 - **Icons, not emoji**: `ico-check`/`ico-alert`/`ico-plus`/`ico-spark` joined the
   sprite and `spriteIcon(id)` builds the inline `<svg><use>` for generated notices
   (`showInlineDone`/`showInlineError`, JOC text notices). Emoji carry their own
@@ -313,9 +344,9 @@ three `<section class="section">` blocks separated by a hairline (`.section + .s
   Esc a silent no-op. The copy dialog is closed with its own button after the run
   ends.
 - `.num` (with `--num-font`, tabular figures, `direction:ltr`) is for counts, sizes,
-  speeds, timestamps and the queue row's number. `#selectedCount`/`#barSize`/
-  `#barEta` are written with `textContent`, never `innerText` (jsdom has no
-  `innerText`, and that is the gate's environment).
+  speeds, timestamps and the queue row's number. `#selectedCount`/`#barSize` and
+  the progress dialog's `#speedText` are written with `textContent`, never
+  `innerText` (jsdom has no `innerText`, and that is the gate's environment).
 
 ## Groups window: folder tree, inline rename, drag & drop
 `#selectedModal` turns the flat group list into a **folder tree** (`#groupTree`).
@@ -451,9 +482,12 @@ straight on «الفهرس».
   `#settingsSaveState`. No reload, no re-render.
 - **عام** owns the `auto_spoof` switch (`#autoSpoofCheck` → `pickAutoSpoof`), the
   «تنظيم ذكي» depth number (`#smartDepthInput` → `pickSmartDepth`, 1..3, clamped
-  client- and server-side) and the copy-verification switch (`#verifyAfterCopy`,
+  client- and server-side), the copy-verification switch (`#verifyAfterCopy`,
   moved here from the route; it still writes `sdmp3_verify_after_copy` and
-  `startTransfer()` still reads it). All report in `#generalSaveState`.
+  `startTransfer()` still reads it) and — at the bottom — the read-only
+  «حالة الجهاز» block: `#generalShizukuStatus` and `#generalCardStatus` (see
+  «Version + status in the UI»). Settings switches report in `#generalSaveState`;
+  the two status rows are filled by `loadSystemInfo()` / `renderCardStatus()`.
 - **الفهرس** owns the JOC index settings — see «Index settings» below. It is the
   only place they are written.
 - `setSettingsState(text, kind, elementId)` writes one status line per pane
@@ -538,24 +572,21 @@ The search used to walk `currentSourceRoot` silently. It now walks
 (`sdmp3_search_scope`) — narrowing a search must never move the source root.
 
 - `setSearchScope(path, remember)` is the only writer: it normalises the path,
-  writes the label (`#searchScopePath`), reloads the sub-folder menu and schedules
-  a UI save. `searchDeep()` sends it as `&root=`.
-- The folder picker is a **dismissible dialog** (`#searchScopeModal`), opened by
+  writes it into the path field and schedules a UI save. `searchDeep()` sends it
+  as `&root=`.
+- The dialog (`#searchScopeModal`) is titled «إعدادات البحث», opened by
   `#scopeToggleBtn` (the sliders icon at the end of the search row) via
-  `openSearchScope()`, and closed by `closeSearchScope(event)` (backdrop
-  click, «إغلاق», or Esc). Inside: `#searchScopePath`, `#searchSubfolder`,
-  «أعلى» (`searchScopeUp`), «تحديد مجلد» (`openPathBrowser('search')`, the third
-  `pickerMode`) and «المجلدات فقط». It sits **after** `#progressModal` in the
-  DOM so the Esc handler (which closes the last open `.modal`) closes this dialog
-  first and never the copy dialog. The old `#searchScopePanel` block,
-  `toggleSearchScope()`, the `#searchScopeItems` list and `SCOPE_FILES_STEP` are
-  gone. Within the search UI `/api/items` now feeds only `#searchSubfolder` (the
-  browse tree and the path picker still use it), and it loads when the dialog
-  opens.
-- `#searchSubfolder` is a `<select>` of the folder's child folders, rebuilt only
-  when a folder loads — never on a keystroke.
-- `enterSearchSubfolder(name)` joins one segment onto the current scope; the
-  select resets to its placeholder so the same folder can be chosen again.
+  `openSearchScope()`, and closed by `closeSearchScope(event)` (backdrop click,
+  «إغلاق», or Esc). It is the **destination picker pattern**: a read-only
+  `#searchScopePath` input, «أعلى» (`searchScopeUp`), «تحديد مجلد»
+  (`openPathBrowser('search')`, the third `pickerMode`, which writes back through
+  `setSearchScope`) and «المجلدات فقط». `loadSearchScope()` only mirrors the value
+  into the field — it makes **no request**, so opening the dialog costs nothing.
+  The sub-folder `<select>` (`#searchSubfolder`), `enterSearchSubfolder()` and
+  `renderSearchSubfolders()` are gone: the same picker already browses every
+  folder, so a second, weaker navigator was pure noise.
+- The dialog sits **after** `#progressModal` in the DOM so the Esc handler (which
+  closes the last open `.modal`) closes it first and never the copy dialog.
 - Search results are **not** a lookalike panel: `searchDeep()` puts them in
   `#treeContainer` behind a sticky `#searchViewHead` with a back button. Both
   browsing and searching go through `appendItemRows()` → `itemRowHtml(item, opts)`,
