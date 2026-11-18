@@ -2212,15 +2212,17 @@ HTML_TEMPLATE = """
             .source-path-input { flex-basis:120px; }
         }
 
-        /* Search stays within reach while the keyboard is open: the controls
-           stick to the top and the tree shrinks by the keyboard inset. */
-        .search-sticky { position:sticky; top:0; z-index:8; background:var(--bg); padding:6px 0 8px;
-            border-bottom:1px solid var(--rule); }
-        /* Search scope: one sticky control bar that names the folder being
-           searched and offers its sub-folders. The entries themselves live in
-           the tree below, so this bar stays compact while the keyboard is up. */
-        .search-scope { display:flex; flex-direction:column; gap:8px; margin-bottom:12px; padding:9px 10px;
-            border-radius:11px; background:var(--field); border:1px solid var(--field-line); }
+        /* The file browser is one attached block: the sort row, the search row
+           and the optional folder-scope panel on top, the scrollable tree
+           beneath. Search sits directly above the results. */
+        .browser-head { border:1px solid var(--field-line); border-bottom:0; border-radius:10px 10px 0 0;
+            background:var(--field); }
+        .browser-sort { display:flex; align-items:center; gap:8px; padding:6px 11px;
+            font-size:calc(12px * var(--font-scale)); color:var(--text-muted);
+            border-bottom:1px solid var(--field-line); }
+        .browser-search { display:flex; align-items:center; gap:8px; flex-wrap:wrap; padding:8px 10px; }
+        .browser-search > .btn { white-space:nowrap; }
+        .browser-scope { display:flex; flex-direction:column; gap:8px; padding:0 10px 10px; }
         .scope-line { display:flex; align-items:center; gap:7px; flex-wrap:wrap; }
         .scope-line > .icon { width:15px; height:15px; color:var(--accent); flex-shrink:0; }
         .scope-path { flex:1 1 130px; min-width:0; font-family:var(--num-font); direction:ltr; text-align:left;
@@ -2228,7 +2230,7 @@ HTML_TEMPLATE = """
             white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
         .scope-select { max-width:46%; padding:5px 8px; border-radius:7px; border:1px solid var(--border);
             background:var(--bg); color:var(--text); font-family:inherit; font-size:calc(11.5px * var(--font-scale)); }
-        @media (max-width: 480px) { .search-sticky { padding:3px 0 6px; } }
+        @media (max-width: 480px) { .browser-search { padding:6px 8px; } }
 
         /* Monospace digits: counts and speeds must not jitter between polls. */
         .num { font-family: var(--num-font); font-variant-numeric: tabular-nums; direction:ltr; unicode-bidi:isolate; }
@@ -2646,6 +2648,7 @@ HTML_TEMPLATE = """
     <symbol id="ico-close" viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></symbol>
     <symbol id="ico-chevron-right" viewBox="0 0 24 24"><polyline points="9 18 15 12 9 6"></polyline></symbol>
     <symbol id="ico-chevron-down" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"></polyline></symbol>
+    <symbol id="ico-folder" viewBox="0 0 24 24"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></symbol>
 </svg>
 
 <div class="container">
@@ -2775,41 +2778,55 @@ HTML_TEMPLATE = """
 
     <section class="section">
         <div class="section-head">
-            <svg class="icon" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
-            <h2 class="section-title">البحث</h2>
-            <span id="searchSpeedBadge" class="section-kicker" style="display:none; color:var(--accent-text);">
+            <svg class="icon" viewBox="0 0 24 24"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>
+            <h2 class="section-title">متصفح الملفات</h2>
+            <span class="section-kicker">المصدر</span>
+            <span id="searchSpeedBadge" class="section-kicker" style="display:none; margin-inline-start:0; color:var(--accent-text);">
                 <svg class="icon" style="width:12px;height:12px;" viewBox="0 0 24 24"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg> فوري
             </span>
         </div>
-        <!-- The search runs inside one named folder, so the folder is a visible
-             control instead of an invisible assumption ("current source root").
-             The whole bar stays visible above the on-screen keyboard. -->
-        <div class="search-sticky" id="searchControls">
-            <div class="search-scope">
-                <div class="scope-line">
-                    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>
-                    <div class="scope-path" id="searchScopePath" title="مجلد البحث الحالي">/sdcard</div>
-                    <select class="scope-select" id="searchSubfolder" onchange="enterSearchSubfolder(this.value)" aria-label="مجلد فرعي للبحث">
-                        <option value="">مجلد فرعي…</option>
-                    </select>
-                    <button type="button" class="btn btn-outline btn-sm" onclick="searchScopeUp()" title="مجلد أعلى">
-                        <svg class="icon" aria-hidden="true"><use href="#ico-up"></use></svg> أعلى
+        <!-- Search and browsing are one flow: the sort row, the search row and
+             the optional folder picker sit on top of the tree that shows the
+             results, so typing never leaves the input far from them. -->
+        <div class="browser-head">
+            <div class="browser-sort">
+                <span style="font-weight:600;">ترتيب حسب:</span>
+                <select id="sourceSort" style="background:var(--bg); color:var(--text); border:1px solid var(--border); border-radius:6px; padding:3px 8px; font-size:calc(12px * var(--font-scale));">
+                    <option value="name">الاسم</option>
+                    <option value="date_desc">التاريخ (الأحدث أولاً)</option>
+                    <option value="date_asc">التاريخ (الأقدم أولاً)</option>
+                </select>
+            </div>
+            <div id="searchControls">
+                <div class="browser-search">
+                    <input type="text" id="searchInput" placeholder="ابحث في هذا المجلد..." style="margin-bottom:0; flex:1 1 160px;" aria-label="نص البحث">
+                    <button class="btn btn-primary" onclick="searchDeep(true)">بحث</button>
+                    <button type="button" class="btn btn-outline" id="historyToggleBtn" onclick="toggleHistoryBlock()" title="يعرض المجلدات التي حدّدتها سابقاً من البحث — اضغط عنصراً لإعادته إلى التحديد">السجل</button>
+                    <button type="button" class="btn btn-outline btn-sm" id="scopeToggleBtn" onclick="toggleSearchScope()" aria-expanded="false" aria-controls="searchScopePanel" title="مجلد البحث وخياراته">
+                        <svg class="icon" aria-hidden="true"><use href="#ico-folder"></use></svg>
+                        مجلد البحث
                     </button>
-                    <button type="button" class="btn btn-outline btn-sm" onclick="openPathBrowser('search')">تحديد مجلد</button>
+                </div>
+                <div class="browser-scope" id="searchScopePanel" style="display:none;">
+                    <div class="scope-line">
+                        <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#ico-folder"></use></svg>
+                        <div class="scope-path" id="searchScopePath" title="مجلد البحث الحالي">/sdcard</div>
+                        <select class="scope-select" id="searchSubfolder" onchange="enterSearchSubfolder(this.value)" aria-label="مجلد فرعي للبحث">
+                            <option value="">مجلد فرعي…</option>
+                        </select>
+                        <button type="button" class="btn btn-outline btn-sm" onclick="searchScopeUp()" title="مجلد أعلى">
+                            <svg class="icon" aria-hidden="true"><use href="#ico-up"></use></svg> أعلى
+                        </button>
+                        <button type="button" class="btn btn-outline btn-sm" onclick="openPathBrowser('search')">تحديد مجلد</button>
+                    </div>
+                    <label style="display:flex; align-items:center; gap:8px; cursor:pointer; color: var(--text-muted); font-size:calc(13px * var(--font-scale)); margin:0;">
+                        <input type="checkbox" id="foldersOnlyCheck" class="checkbox" checked style="width:16px; height:16px; margin:0;">
+                        بحث في أسماء المجلدات فقط
+                    </label>
+                    <div class="search-scope-hint" style="color:var(--text-muted); font-size:calc(12px * var(--font-scale));">تظهر النتائج داخل شجرة الملفات أسفل مربع البحث مباشرة.</div>
                 </div>
             </div>
-            <div class="path-line" style="margin-bottom: 12px;">
-                <input type="text" id="searchInput" placeholder="اكتب اسم الملف للبحث..." style="margin-bottom:0; flex:1 1 160px;" aria-label="نص البحث">
-                <button class="btn btn-primary" onclick="searchDeep(true)">بحث</button>
-                <button type="button" class="btn btn-outline" id="historyToggleBtn" onclick="toggleHistoryBlock()" title="يعرض المجلدات التي حدّدتها سابقاً من البحث — اضغط عنصراً لإعادته إلى التحديد">السجل</button>
-            </div>
-            <label style="display:flex; align-items:center; gap:8px; cursor:pointer; color: var(--text-muted); font-size:calc(13px * var(--font-scale)); margin-bottom:0;">
-                <input type="checkbox" id="foldersOnlyCheck" class="checkbox" checked style="width:16px; height:16px; margin:0;">
-                بحث في أسماء المجلدات فقط
-            </label>
-            <div class="search-scope-hint" style="color:var(--text-muted); font-size:calc(12px * var(--font-scale)); margin-top:8px;">تظهر النتائج داخل متصفح الملفات في القسم التالي.</div>
         </div>
-
         <div id="historyBlock" class="search-history" style="display:none;">
             <div class="history-head">
                 <svg class="icon" style="width:14px;height:14px;color:var(--text-muted);" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"></circle><polyline points="12 7 12 12 16 14"></polyline></svg>
@@ -2818,22 +2835,6 @@ HTML_TEMPLATE = """
             </div>
             <div id="historyChips" class="history-chips"></div>
             <div id="historyRows" class="history-rows"></div>
-        </div>
-    </section>
-
-    <section class="section">
-        <div class="section-head">
-            <svg class="icon" viewBox="0 0 24 24"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>
-            <h2 class="section-title">متصفح الملفات</h2>
-            <span class="section-kicker">المصدر</span>
-        </div>
-        <div style="display:flex; align-items:center; gap:8px; padding:6px 11px; font-size:calc(12px * var(--font-scale)); color:var(--text-muted); border:1px solid var(--field-line); border-bottom:0; border-radius:10px 10px 0 0; background:var(--field);">
-            <span style="font-weight:600;">ترتيب حسب:</span>
-            <select id="sourceSort" style="background:var(--bg); color:var(--text); border:1px solid var(--border); border-radius:6px; padding:3px 8px; font-size:calc(12px * var(--font-scale));">
-                <option value="name">الاسم</option>
-                <option value="date_desc">التاريخ (الأحدث أولاً)</option>
-                <option value="date_asc">التاريخ (الأقدم أولاً)</option>
-            </select>
         </div>
         <div class="tree" id="treeContainer" style="border-radius:0 0 10px 10px;"></div>
     </section>
@@ -5016,6 +5017,17 @@ HTML_TEMPLATE = """
         let parts = String(searchScopePath || '').split('/').filter(function(x) { return x; });
         parts.pop();
         setSearchScope('/' + parts.join('/'), true);
+    }
+
+    // The folder picker is occasional: folded until asked for, so the search
+    // row and the results tree stay adjacent.
+    function toggleSearchScope() {
+        let panel = document.getElementById('searchScopePanel');
+        let btn = document.getElementById('scopeToggleBtn');
+        if (!panel) return;
+        let open = panel.style.display === 'none' || !panel.style.display;
+        panel.style.display = open ? 'flex' : 'none';
+        if (btn) btn.setAttribute('aria-expanded', open ? 'true' : 'false');
     }
 
     function enterSearchSubfolder(sub) {

@@ -220,7 +220,7 @@ The spoofing button is `btn-sand` (`--sand-fill #d0b49f` on `--accent-ink`), not
 ## Page layout (v1.9.0 — design, not features)
 
 One document, not a stack of boxes. The page is `<header class="app-header">`, then
-four `<section class="section">` blocks separated by a hairline (`.section + .section
+three `<section class="section">` blocks separated by a hairline (`.section + .section
 { border-top: 1px solid var(--rule) }`), each with `.section-head` / `.section-title`
 / `.section-kicker`. There is **no `.card`** and no `.card-title` any more.
 
@@ -241,6 +241,10 @@ four `<section class="section">` blocks separated by a hairline (`.section + .se
   one `.path-line` (input + buttons). This is the only place the copy direction
   is chosen. The «إنشاء فهرس JOC» button sits **outside** the fold
   (`.route-joc`): it is a separate flow and must stay one tap away.
+- **File browser section**: the sort row, the search row (`#searchControls`),
+  the folded folder-scope panel (`#searchScopePanel`, opened by `#scopeToggleBtn`)
+  and `#treeContainer` are one attached block; search sits directly above the
+  results, so typing never leaves the input far from them.
 - **Tools section**: spoofing lives in `<details class="tools">`, closed by
   default — an occasional action must not out-weigh the copy.
 - **Action bar** (`#actionBar`, `.actionbar`): fixed, **opaque** `--bar-bg` with a
@@ -478,12 +482,16 @@ The search used to walk `currentSourceRoot` silently. It now walks
 (`sdmp3_search_scope`) — narrowing a search must never move the source root.
 
 - `setSearchScope(path, remember)` is the only writer: it normalises the path,
-  writes the label (`#searchScopePath`), reloads the entries and schedules a UI
-  save. `searchDeep()` sends it as `&root=`.
-- The scope bar (`#searchScopeItems`) lists the current folder from `/api/items`,
-  `SCOPE_FILES_STEP` (300) rows at a time with «عرض المزيد»; folders are opened,
-  files toggle their `.checkbox` (whose `value` *is* the path, so
-  `refreshCheckboxStates()` syncs them), and both use `toggleScopeItem`.
+  writes the label (`#searchScopePath`), reloads the sub-folder menu and schedules
+  a UI save. `searchDeep()` sends it as `&root=`.
+- The folder picker is a **collapsed panel** (`#searchScopePanel`, opened by the
+  small `#scopeToggleBtn` via `toggleSearchScope()`, which also keeps
+  `aria-expanded` in sync): path, `#searchSubfolder`, «أعلى» (`searchScopeUp`),
+  «تحديد مجلد» (`openPathBrowser('search')`, the third `pickerMode`) and
+  «المجلدات فقط». It is folded by default so the search row stays next to the
+  results; the old `#searchScopeItems` list and `SCOPE_FILES_STEP` are gone.
+  `/api/items` now feeds only `#searchSubfolder`, and it still loads while the
+  panel is hidden.
 - `#searchSubfolder` is a `<select>` of the folder's child folders, rebuilt only
   when a folder loads — never on a keystroke — plus «↑ أعلى» (`searchScopeUp`)
   and «تحديد مجلد» (`openPathBrowser('search')`, the third `pickerMode`).
