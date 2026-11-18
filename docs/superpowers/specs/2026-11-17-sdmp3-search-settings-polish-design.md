@@ -36,7 +36,7 @@ Three usability defects reported after v1.10.1:
 - **Typography moves to «المظهر».** `#fontSelect`, `#fontPreview`, `#sizeSelect`
   move into the Appearance pane under the theme selector; their save status uses
   `#settingsSaveState`. «عام» keeps only the auto-spoof switch.
-- `VERSION` bumps to `1.10.2`; `AGENTS.md` is updated to match.
+- `VERSION` bumps to `2.0.0`; `AGENTS.md` is updated to match.
 
 ## Constraints
 

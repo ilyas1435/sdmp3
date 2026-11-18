@@ -2,6 +2,10 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> **Amendment (execution):** the shipped version is **2.0.0**, per the user's
+> instruction during execution. Every `2.0.0` below supersedes the plan's
+> original `1.10.2`; the ledger records the ruling.
+
 **Goal:** Put the search box directly under the file-browser sort row with a collapsed folder picker, make results reveal without a manual scroll, and move font/size settings into the «المظهر» tab.
 
 **Architecture:** All product changes stay inside `HTML_TEMPLATE` in `project.py`: delete the standalone «البحث» section, merge its controls into «متصفح الملفات» as an attached header (sort → search → collapsed scope panel → tree), replace the reveal with a deterministic `scrollTop = 0` + conditional page scroll, and move the three typography controls into `#settingsPaneAppearance`. Docs (`AGENTS.md`) and `VERSION` follow.
@@ -363,7 +367,7 @@ git commit -m "ui: reveal search results without a manual scroll"
 
 **Interfaces:**
 - Consumes: `saveTypography(payload, stateId)`, `#fontSelect`, `#fontPreview`, `#sizeSelect`, `#settingsSaveState`.
-- Produces: the three typography ids live inside `#settingsPaneAppearance`; `pickFont`/`pickFontSize` write status to `#settingsSaveState`; `VERSION = 1.10.2`.
+- Produces: the three typography ids live inside `#settingsPaneAppearance`; `pickFont`/`pickFontSize` write status to `#settingsSaveState`; `VERSION = 2.0.0`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -407,13 +411,13 @@ def t8_typography_in_appearance():
     for sid in ('fontSelect', 'sizeSelect', 'fontPreview'):
         assert 'id="{}"'.format(sid) in app, sid
         assert 'id="{}"'.format(sid) not in gen, sid
-    assert 'v1.10.2' in html
+    assert 'v2.0.0' in html
 
 
 check('t8 typography lives in the appearance tab', t8_typography_in_appearance)
 ```
 
-Also change the `t6_ui_polish_rendered_contract` assertion `'v1.10.1'` to `'v1.10.2'`.
+Also change the `t6_ui_polish_rendered_contract` assertion `'v1.10.1'` to `'v2.0.0'`.
 
 - [ ] **Step 2: Run to verify it fails**
 
@@ -430,7 +434,7 @@ In `pickFont` and `pickFontSize`, change the `saveTypography(..., 'generalSaveSt
 
 - [ ] **Step 5: Bump the version and sync the harness**
 
-Write `1.10.2` to `VERSION`; change the jsdom `/api/system` stub to `version: '1.10.2'`.
+Write `2.0.0` to `VERSION`; change the jsdom `/api/system` stub to `version: '2.0.0'`.
 
 - [ ] **Step 6: Update `AGENTS.md`**
 
@@ -460,7 +464,7 @@ git commit -m "ui: move typography into the appearance tab"
 **Files:** none (verification only)
 
 **Interfaces:**
-- Consumes: committed `VERSION` `1.10.2` and rendered `/`.
+- Consumes: committed `VERSION` `2.0.0` and rendered `/`.
 
 - [ ] **Step 1: Smoke-test the working tree on a spare port**
 
@@ -472,7 +476,7 @@ html = open('/data/data/com.termux/files/usr/tmp/opencode/sdmp3-live.html', enco
 assert html.count('<script>') == 1
 for gone in ('id="searchScopeItems"', 'id="searchScopeMore"', 'بحث عن مجلد أو ملف', '>البحث</h2>'):
     assert gone not in html, gone
-for needed in ('id="searchScopePanel"', 'id="scopeToggleBtn"', 'v1.10.2'):
+for needed in ('id="searchScopePanel"', 'id="scopeToggleBtn"', 'v2.0.0'):
     assert needed in html, needed
 print('live page OK')
 PY
@@ -487,8 +491,8 @@ Run the full gate commands from Task 3 Step 7; `git status --short` must be clea
 `sdmp3` installs from a separate clone, so the live service stays on the old version until the new commits are pushed. Ask the user before running:
 
 ```sh
-git tag -a v1.10.2 -m "v1.10.2: search and settings polish"
+git tag -a v2.0.0 -m "v2.0.0: search and settings polish"
 git push origin main
-git push origin v1.10.2
+git push origin v2.0.0
 sdmp3 update && sdmp3 restart && sdmp3 version
 ```

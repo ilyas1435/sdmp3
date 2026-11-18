@@ -492,11 +492,10 @@ The search used to walk `currentSourceRoot` silently. It now walks
   «تحديد مجلد» (`openPathBrowser('search')`, the third `pickerMode`) and
   «المجلدات فقط». It is folded by default so the search row stays next to the
   results; the old `#searchScopeItems` list and `SCOPE_FILES_STEP` are gone.
-  `/api/items` now feeds only `#searchSubfolder`, and it still loads while the
-  panel is hidden.
+  Within the search UI `/api/items` now feeds only `#searchSubfolder` (the browse
+  tree and the path picker still use it), and it loads while the panel is hidden.
 - `#searchSubfolder` is a `<select>` of the folder's child folders, rebuilt only
-  when a folder loads — never on a keystroke — plus «↑ أعلى» (`searchScopeUp`)
-  and «تحديد مجلد» (`openPathBrowser('search')`, the third `pickerMode`).
+  when a folder loads — never on a keystroke.
 - `enterSearchSubfolder(name)` joins one segment onto the current scope; the
   select resets to its placeholder so the same folder can be chosen again.
 - Search results are **not** a lookalike panel: `searchDeep()` puts them in

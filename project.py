@@ -2799,7 +2799,7 @@ HTML_TEMPLATE = """
             </div>
             <div id="searchControls">
                 <div class="browser-search">
-                    <input type="text" id="searchInput" placeholder="ابحث في هذا المجلد..." style="margin-bottom:0; flex:1 1 160px;" aria-label="نص البحث">
+                    <input type="text" id="searchInput" placeholder="ابحث في مجلد البحث..." style="margin-bottom:0; flex:1 1 160px;" aria-label="نص البحث">
                     <button class="btn btn-primary" onclick="searchDeep(true)">بحث</button>
                     <button type="button" class="btn btn-outline" id="historyToggleBtn" onclick="toggleHistoryBlock()" title="يعرض المجلدات التي حدّدتها سابقاً من البحث — اضغط عنصراً لإعادته إلى التحديد">السجل</button>
                     <button type="button" class="btn btn-outline btn-sm" id="scopeToggleBtn" onclick="toggleSearchScope()" aria-expanded="false" aria-controls="searchScopePanel" title="مجلد البحث وخياراته">
@@ -3024,8 +3024,9 @@ HTML_TEMPLATE = """
                     </select>
                     <div class="field-hint">ست عشرة سمة بين فاتحة وداكنة، كلها مضبوطة لتباين مريح للعين.</div>
                 </div>
-                <div class="settings-field" style="margin-top:14px;">
-                    <label for="fontSelect">خط الموقع (10 خطوط عربية)</label>
+                <div class="settings-note" style="margin-top:14px;">الخط وحجمه. كل الخطوط مضمّنة في التطبيق وتعمل دون إنترنت.</div>
+                <div class="settings-field">
+                    <label for="fontSelect">خط الموقع (11 خطاً عربياً)</label>
                     <select id="fontSelect" onchange="pickFont(this.value)">
                         {% for f in fonts %}
                         <option value="{{ f.id }}" data-font-id="{{ f.id }}"{% if f.id == active_font %} selected{% endif %}>{{ f.name }} — {{ f.desc }}</option>
@@ -5090,16 +5091,20 @@ HTML_TEMPLATE = """
         tree.scrollTop = 0;                     // a new result set starts at its first row
         let head = document.getElementById('searchViewHead') || tree;
         let rect = head.getBoundingClientRect();
-        let visibleBottom = window.innerHeight || 0;
+        // rect.top is layout-viewport based while the visual viewport can be
+        // panned (Chrome shifts it to clear the keyboard instead of scrolling),
+        // so both the test and the delta are computed in visual coordinates.
         let vv = window.visualViewport;
-        if (vv && vv.height) visibleBottom = Math.min(visibleBottom, vv.height + (vv.offsetTop || 0));
+        let vvTop = (vv && vv.offsetTop) || 0;
+        let viewHeight = (vv && vv.height) || window.innerHeight || 0;
         let bar = document.getElementById('actionBar');
         if (bar) {
             let barTop = bar.getBoundingClientRect().top;
-            if (barTop > 0) visibleBottom = Math.min(visibleBottom, barTop);
+            if (barTop > 0) viewHeight = Math.min(viewHeight, barTop - vvTop);
         }
-        if (rect.top < 0 || rect.top > visibleBottom - 72) {
-            let delta = rect.top - 12;
+        let top = rect.top - vvTop;
+        if (top < 0 || top > viewHeight - 72) {
+            let delta = top - 12;
             if (window.scrollBy) window.scrollBy({ top: delta, behavior: 'smooth' });
             else document.documentElement.scrollTop += delta;
         }
