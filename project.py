@@ -2208,9 +2208,9 @@ HTML_TEMPLATE = """
         .route-chev { width:15px; height:15px; flex-shrink:0; color:var(--text-muted); transition:transform .15s ease; }
         .route-details[open] .route-chev { transform:rotate(180deg); }
         .route-details .route { margin-top:14px; }
-        /* Two occasional actions, side by side, outside the fold. */
-        .route-joc-row { display:flex; gap:8px; flex-wrap:wrap; margin-top:12px; }
-        .route-joc-row .route-joc { margin-top:0; }
+        /* Two occasional actions, side by side, in the Tools section. */
+        .tools-actions { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:12px; }
+        .tools-actions .btn { flex:1 1 0; min-width:150px; }
         @media (max-width: 480px) {
             .kind-tag { padding:2px 6px; }
             .source-path-input { flex-basis:120px; }
@@ -2292,16 +2292,18 @@ HTML_TEMPLATE = """
         /* Storage picker: one horizontal row of icon tiles, each captioned with a
            single word. Each kind sets --kind/--kind-soft so a tile is coloured by
            *what it is* (SD / USB / internal) instead of by the global accent. */
-        .storage-grid { display: flex; flex-direction: row; gap: 8px; margin-bottom: 10px; flex-wrap: wrap; }
-        .storage-card { display: flex; flex: 1 1 0; min-width: 78px; flex-direction: column; align-items: center; gap: 6px;
-            padding: 9px 6px; border: 1px solid var(--field-line); border-radius: 12px;
+        .storage-grid { display: flex; flex-direction: row; gap: 8px; margin-bottom: 10px; flex-wrap: wrap; align-items: flex-start; }
+        /* A tile is barely bigger than its icon: two volumes must not own a whole
+           row, and the caption under the icon carries the name. */
+        .storage-card { display: flex; flex: 0 0 auto; flex-direction: column; align-items: center; gap: 3px;
+            padding: 5px 7px; border: 1px solid var(--field-line); border-radius: 10px;
             background: var(--field); color: var(--text); cursor: pointer; text-align: center;
             transition: border-color .15s, background .15s; font-family: inherit; appearance: none; -webkit-appearance: none; }
         .storage-card:hover { border-color: var(--kind, var(--accent)); }
         .storage-card.active { border-color: var(--kind, var(--accent)); background: var(--kind-soft, var(--accent-soft)); }
-        .storage-card .storage-ico { width: 30px; height: 30px; padding: 5px; flex-shrink: 0; box-sizing: border-box;
-            border-radius: 9px; background: var(--kind-tile, var(--accent-soft)); color: var(--kind, var(--text-muted)); }
-        .storage-short { font-size: calc(11.5px * var(--font-scale)); font-weight: 600; color: var(--text-muted); }
+        .storage-card .storage-ico { width: 26px; height: 26px; padding: 4px; flex-shrink: 0; box-sizing: border-box;
+            border-radius: 8px; background: var(--kind-tile, var(--accent-soft)); color: var(--kind, var(--text-muted)); }
+        .storage-short { font-size: calc(10.5px * var(--font-scale)); font-weight: 600; color: var(--text-muted); line-height:1.2; }
         .storage-card.active .storage-short { color: var(--kind-ink, var(--accent)); }
         .storage-card.kind-internal { --kind: var(--kind-internal); --kind-ink: var(--kind-internal-ink); --kind-soft: var(--kind-internal-soft); --kind-tile: var(--kind-internal-tile); }
         .storage-card.kind-sdcard { --kind: var(--kind-sdcard); --kind-ink: var(--kind-sdcard-ink); --kind-soft: var(--kind-sdcard-soft); --kind-tile: var(--kind-sdcard-tile); }
@@ -2676,7 +2678,6 @@ HTML_TEMPLATE = """
         <div class="section-head">
             <svg class="icon" viewBox="0 0 24 24"><path d="M4 17h6l4-10h6"></path><polyline points="17 4 20 7 17 10"></polyline></svg>
             <h2 class="section-title">المسار</h2>
-            <span class="section-kicker">من المصدر إلى الوجهة</span>
         </div>
         <details class="route-details" id="routeDetails">
             <summary>
@@ -2758,18 +2759,6 @@ HTML_TEMPLATE = """
         </div>
         </details>
 
-        <!-- The index generator and the search folder are separate flows, so
-             they stay one tap away whether or not the route block is folded. -->
-        <div class="route-joc-row">
-            <button class="btn btn-outline route-joc" onclick="openJocModal()">
-                <svg class="icon" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path></svg>
-                إنشاء فهرس JOC
-            </button>
-            <button type="button" class="btn btn-outline route-joc" id="scopeToggleBtn" onclick="openSearchScope()" aria-haspopup="dialog" aria-controls="searchScopeModal" title="مجلد البحث وخياراته">
-                <svg class="icon" aria-hidden="true"><use href="#ico-folder"></use></svg>
-                مجلد البحث
-            </button>
-        </div>
     </section>
 
     <section class="section">
@@ -2818,6 +2807,17 @@ HTML_TEMPLATE = """
             <svg class="icon" viewBox="0 0 24 24"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"></path></svg>
             <h2 class="section-title">أدوات</h2>
             <span class="section-kicker">اختياري</span>
+        </div>
+        <!-- The two occasional flows: one tap each, outside any fold. -->
+        <div class="tools-actions">
+            <button type="button" class="btn btn-outline" onclick="openJocModal()">
+                <svg class="icon" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path></svg>
+                إنشاء فهرس JOC
+            </button>
+            <button type="button" class="btn btn-outline" id="scopeToggleBtn" onclick="openSearchScope()" aria-haspopup="dialog" aria-controls="searchScopeModal" title="مجلد البحث وخياراته">
+                <svg class="icon" aria-hidden="true"><use href="#ico-folder"></use></svg>
+                مجلد البحث
+            </button>
         </div>
         <details class="tools">
             <summary>
@@ -3029,6 +3029,11 @@ HTML_TEMPLATE = """
                     <span>تمويه تواريخ كل الوجهة تلقائياً بعد النسخ</span>
                 </label>
                 <div class="settings-note" style="margin-top:2px;">يشمل كل عناصر مجلد الوجهة بعد اكتمال النسخ والتحقق، ما عدا مسارات المصدر والمجلدات المحمية. يعمل حتى لو أُغلق المتصفح.</div>
+                <div class="settings-field" style="margin-top:16px;">
+                    <label for="smartDepthInput">عمق مجلدات «تنظيم ذكي»</label>
+                    <input type="number" id="smartDepthInput" min="1" max="3" step="1" value="{{ smart_depth }}" onchange="pickSmartDepth(this.value)">
+                    <div class="settings-note" style="margin-top:6px;">١ = مجلد واحد باسم المجلد الأب المباشر. ٢ أو ٣ = إبقاء آخر مستويين أو ثلاثة من المسار الأصلي (مثال: العلماء/ابن باز).</div>
+                </div>
                 <div id="generalSaveState" class="settings-save-state"></div>
             </div>
 
@@ -3457,6 +3462,9 @@ HTML_TEMPLATE = """
     const GROUP_MAX_DEPTH = 3;
     const GROUP_PATH_MAX = 180;
     const GROUP_SEG_MAX = 80;
+    // How many trailing path segments «تنظيم ذكي» turns into a folder name.
+    // Server-rendered from settings.json, editable in الإعدادات › عام.
+    let SMART_DEPTH = {{ smart_depth }};
 
     // "العلماء / ابن باز // دروس" -> ['العلماء','ابن باز','دروس']
     function groupPathParts(raw) {
@@ -3899,6 +3907,9 @@ HTML_TEMPLATE = """
             if (s.length > GROUP_SEG_MAX) s = s.slice(0, GROUP_SEG_MAX).trim();
             return s;
         }).filter(function(s) { return s && s !== '.' && s !== '..'; });
+        // The user's depth first: 1 means "one folder named after the item's own
+        // parent", not the whole original path chain.
+        if (segs.length > SMART_DEPTH) segs = segs.slice(segs.length - SMART_DEPTH);
         if (segs.length > GROUP_MAX_DEPTH) segs = segs.slice(segs.length - GROUP_MAX_DEPTH);
         while (segs.length > 1 && segs.join('/').length > GROUP_PATH_MAX) segs = segs.slice(1);
         if (segs.length && segs.join('/').length > GROUP_PATH_MAX) {
@@ -5463,6 +5474,18 @@ HTML_TEMPLATE = """
         saveTypography({ auto_spoof: !!enabled }, 'generalSaveState');
     }
 
+    // The number is clamped to 1..GROUP_MAX_DEPTH here as well, so the field can
+    // never show a value the saved settings (or the server) would refuse.
+    function pickSmartDepth(value) {
+        let n = parseInt(value, 10);
+        if (!isFinite(n) || isNaN(n)) n = SMART_DEPTH;
+        n = Math.max(1, Math.min(GROUP_MAX_DEPTH, n));
+        SMART_DEPTH = n;
+        let input = document.getElementById('smartDepthInput');
+        if (input) input.value = String(n);
+        saveTypography({ smart_depth: n }, 'generalSaveState');
+    }
+
     function pickTheme(id) {
         if (!id || id === activeThemeId) return;
         setSettingsState('جارٍ الحفظ...', '');
@@ -6834,6 +6857,7 @@ def index():
         active_font=font_id,
         active_font_size=size_id,
         auto_spoof=bool(APP_SETTINGS.get('auto_spoof')),
+        smart_depth=int(APP_SETTINGS.get('smart_depth') or SMART_DEPTH_DEFAULT),
     )
 
 @app.route('/api/system')
@@ -6952,9 +6976,15 @@ _cache_save_timer = {'handle': None}
 # User settings (currently: the theme) and the last searches. Both files live in
 # ~/.local/state/sdmp3/ through sdmp3_state.py, and both are loaded in main() so
 # the page can be painted with them on the very first request.
+# «تنظيم ذكي» keeps this many trailing path segments as the group name; the
+# server refuses groups deeper than 3, so the setting shares that ceiling.
+SMART_DEPTH_MAX = 3
+SMART_DEPTH_DEFAULT = 1
+
 APP_SETTINGS = {'version': 2, 'theme': DEFAULT_THEME,
                 'font': DEFAULT_FONT, 'font_size': DEFAULT_FONT_SIZE,
-                'auto_spoof': False}
+                'auto_spoof': False,
+                'smart_depth': SMART_DEPTH_DEFAULT}
 APP_INDEX_SETTINGS = dict(DEFAULT_INDEX_SETTINGS)
 SEARCH_HISTORY = {'version': 1, 'items': [], 'queries': []}
 _settings_lock = threading.RLock()
@@ -7267,6 +7297,21 @@ def remember_search(query, root, results):
     save_search_history(snapshot)
 
 
+def _coerce_smart_depth(value, default):
+    """Depth for «تنظيم ذكي»: an integer in 1..SMART_DEPTH_MAX, else `default`.
+
+    A hand-edited settings.json or an old client must never be able to ask for a
+    group the server would refuse, so the value is clamped, not rejected.
+    """
+    if isinstance(value, bool):
+        return default
+    try:
+        depth = int(value)
+    except (TypeError, ValueError):
+        return default
+    return max(1, min(SMART_DEPTH_MAX, depth))
+
+
 def _coerce_bool(value, default=False):
     """Bool/0|1/'true'|'on'|'yes' -> bool; anything else keeps `default`."""
     if isinstance(value, bool):
@@ -7316,6 +7361,8 @@ def api_settings():
     size_id = body.get('font_size', APP_SETTINGS.get('font_size') or DEFAULT_FONT_SIZE)
     auto_spoof = _coerce_bool(body.get('auto_spoof'),
                               bool(APP_SETTINGS.get('auto_spoof')))
+    smart_depth = _coerce_smart_depth(body.get('smart_depth'),
+                                      int(APP_SETTINGS.get('smart_depth') or SMART_DEPTH_DEFAULT))
     if theme_id not in THEMES:
         return jsonify({'error': 'سمة غير معروفة'}), 400
     if font_id not in font_ids():
@@ -7325,7 +7372,8 @@ def api_settings():
     with _settings_lock:
         APP_SETTINGS = {'version': SETTINGS_VERSION, 'theme': theme_id,
                         'font': font_id, 'font_size': size_id,
-                        'auto_spoof': auto_spoof}
+                        'auto_spoof': auto_spoof,
+                        'smart_depth': smart_depth}
         settings = dict(APP_SETTINGS)
     if not save_settings(settings):
         return jsonify({'error': 'تعذر حفظ الإعدادات على الجهاز'}), 500

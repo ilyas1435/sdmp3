@@ -142,9 +142,16 @@ def load_settings(valid_theme_ids, default_theme,
     auto_spoof = raw.get('auto_spoof')
     if not isinstance(auto_spoof, bool):
         auto_spoof = False
+    # Additive v2 key: how many path segments «تنظيم ذكي» keeps. 1 is the
+    # default because a single folder is what a normal copy wants; 3 is the
+    # deepest group the server accepts.
+    smart_depth = raw.get('smart_depth')
+    if (not isinstance(smart_depth, int) or isinstance(smart_depth, bool)
+            or smart_depth < 1 or smart_depth > 3):
+        smart_depth = 1
     settings = {'version': SETTINGS_VERSION, 'theme': theme,
                 'font': font, 'font_size': font_size,
-                'auto_spoof': auto_spoof}
+                'auto_spoof': auto_spoof, 'smart_depth': smart_depth}
     raw_version = raw.get('version')
     if isinstance(raw_version, int) and raw_version > SETTINGS_VERSION:
         # A newer app wrote this file. Keep what we understand, but do not
@@ -160,6 +167,7 @@ def save_settings(settings):
         'font': settings.get('font'),
         'font_size': settings.get('font_size'),
         'auto_spoof': bool(settings.get('auto_spoof')),
+        'smart_depth': settings.get('smart_depth') or 1,
         'updated': int(time.time()),
     }
     return save_json(state_file(SETTINGS_FILE), payload)
@@ -278,12 +286,23 @@ if __name__ == '__main__':  # pragma: no cover - manual report
         # settings: theme + font + font size, all validated against registries
         assert load_settings(['a', 'b'], 'a') == {
             'version': SETTINGS_VERSION, 'theme': 'a',
-            'font': 'system', 'font_size': 'normal', 'auto_spoof': False}
+            'font': 'system', 'font_size': 'normal', 'auto_spoof': False,
+            'smart_depth': 1}
         assert save_settings({'theme': 'b', 'font': 'f1', 'font_size': 'big',
                               'auto_spoof': True}) is True
         saved = load_settings(['a', 'b'], 'a', ['f1', 'f2'], 'system', ['big', 'small'], 'normal')
         assert saved['theme'] == 'b' and saved['font'] == 'f1' and saved['font_size'] == 'big', saved
         assert saved['auto_spoof'] is True, saved
+        assert save_settings({'theme': 'b', 'smart_depth': 3}) is True
+        assert load_settings(['a', 'b'], 'a')['smart_depth'] == 3
+        # save writes what it is given; load is the validator
+        assert save_settings({'theme': 'b', 'smart_depth': 9}) is True
+        assert load_settings(['a', 'b'], 'a')['smart_depth'] == 1, 'load must clamp 9'
+        assert save_settings({'theme': 'b', 'smart_depth': 0}) is True
+        assert load_settings(['a', 'b'], 'a')['smart_depth'] == 1, 'load must clamp 0'
+        assert save_settings({'theme': 'b', 'smart_depth': True}) is True
+        assert load_settings(['a', 'b'], 'a')['smart_depth'] == 1, 'bool is not a depth'
+        assert save_settings({'theme': 'b', 'smart_depth': 1}) is True
         with open(state_file(SETTINGS_FILE), 'w', encoding='utf-8') as fh:
             json.dump({'version': SETTINGS_VERSION, 'theme': 'b', 'font': 'f1',
                        'font_size': 'big'}, fh)

@@ -207,7 +207,7 @@ Each storage dict carries `kind` + `icon` so the UI can label it honestly:
 | `usb` | device major **8** (SCSI/USB OTG) | `ico-usb` — USB OTG (UUID) | `--kind-usb` blue `#8fa9c4` (ink `#a8bfd6`) |
 | `card` | anything unrecognised (dm-*, unknown fs) | `ico-card` — كارت ذاكرة (UUID) | `--kind-card` olive `#a3b18a` (ink `#b7c39f`) |
 
-`storage_kind()` looks the volume up in `/proc/mounts` as `/mnt/media_rw/<UUID>` and passes the device to `classify_volume_device()`. `df -h` alone cannot tell an SD card from a USB stick — both are `/storage/XXXX-XXXX`. The icons are one SVG sprite (`<symbol id="ico-*">` right after `<body>`) referenced with `<use href="#ico-...">`; the pickers are `.storage-card` **icon tiles** in one horizontal row (`chooseStorage()` / `syncStorageCards()`), captioned with `STORAGE_KINDS[*]['short']` (الهاتف / SD / OTG / كارت) that `get_available_storages()` copies onto each dict — no UUID name, no raw path, no badge on the tile (the full name + path are in its `title`).
+`storage_kind()` looks the volume up in `/proc/mounts` as `/mnt/media_rw/<UUID>` and passes the device to `classify_volume_device()`. `df -h` alone cannot tell an SD card from a USB stick — both are `/storage/XXXX-XXXX`. The icons are one SVG sprite (`<symbol id="ico-*">` right after `<body>`) referenced with `<use href="#ico-...">`; the pickers are `.storage-card` **icon tiles** in one horizontal row (`chooseStorage()` / `syncStorageCards()`), captioned with `STORAGE_KINDS[*]['short']` (الهاتف / SD / OTG / كارت) that `get_available_storages()` copies onto each dict — no UUID name, no raw path, no badge on the tile (the full name + path are in its `title`). A tile is `flex: 0 0 auto` with 5px/7px padding, i.e. barely bigger than its 26px icon: three volumes must not fill the row.
 
 Theme = **Coffee Blues** (https://www.color-hex.com/color-palette/102595) is still the default of the 16-theme registry, but v1.10 hue-rotated it while preserving relative luminance: page `--bg #192133`, card `--card #222b40`, lift `--card-2 #2d374d`, `--field #161c2b`, `--border #2f3c5a`, `--text #e9e2d1`, muted `#aaa297`, accent `--accent #3d8e9c`, accent fill `--accent-fill #327883` (hover `#2a6973`). The warm-sand-on-cool-slate character survives (text ≈ 10.9:1 on a card, muted ≈ 5.6:1); only the hues moved, so contrast stayed inside the contract. `--radius` is 12px; `--rule` (translucent `--border`) is the hairline between sections, `--field-line` outlines inputs/cards, `--bar-bg`/`--bar-line` belong to the opaque action bar, and `--num-font` (`NUM_FONT_STACK`) is the Latin mono face used by `.num`. **No colour literal belongs in the template** — every token, alpha variant and layout colour comes from `sdmp3_themes.py`.
 
@@ -241,17 +241,17 @@ three `<section class="section">` blocks separated by a hairline (`.section + .s
   (`.section-step` ١) → `.route-link` (hairline + arrow) → destination (٢) — the
   only place the step numbers live now; each node holds its `.storage-grid` and
   one `.path-line` (input + buttons). This is the only place the copy direction
-  is chosen. Two always-visible buttons sit **outside** the fold in
-  `.route-joc-row`: «إنشاء فهرس JOC» (`.route-joc`) and «مجلد البحث»
-  (`#scopeToggleBtn` → `openSearchScope()`); both are separate flows and must
-  stay one tap away.
+  is chosen — the section has no kicker and no buttons of its own: the two
+  occasional flows live in the Tools section.
 - **File browser section**: the sort row, the search row (`#searchControls`) and
   `#treeContainer` are one attached block; search sits directly above the
   results, so typing never leaves the input far from them. The folder-scope
   controls are **not** inline: they live in `#searchScopeModal` (see «Search
   scope»).
-- **Tools section**: spoofing lives in `<details class="tools">`, closed by
-  default — an occasional action must not out-weigh the copy.
+- **Tools section**: the last section of the page. A visible `.tools-actions`
+  row holds «إنشاء فهرس JOC» and «مجلد البحث» (`#scopeToggleBtn` →
+  `openSearchScope()`), then spoofing lives in `<details class="tools">`, closed
+  by default — an occasional action must not out-weigh the copy.
 - **Action bar** (`#actionBar`, `.actionbar`): fixed, **opaque** `--bar-bg` with a
   `--bar-line` top border (never `backdrop-filter`), and a 3px
   `.actionbar-progress` line at its top edge. The left side is a button
@@ -315,10 +315,18 @@ a breadcrumb (`"A/B"`), so the tree is **derived on every render**
 
 ## «تنظيم ذكي»: propose, preview, apply
 `smartOrganizeGroups()` maps **each selection** to its own parent path relative
-to `currentSourceRoot` (`sourceRelativeParent`), keeps the last
-`GROUP_MAX_DEPTH` segments, and falls back to `sourceBasename()` for an item
-sitting directly in the root. That fixes the two old failure modes (a flat
-selection and selections from different parents).
+to `currentSourceRoot` (`sourceRelativeParent`), keeps the last **`SMART_DEPTH`**
+segments, and falls back to `sourceBasename()` for an item sitting directly in
+the root. That fixes the two old failure modes (a flat selection and selections
+from different parents).
+
+`SMART_DEPTH` is the saved `smart_depth` setting (الإعدادات › عام), default
+**1** — one folder named after the item's own parent, not the whole original
+path chain — and capped at `GROUP_MAX_DEPTH` (3). `clampGroupSegments()` applies
+it before the FAT/length rules, so 2 or 3 keeps the trailing path levels and the
+preview never proposes a group the server would refuse. A saved value outside
+1..3 is clamped on load (`sdmp3_state.load_settings`) and on POST
+(`_coerce_smart_depth`).
 
 The proposal is a **preview** (`smartPreview` → `#smartPreview`), one checkbox
 per folder with its item count and «موجود/جديد»: nothing is written until
@@ -406,8 +414,9 @@ straight on «الفهرس».
   the select. `pickFont(id)` / `pickFontSize(id)` POST one key each, apply
   `app_font` / `font_scale` from the response and report in
   `#settingsSaveState`. No reload, no re-render.
-- **عام** owns only the `auto_spoof` switch (`#autoSpoofCheck` →
-  `pickAutoSpoof`), which reports in `#generalSaveState`.
+- **عام** owns the `auto_spoof` switch (`#autoSpoofCheck` → `pickAutoSpoof`) and
+  the «تنظيم ذكي» depth number (`#smartDepthInput` → `pickSmartDepth`, 1..3,
+  clamped client- and server-side), both reporting in `#generalSaveState`.
 - **الفهرس** owns the JOC index settings — see «Index settings» below. It is the
   only place they are written.
 - `setSettingsState(text, kind, elementId)` writes one status line per pane
@@ -495,8 +504,8 @@ The search used to walk `currentSourceRoot` silently. It now walks
   writes the label (`#searchScopePath`), reloads the sub-folder menu and schedules
   a UI save. `searchDeep()` sends it as `&root=`.
 - The folder picker is a **dismissible dialog** (`#searchScopeModal`), opened by
-  `#scopeToggleBtn` in the always-visible `.route-joc-row` beside «إنشاء فهرس
-  JOC» via `openSearchScope()`, and closed by `closeSearchScope(event)` (backdrop
+  `#scopeToggleBtn` in the Tools section's `.tools-actions` row via
+  `openSearchScope()`, and closed by `closeSearchScope(event)` (backdrop
   click, «إغلاق», or Esc). Inside: `#searchScopePath`, `#searchSubfolder`,
   «أعلى» (`searchScopeUp`), «تحديد مجلد» (`openPathBrowser('search')`, the third
   `pickerMode`) and «المجلدات فقط». It sits **after** `#progressModal` in the
@@ -534,7 +543,7 @@ Three JSON files, all written through `sdmp3_state.py` (atomic `tmp` +
 
 | File | Contents |
 |------|----------|
-| `state_file('settings.json')` | `{version, theme, font, font_size, auto_spoof, updated}` — schema version 2 |
+| `state_file('settings.json')` | `{version, theme, font, font_size, auto_spoof, smart_depth, updated}` — schema version 2 |
 | `state_file('index_settings.json')` | the JOC index settings — schema version 2, see «Index settings» |
 | `state_file('search_history.json')` | `{items: [last 25 results], queries: [last 25 queries]}` |
 
