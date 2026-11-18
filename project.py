@@ -5080,19 +5080,30 @@ HTML_TEMPLATE = """
         document.documentElement.style.setProperty('--kb-inset', inset + 'px');
     }
 
-    // `nearest` is deliberate: a typing search must not fight a reader who has
-    // already scrolled to a result. It moves only when the target is off-screen.
+    // After a search the results must be visible without a manual scroll. The
+    // tree is the results panel and sits right under the search row now, so the
+    // common case needs no movement; only an off-screen head is scrolled into
+    // view. `nearest`-style scrolling used to do nothing when the head was only
+    // partly visible, which is why this computes the delta explicitly.
     function revealSearchResults() {
         syncViewportInset();
-        let controls = document.getElementById('searchControls');
-        let head = document.getElementById('searchViewHead');
-        if (controls && controls.scrollIntoView) {
-            controls.scrollIntoView({behavior: 'smooth', block: 'nearest'});
+        let tree = document.getElementById('treeContainer');
+        if (!tree) return;
+        tree.scrollTop = 0;                     // a new result set starts at its first row
+        let head = document.getElementById('searchViewHead') || tree;
+        let rect = head.getBoundingClientRect();
+        let visibleBottom = window.innerHeight || 0;
+        let vv = window.visualViewport;
+        if (vv && vv.height) visibleBottom = Math.min(visibleBottom, vv.height + (vv.offsetTop || 0));
+        let bar = document.getElementById('actionBar');
+        if (bar) {
+            let barTop = bar.getBoundingClientRect().top;
+            if (barTop > 0) visibleBottom = Math.min(visibleBottom, barTop);
         }
-        if (head && head.scrollIntoView) {
-            let revealHead = function() { head.scrollIntoView({behavior: 'smooth', block: 'nearest'}); };
-            if (window.requestAnimationFrame) window.requestAnimationFrame(revealHead);
-            else revealHead();
+        if (rect.top < 0 || rect.top > visibleBottom - 72) {
+            let delta = rect.top - 12;
+            if (window.scrollBy) window.scrollBy({ top: delta, behavior: 'smooth' });
+            else document.documentElement.scrollTop += delta;
         }
     }
 
