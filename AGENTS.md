@@ -272,12 +272,15 @@ three `<section class="section">` blocks separated by a hairline (`.section + .s
   (`showInlineDone`/`showInlineError`, JOC text notices). Emoji carry their own
   colour and metrics and fight the theme.
 - **Esc** closes the front `.modal` (the `.modal-front` one, else the last visible)
-  but **never** `#progressModal`: that dialog owns a running copy and is closed
-  with its own button after the run ends.
+  but **never** `#progressModal`: `#progressModal` is filtered out of the
+  candidate list *before* the choice (not rejected after it), because a finished
+  copy can restore itself over another open dialog — rejecting it afterwards made
+  Esc a silent no-op. The copy dialog is closed with its own button after the run
+  ends.
 - `.num` (with `--num-font`, tabular figures, `direction:ltr`) is for counts, sizes,
-  speeds, timestamps and `.storage-path`. `#selectedCount`/`#barSize`/`#barEta` are
-  written with `textContent`, never `innerText` (jsdom has no `innerText`, and that
-  is the gate's environment).
+  speeds, timestamps and the queue row's number. `#selectedCount`/`#barSize`/
+  `#barEta` are written with `textContent`, never `innerText` (jsdom has no
+  `innerText`, and that is the gate's environment).
 
 ## Groups window: folder tree, inline rename, drag & drop
 `#selectedModal` turns the flat group list into a **folder tree** (`#groupTree`).
@@ -682,10 +685,13 @@ A `jocReviewTxt` checkbox (in الإعدادات › الفهرس) defers txt-do
   page can be browsed and the next batch selected during a copy; a running poll
   must never reopen it (the auto-open is gated on `!progressMinimized`).
   `restoreProgressModal()` brings it back from the action bar's primary button,
-  whose label becomes «استعادة النسخ NN٪» while `transferRunning` — and a
-  terminal snapshot (`done`/`error`/`cancelled`) restores it once by itself,
-  because verification and the error list only exist there. There is no
-  `.background-note` any more.
+  whose label becomes «استعادة النسخ/الحذف/الفهرس NN٪» (the word follows
+  `data.action`) while `transferRunning` — and a terminal snapshot
+  (`done`/`error`/`cancelled`) restores it once by itself, because verification
+  and the error list only exist there. The «تصغير» button is hidden in that
+  terminal branch and re-shown by `showProgressModal()`: minimizing a finished
+  run would be undone by the next poll, so the control would do nothing. There
+  is no `.background-note` any more.
 - **Queue hook, not a queue.** `transferQueue = []` + `renderQueue()` fill
   `#queueBlock`/`#queueRows`/`#queueCount` and the `#barQueueBadge`; the block is
   hidden while the list is empty and **nothing enqueues yet**. The scheduled-copy

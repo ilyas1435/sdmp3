@@ -4376,7 +4376,9 @@ HTML_TEMPLATE = """
         let src = (srcBox && srcBox.value) || currentSourceRoot || '';
         let dst = (dstBox && dstBox.value) || '';
         applySourceKindTag(document.getElementById('sourceKindTag'), src, 'مسار مخصص');
-        applySourceKindTag(document.getElementById('destKindTag'), dst, 'لم تُحدَّد');
+        // "لم تُحدَّد" is for an empty box only: a chosen path on an unknown
+        // volume is still a destination, and claiming otherwise hides it.
+        applySourceKindTag(document.getElementById('destKindTag'), dst, dst ? 'مسار مخصص' : 'لم تُحدَّد');
         applySourceKindTag(document.getElementById('sourcePathKindTag'), src);
     }
 
@@ -6372,6 +6374,7 @@ HTML_TEMPLATE = """
         document.getElementById('cardWarningBox').style.display = 'none';
         document.getElementById('inlineNotify').style.display = 'none';
         document.getElementById('currentFile').style.color = 'var(--text-muted)';
+        document.getElementById('minimizeProgressBtn').style.display = '';
     }
 
     // The dialog is an interruption, so it folds into the action bar instead of
@@ -6576,9 +6579,11 @@ HTML_TEMPLATE = """
                 let barLabel = document.getElementById('barActionLabel');
                 if (barLabel) {
                     if (transferRunning) {
+                        let word = (data.action === 'delete') ? 'الحذف'
+                            : (data.action === 'tts' ? 'الفهرس' : 'النسخ');
                         let pct = (data.phase === 'verifying') ? (data.verify_progress || 0)
                             : (data.action === 'delete' ? null : (data.progress || 0));
-                        barLabel.textContent = 'استعادة النسخ' + (pct === null ? '' : ' ' + pct + '٪');
+                        barLabel.textContent = 'استعادة ' + word + (pct === null ? '' : ' ' + pct + '٪');
                     } else {
                         barLabel.textContent = 'بدء النسخ';
                     }
@@ -6649,6 +6654,11 @@ HTML_TEMPLATE = """
                     // A finished run is never silent: the result, verification
                     // and error list only exist inside the dialog.
                     transferRunning = false;
+                    // Minimizing a finished run would be undone by the next
+                    // poll, so the control is gone once there is nothing left
+                    // to keep running in the background.
+                    let minBtn = document.getElementById('minimizeProgressBtn');
+                    if (minBtn) minBtn.style.display = 'none';
                     if (progressMinimized) restoreProgressModal();
                     let barDoneLabel = document.getElementById('barActionLabel');
                     if (barDoneLabel) barDoneLabel.textContent = 'بدء النسخ';
@@ -6760,14 +6770,16 @@ HTML_TEMPLATE = """
     // running copy and must be closed with its own button after the run ends.
     document.addEventListener('keydown', function(e) {
         if (e.key !== 'Escape') return;
+        // The copy dialog is filtered out before the choice: it owns a running
+        // copy, and taking it out after picking would turn Esc into a no-op
+        // whenever a finished run had just restored it over another dialog.
         let open = Array.from(document.querySelectorAll('.modal')).filter(function(m) {
-            return m.style.display === 'flex';
+            return m.style.display === 'flex' && m.id !== 'progressModal';
         });
         if (!open.length) return;
         let front = open.filter(function(m) { return m.classList.contains('modal-front'); })[0]
             || open[open.length - 1];
-        if (!front || front.id === 'progressModal') return;
-        front.style.display = 'none';
+        if (front) front.style.display = 'none';
     });
 
     function resetTransfer() {
