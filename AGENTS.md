@@ -207,13 +207,13 @@ Each storage dict carries `kind` + `icon` so the UI can label it honestly:
 | `usb` | device major **8** (SCSI/USB OTG) | `ico-usb` — USB OTG (UUID) | `--kind-usb` blue `#8fa9c4` (ink `#a8bfd6`) |
 | `card` | anything unrecognised (dm-*, unknown fs) | `ico-card` — كارت ذاكرة (UUID) | `--kind-card` olive `#a3b18a` (ink `#b7c39f`) |
 
-`storage_kind()` looks the volume up in `/proc/mounts` as `/mnt/media_rw/<UUID>` and passes the device to `classify_volume_device()`. `df -h` alone cannot tell an SD card from a USB stick — both are `/storage/XXXX-XXXX`. The icons are one SVG sprite (`<symbol id="ico-*">` right after `<body>`) referenced with `<use href="#ico-...">`; the select-based pickers were replaced by `.storage-card` buttons (`chooseStorage()` / `syncStorageCards()`), and the same icons appear in the path picker badge.
+`storage_kind()` looks the volume up in `/proc/mounts` as `/mnt/media_rw/<UUID>` and passes the device to `classify_volume_device()`. `df -h` alone cannot tell an SD card from a USB stick — both are `/storage/XXXX-XXXX`. The icons are one SVG sprite (`<symbol id="ico-*">` right after `<body>`) referenced with `<use href="#ico-...">`; the pickers are `.storage-card` **icon tiles** in one horizontal row (`chooseStorage()` / `syncStorageCards()`), captioned with `STORAGE_KINDS[*]['short']` (الهاتف / SD / OTG / كارت) that `get_available_storages()` copies onto each dict — no UUID name, no raw path, no badge on the tile (the full name + path are in its `title`).
 
 Theme = **Coffee Blues** (https://www.color-hex.com/color-palette/102595) is still the default of the 16-theme registry, but v1.10 hue-rotated it while preserving relative luminance: page `--bg #192133`, card `--card #222b40`, lift `--card-2 #2d374d`, `--field #161c2b`, `--border #2f3c5a`, `--text #e9e2d1`, muted `#aaa297`, accent `--accent #3d8e9c`, accent fill `--accent-fill #327883` (hover `#2a6973`). The warm-sand-on-cool-slate character survives (text ≈ 10.9:1 on a card, muted ≈ 5.6:1); only the hues moved, so contrast stayed inside the contract. `--radius` is 12px; `--rule` (translucent `--border`) is the hairline between sections, `--field-line` outlines inputs/cards, `--bar-bg`/`--bar-line` belong to the opaque action bar, and `--num-font` (`NUM_FONT_STACK`) is the Latin mono face used by `.num`. **No colour literal belongs in the template** — every token, alpha variant and layout colour comes from `sdmp3_themes.py`.
 
 The accent split stays: `--accent` marks (icons, focus, checkbox, disk bar, small status text only where the ratio allows), while filled buttons use `--accent-fill` with `--on-accent`. `--accent-ink #151e28` labels warning/success/danger fills. Danger (`--danger #f43f5e`, text `--danger-ink #fc8b9b`) and success (`--success #7fbf93`) are semantic and were deliberately **not** rotated in v1.10, along with the four `--kind-*` volume hues, so their meaning survives every theme. Nothing glows — no gradient, no coloured button shadow, no inset card sheen; secondary buttons stay neutral `btn-outline` so only the primary action wears the accent.
 
-Each volume kind owns a hue: `.storage-card.kind-*` sets a local `--kind`/`--kind-ink`/`--kind-soft`/`--kind-tile` used by the card's start border, icon tile, active fill, active name and "الحالي/الوجهة" badge; `.pill-kind-*` and `.kind-border-*` reuse the same variables for the picker badge, the header `sdWritePill` and the path inputs. Internal = sand `#d0b49f`, SD = bright clay `#d98b63` (ink `#dda88c`), USB = blue `#8fa9c4` (ink `#a8bfd6`), unknown = olive `#a3b18a` (ink `#b7c39f`). The four are told apart by icon + label as well as hue — the palette only has so many warm earths — and `-ink` exists because the fill colours are too dark for 11px text. Only a writable card gets its kind hue in the header pill; a refusing card stays `pill-warn`.
+Each volume kind owns a hue: `.storage-card.kind-*` sets a local `--kind`/`--kind-ink`/`--kind-soft`/`--kind-tile` used by the tile's border, icon tile, active fill and active caption; `.pill-kind-*` and `.kind-border-*` reuse the same variables for the route kind pills, the header `sdWritePill` and the path inputs. Internal = sand `#d0b49f`, SD = bright clay `#d98b63` (ink `#dda88c`), USB = blue `#8fa9c4` (ink `#a8bfd6`), unknown = olive `#a3b18a` (ink `#b7c39f`). The four are told apart by icon + label as well as hue — the palette only has so many warm earths — and `-ink` exists because the fill colours are too dark for 11px text. Only a writable card gets its kind hue in the header pill; a refusing card stays `pill-warn`.
 
 The spoofing button is `btn-sand` (`--sand-fill #d0b49f` on `--accent-ink`), not amber: `--warning` is reserved for text and warning pills, so no button introduces a hue the palette does not own.
 
@@ -232,19 +232,24 @@ three `<section class="section">` blocks separated by a hairline (`.section + .s
 - **Route section**: the whole block is a `<details class="route-details"
   id="routeDetails">`, **closed by default**, because the source/destination pair
   is chosen rarely while the rest of the page is used constantly. Its `<summary>`
-  still names both paths (`#routeSourceSummary` / `#routeDestSummary`,
-  `updateRouteSummary()` after every change) so folding saves a tap without
-  hiding the two values the page is entirely about; an unset destination reads
-  «لم تُحدَّد» and wears `.is-empty`. Open/closed is remembered in
-  `sdmp3_route_open`. Inside are source (`.section-step` ١) → `.route-link`
-  (hairline + arrow) → destination (٢); each node holds its `.storage-grid` and
+  names **which volume**, never which folder: «المصدر» + `#sourceKindTag` and
+  «الوجهة» + `#destKindTag`, both kind pills coloured by `--kind-*`
+  (`updateRouteSummary()` after every change). The full path lives in the
+  expanded block and in each pill's `title`; an unset destination reads
+  «لم تُحدَّد» and an unknown source «مسار مخصص», both wearing `.is-empty`.
+  Open/closed is remembered in `sdmp3_route_open`. Inside are source
+  (`.section-step` ١) → `.route-link` (hairline + arrow) → destination (٢) — the
+  only place the step numbers live now; each node holds its `.storage-grid` and
   one `.path-line` (input + buttons). This is the only place the copy direction
-  is chosen. The «إنشاء فهرس JOC» button sits **outside** the fold
-  (`.route-joc`): it is a separate flow and must stay one tap away.
-- **File browser section**: the sort row, the search row (`#searchControls`),
-  the folded folder-scope panel (`#searchScopePanel`, opened by `#scopeToggleBtn`)
-  and `#treeContainer` are one attached block; search sits directly above the
-  results, so typing never leaves the input far from them.
+  is chosen. Two always-visible buttons sit **outside** the fold in
+  `.route-joc-row`: «إنشاء فهرس JOC» (`.route-joc`) and «مجلد البحث»
+  (`#scopeToggleBtn` → `openSearchScope()`); both are separate flows and must
+  stay one tap away.
+- **File browser section**: the sort row, the search row (`#searchControls`) and
+  `#treeContainer` are one attached block; search sits directly above the
+  results, so typing never leaves the input far from them. The folder-scope
+  controls are **not** inline: they live in `#searchScopeModal` (see «Search
+  scope»).
 - **Tools section**: spoofing lives in `<details class="tools">`, closed by
   default — an occasional action must not out-weigh the copy.
 - **Action bar** (`#actionBar`, `.actionbar`): fixed, **opaque** `--bar-bg` with a
@@ -486,14 +491,18 @@ The search used to walk `currentSourceRoot` silently. It now walks
 - `setSearchScope(path, remember)` is the only writer: it normalises the path,
   writes the label (`#searchScopePath`), reloads the sub-folder menu and schedules
   a UI save. `searchDeep()` sends it as `&root=`.
-- The folder picker is a **collapsed panel** (`#searchScopePanel`, opened by the
-  small `#scopeToggleBtn` via `toggleSearchScope()`, which also keeps
-  `aria-expanded` in sync): path, `#searchSubfolder`, «أعلى» (`searchScopeUp`),
-  «تحديد مجلد» (`openPathBrowser('search')`, the third `pickerMode`) and
-  «المجلدات فقط». It is folded by default so the search row stays next to the
-  results; the old `#searchScopeItems` list and `SCOPE_FILES_STEP` are gone.
-  Within the search UI `/api/items` now feeds only `#searchSubfolder` (the browse
-  tree and the path picker still use it), and it loads while the panel is hidden.
+- The folder picker is a **dismissible dialog** (`#searchScopeModal`), opened by
+  `#scopeToggleBtn` in the always-visible `.route-joc-row` beside «إنشاء فهرس
+  JOC» via `openSearchScope()`, and closed by `closeSearchScope(event)` (backdrop
+  click, «إغلاق», or Esc). Inside: `#searchScopePath`, `#searchSubfolder`,
+  «أعلى» (`searchScopeUp`), «تحديد مجلد» (`openPathBrowser('search')`, the third
+  `pickerMode`) and «المجلدات فقط». It sits **after** `#progressModal` in the
+  DOM so the Esc handler (which closes the last open `.modal`) closes this dialog
+  first and never the copy dialog. The old `#searchScopePanel` block,
+  `toggleSearchScope()`, the `#searchScopeItems` list and `SCOPE_FILES_STEP` are
+  gone. Within the search UI `/api/items` now feeds only `#searchSubfolder` (the
+  browse tree and the path picker still use it), and it loads when the dialog
+  opens.
 - `#searchSubfolder` is a `<select>` of the folder's child folders, rebuilt only
   when a folder loads — never on a keystroke.
 - `enterSearchSubfolder(name)` joins one segment onto the current scope; the
@@ -666,8 +675,21 @@ A `jocReviewTxt` checkbox (in الإعدادات › الفهرس) defers txt-do
   the progress dialog) does not stop it and costs no throughput: the writer is
   one sequential thread either way. `/transfer/status` is a *view* of that
   worker; `worker_alive` (bool, in every snapshot) is informational and never
-  drives progress. The progress modal says so with `.background-note` and a
-  sprite check icon. Regression proof: a harness POSTs `/transfer/start`, never
+  drives progress. Regression proof: a harness POSTs `/transfer/start`, never
   polls, joins `ACTIVE_THREAD`, and finds `status='done'` in `transfer_state`.
+- **The progress dialog is minimizable.** `#minimizeProgressBtn` calls
+  `minimizeProgressModal()` (`display:none`, `progressMinimized = true`), so the
+  page can be browsed and the next batch selected during a copy; a running poll
+  must never reopen it (the auto-open is gated on `!progressMinimized`).
+  `restoreProgressModal()` brings it back from the action bar's primary button,
+  whose label becomes «استعادة النسخ NN٪» while `transferRunning` — and a
+  terminal snapshot (`done`/`error`/`cancelled`) restores it once by itself,
+  because verification and the error list only exist there. There is no
+  `.background-note` any more.
+- **Queue hook, not a queue.** `transferQueue = []` + `renderQueue()` fill
+  `#queueBlock`/`#queueRows`/`#queueCount` and the `#barQueueBadge`; the block is
+  hidden while the list is empty and **nothing enqueues yet**. The scheduled-copy
+  batch only has to push `{label, sizeText, …}` and call `renderQueue()`. Backend
+  and copy engine stay untouched: one file at a time.
 - Icons are one SVG sprite plus `spriteIcon(id)` for generated markup. Text
   glyphs (`▶`, `▼`, `↑`, `✎`, `✕`, `✓`) are not used as icons.
