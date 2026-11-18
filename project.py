@@ -2436,14 +2436,19 @@ HTML_TEMPLATE = """
 
         .progress-bar { width: 100%; height: 10px; background: var(--field); border-radius: 999px; overflow: hidden; margin: 15px 0; border: 1px solid var(--border);}
         .progress-fill { height: 100%; background: var(--accent); width: 0%; border-radius: 999px; transition: width 0.3s ease; }
-        /* The worker lives in Termux, not in this tab: closing Chrome cannot
-           stop a copy. Say so once, quietly, instead of implying that this
-           dialog must stay open. */
-        .background-note { display:flex; align-items:center; gap:8px; margin-top:10px;
-            padding:9px 11px; border-radius:10px; border:1px solid var(--accent-line);
-            background:var(--accent-soft); color:var(--text-muted);
-            font-size:calc(11.5px * var(--font-scale)); line-height:1.6; }
-        .background-note .icon { width:15px; height:15px; flex-shrink:0; color:var(--accent-text); }
+        /* The dialog folds into the action bar (its header carries «تصغير») so a
+           running copy never blocks the page. */
+        .modal-head-row { display:flex; align-items:center; gap:10px; border-bottom:1px solid var(--border); padding-bottom:12px; margin-bottom:6px; }
+        .modal-head-row h2 { margin:0; flex:1 1 auto; font-size:calc(16px * var(--font-scale)); border:0; padding:0; }
+        /* Queue hook: only rendered once something is waiting, so the section
+           never advertises an idle feature. */
+        .queue-block { margin-top:14px; border:1px solid var(--field-line); border-radius:10px; background:var(--field); padding:8px 10px; }
+        .queue-head { display:flex; align-items:center; justify-content:space-between; gap:8px;
+            font-size:calc(11px * var(--font-scale)); color:var(--text-muted); letter-spacing:.04em; }
+        .queue-rows { display:flex; flex-direction:column; gap:4px; margin-top:6px; }
+        .queue-row { display:flex; align-items:center; gap:8px; font-size:calc(12px * var(--font-scale)); color:var(--text); }
+        .queue-row-label { flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+        .queue-row-size { color:var(--text-muted); }
         /* A delete has no known total, so its bar sweeps instead of pretending
            to know a percentage. The solid fill keeps it readable when the user
            asked the system for reduced motion. */
@@ -2874,12 +2879,13 @@ HTML_TEMPLATE = """
                     <b id="selectedCount" class="num">0</b>
                     <span class="actionbar-size num" id="barSize">—</span>
                     <span class="actionbar-eta" id="barEta" style="display:none;"></span>
+                    <span id="barQueueBadge" class="actionbar-eta" style="display:none;"></span>
                 </span>
             </button>
             <span id="cartGroupPill" class="pill group-chip" role="button" tabindex="0" onclick="openSelectedModal()" onkeydown="if(event.key==='Enter')openSelectedModal()" style="display:none; cursor:pointer;"></span>
-            <button class="btn btn-primary actionbar-go" onclick="startTransfer()">
+            <button class="btn btn-primary actionbar-go" id="barActionBtn" onclick="barPrimaryAction()">
                 <svg class="icon" viewBox="0 0 24 24"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
-                بدء النسخ
+                <span id="barActionLabel">بدء النسخ</span>
             </button>
         </div>
     </div>
@@ -3250,17 +3256,18 @@ HTML_TEMPLATE = """
 
 <div class="modal" id="progressModal">
     <div class="modal-content" style="max-height: max-content;">
-        <h2 id="modalTitle" style="margin-top:0; font-size:calc(16px * var(--font-scale)); border-bottom: 1px solid var(--border); padding-bottom: 15px;">العملية قيد التنفيذ...</h2>
+        <div class="modal-head-row">
+            <h2 id="modalTitle">العملية قيد التنفيذ...</h2>
+            <button type="button" class="icon-btn" id="minimizeProgressBtn" onclick="minimizeProgressModal()" aria-label="تصغير النافذة" title="تصغير ومتابعة تصفح الموقع">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>
+            </button>
+        </div>
         <div style="display:flex; justify-content:space-between; font-size:calc(13px * var(--font-scale)); color:var(--text-muted); font-weight: 500; margin-top: 10px;">
             <span id="progressText">0%</span>
             <span id="countText">0 / 0</span>
         </div>
         <div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
-        <div id="backgroundNote" class="background-note">
-            <svg class="icon" aria-hidden="true"><use href="#ico-check"></use></svg>
-            <span>يستمر النسخ في الخلفية حتى لو أُغلق المتصفح، طالما أن Termux يعمل. لا حاجة لإبقاء هذه النافذة مفتوحة.</span>
-        </div>
-        <div id="currentFile" class="ltr-input truncate-text" style="font-size:calc(12px * var(--font-scale)); color:var(--text-muted); background:transparent; border:none; padding:0; width: 100%;">جاري التحضير...</div>
+        <div id="currentFile" class="ltr-input truncate-text" style="font-size:calc(12px * var(--font-scale)); color:var(--text-muted); background:transparent; border:none; padding:0; width: 100%;"></div>
         <div style="display:flex; justify-content:space-between; font-size:calc(12px * var(--font-scale)); color:var(--text-muted); margin-top:8px;">
             <span id="speedText" style="color:var(--accent); font-weight:500;"></span>
             <span id="failedText"></span>
@@ -3268,6 +3275,13 @@ HTML_TEMPLATE = """
         <div id="cardWarningBox" style="display:none; margin-top:10px; padding:10px 12px; border-radius:10px; font-size:calc(12px * var(--font-scale)); line-height:1.7; background:var(--warning-soft); border:1px solid var(--warning-line); color:var(--warning);"></div>
         <div id="errorsBox" style="display:none; max-height:200px; overflow:auto; background:var(--field); border:1px solid var(--border); border-radius:6px; padding:10px; margin-top:10px; font-size:calc(12px * var(--font-scale)); color:var(--danger-ink);"></div>
         <div id="timeTakenDiv" style="display:none; color:var(--success); font-weight:500; margin-top:15px; font-size:calc(13px * var(--font-scale)); text-align:center;"></div>
+        <div id="queueBlock" class="queue-block" style="display:none;">
+            <div class="queue-head">
+                <span class="queue-title">قائمة الانتظار</span>
+                <span id="queueCount" class="num"></span>
+            </div>
+            <div id="queueRows" class="queue-rows"></div>
+        </div>
         <div id="inlineNotify" style="display:none; flex-wrap:wrap; margin-top:14px; padding:12px 14px; border-radius:10px; font-size:calc(13.5px * var(--font-scale)); line-height:1.7; text-align:center; font-weight:600; border:1px solid; align-items:center; justify-content:center; gap:8px;"></div>
         <div style="display:flex; gap:12px; margin-top:20px;">
             <button class="btn btn-danger" id="cancelProgressBtn" style="width:100%; padding: 12px;" onclick="cancelTransfer()">إيقاف وإلغاء</button>
@@ -4338,6 +4352,7 @@ HTML_TEMPLATE = """
         restoreUiState();
         if (!searchScopePath) setSearchScope(currentSourceRoot, false);
         checkTransferStatus(); 
+        renderQueue();
         checkCacheStatus(currentSourceRoot);
         loadSearchHistory();
     };
@@ -6332,7 +6347,14 @@ HTML_TEMPLATE = """
     }
 
     let progressModalVisible = false;
+    let progressMinimized = false;
+    let transferRunning = false;
+    // Queue hook for the upcoming scheduled copy: the next batch only has to
+    // push {label, sizeText, ...} and call renderQueue(). Nothing enqueues yet.
+    let transferQueue = [];
+
     function showProgressModal() {
+        progressMinimized = false;
         document.getElementById('progressModal').style.display = 'flex';
         progressModalVisible = true;
         document.getElementById('cancelProgressBtn').style.display = 'block';
@@ -6341,6 +6363,48 @@ HTML_TEMPLATE = """
         document.getElementById('cardWarningBox').style.display = 'none';
         document.getElementById('inlineNotify').style.display = 'none';
         document.getElementById('currentFile').style.color = 'var(--text-muted)';
+    }
+
+    // The dialog is an interruption, so it folds into the action bar instead of
+    // covering the page: browsing and selecting the next batch stay possible.
+    function minimizeProgressModal() {
+        let modal = document.getElementById('progressModal');
+        if (modal) modal.style.display = 'none';
+        progressModalVisible = false;
+        progressMinimized = true;
+    }
+
+    function restoreProgressModal() {
+        let modal = document.getElementById('progressModal');
+        if (!modal) return;
+        progressMinimized = false;
+        modal.style.display = 'flex';
+        progressModalVisible = true;
+    }
+
+    function barPrimaryAction() {
+        if (transferRunning) restoreProgressModal();
+        else startTransfer();
+    }
+
+    function renderQueue() {
+        let block = document.getElementById('queueBlock');
+        let rows = document.getElementById('queueRows');
+        let count = document.getElementById('queueCount');
+        let badge = document.getElementById('barQueueBadge');
+        if (!block || !rows) return;
+        let n = transferQueue.length;
+        block.style.display = n ? 'block' : 'none';
+        if (count) count.textContent = n ? String(n) : '';
+        if (badge) {
+            badge.style.display = n ? '' : 'none';
+            badge.textContent = n ? ('+' + n + ' في الانتظار') : '';
+        }
+        rows.innerHTML = n ? transferQueue.map(function(job, i) {
+            return '<div class="queue-row"><span class="num">' + (i + 1) + '</span>'
+                + '<span class="queue-row-label">' + esc(job.label || '') + '</span>'
+                + '<span class="queue-row-size num">' + esc(job.sizeText || '') + '</span></div>';
+        }).join('') : '';
     }
 
     // Escape server text before it goes into innerHTML. Quotes matter as much as
@@ -6424,7 +6488,7 @@ HTML_TEMPLATE = """
         .then(r=>r.json())
         .then(data => {
             if(data.status !== 'idle') {
-                if(!progressModalVisible) showProgressModal();
+                if(!progressModalVisible && !progressMinimized) showProgressModal();
                 // A delete has no known total (counting a tree first would double
                 // the card I/O), so its bar sweeps and the count is "deleted so
                 // far" instead of a fake percentage.
@@ -6497,6 +6561,19 @@ HTML_TEMPLATE = """
                 }
                 document.getElementById('failedText').innerText = data.failed ? ('فشل: ' + data.failed) : '';
                 mirrorProgressInBar(data);
+                // The primary button is the way back into a minimized dialog;
+                // it stays «بدء النسخ» while idle.
+                transferRunning = (data.status === 'copying');
+                let barLabel = document.getElementById('barActionLabel');
+                if (barLabel) {
+                    if (transferRunning) {
+                        let pct = (data.phase === 'verifying') ? (data.verify_progress || 0)
+                            : (data.action === 'delete' ? null : (data.progress || 0));
+                        barLabel.textContent = 'استعادة النسخ' + (pct === null ? '' : ' ' + pct + '٪');
+                    } else {
+                        barLabel.textContent = 'بدء النسخ';
+                    }
+                }
 
                 // Live throughput + remaining time, so "slow" is a number.
                 let speedEl = document.getElementById('speedText');
@@ -6560,9 +6637,15 @@ HTML_TEMPLATE = """
                         checkDiskSpace(document.getElementById('custom_dest_path').value);
                     }
 
+                    // A finished run is never silent: the result, verification
+                    // and error list only exist inside the dialog.
+                    transferRunning = false;
+                    if (progressMinimized) restoreProgressModal();
+                    let barDoneLabel = document.getElementById('barActionLabel');
+                    if (barDoneLabel) barDoneLabel.textContent = 'بدء النسخ';
                     document.getElementById('cancelProgressBtn').style.display = 'none';
                     document.getElementById('closeProgressBtn').style.display = 'block';
-                    
+
                     if(data.status === 'error') {
                         document.getElementById('currentFile').innerText = 'خطأ: ' + data.log;
                         document.getElementById('currentFile').style.color = 'var(--danger-ink)';
@@ -6683,6 +6766,10 @@ HTML_TEMPLATE = """
             checkDiskSpace(document.getElementById('custom_dest_path').value);
             document.getElementById('progressModal').style.display = 'none';
             progressModalVisible = false;
+            progressMinimized = false;
+            transferRunning = false;
+            let barLabel = document.getElementById('barActionLabel');
+            if (barLabel) barLabel.textContent = 'بدء النسخ';
             document.getElementById('errorsBox').style.display = 'none';
             document.getElementById('cardWarningBox').style.display = 'none';
             document.getElementById('inlineNotify').style.display = 'none';
