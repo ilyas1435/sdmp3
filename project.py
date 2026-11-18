@@ -2189,25 +2189,23 @@ HTML_TEMPLATE = """
         /* The whole route folds into one line that still says both paths: the
            source/destination pair is chosen rarely, but it must never be a
            mystery while the rest of the page is in use. */
+        /* The folded line answers "which volume", not "which folder": a path
+           would be unreadable at this size and the expanded block still has it. */
         .route-details > summary { list-style:none; cursor:pointer; display:flex; align-items:center;
-            gap:9px; padding:8px 11px; border:1px solid var(--field-line); border-radius:10px;
+            gap:9px; padding:12px 12px; border:1px solid var(--field-line); border-radius:10px;
             background:var(--field); }
         .route-details > summary::-webkit-details-marker { display:none; }
         .route-details > summary:hover { border-color:var(--accent-line); }
         .route-sum { display:flex; align-items:center; gap:8px; min-width:0; flex:1 1 0; }
-        .kind-tag { flex-shrink:0; font-size:calc(10.5px * var(--font-scale)); padding:3px 7px; }
+        .kind-tag { flex-shrink:0; font-size:calc(10.5px * var(--font-scale)); padding:3px 7px; line-height:1.8; }
+        .kind-tag.is-empty { color:var(--text-muted); border-color:var(--border); background:transparent; }
         .source-path-input { color:var(--text-muted); font-size:calc(12px * var(--font-scale)); }
-        .route-sum-label { flex-shrink:0; font-size:calc(11px * var(--font-scale)); color:var(--text-muted); }
-        .route-sum-path { min-width:0; font-family:var(--num-font); direction:ltr; text-align:left;
-            font-size:calc(11px * var(--font-scale)); color:var(--text);
-            white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-        .route-sum-path.is-empty { color:var(--text-muted); direction:rtl; text-align:right; font-family:inherit; }
+        .route-sum-label { flex-shrink:0; font-size:calc(12px * var(--font-scale)); color:var(--text-muted); }
         .route-chev { width:15px; height:15px; flex-shrink:0; color:var(--text-muted); transition:transform .15s ease; }
         .route-details[open] .route-chev { transform:rotate(180deg); }
         .route-details .route { margin-top:14px; }
         .route-joc { margin-top:12px; }
         @media (max-width: 480px) {
-            .route-sum-label { display:none; }
             .kind-tag { padding:2px 6px; }
             .source-path-input { flex-basis:120px; }
         }
@@ -2685,15 +2683,12 @@ HTML_TEMPLATE = """
         <details class="route-details" id="routeDetails">
             <summary>
                 <span class="route-sum">
-                    <span class="section-step">١</span>
-                    <span class="route-sum-label">المسار</span>
-                    <span class="route-sum-path" id="routeSourceSummary">…</span>
-                    <span class="pill kind-tag" id="sourceKindTag" style="display:none;"></span>
+                    <span class="route-sum-label">المصدر</span>
+                    <span class="pill kind-tag" id="sourceKindTag">—</span>
                 </span>
                 <span class="route-sum">
-                    <span class="section-step">٢</span>
                     <span class="route-sum-label">الوجهة</span>
-                    <span class="route-sum-path" id="routeDestSummary">لم تُحدَّد</span>
+                    <span class="pill kind-tag is-empty" id="destKindTag">لم تُحدَّد</span>
                 </span>
                 <svg class="icon route-chev" viewBox="0 0 24 24" aria-hidden="true"><polyline points="6 9 12 15 18 9"></polyline></svg>
             </summary>
@@ -4369,24 +4364,17 @@ HTML_TEMPLATE = """
         scheduleUiSave();
     }
 
-    // The route block folds away, so the folded line must still say both paths:
-    // the page is about a source and a destination, and hiding them would turn
-    // one tap saved into one mystery kept.
+    // The route block folds away, so the folded line names *which volume* on
+    // each side: the full path lives in the expanded block and in the pill's
+    // title, and a path at this size would be unreadable anyway.
     function updateRouteSummary() {
-        let srcEl = document.getElementById('routeSourceSummary');
-        let dstEl = document.getElementById('routeDestSummary');
         let srcBox = document.getElementById('custom_source_path');
         let dstBox = document.getElementById('custom_dest_path');
         let src = (srcBox && srcBox.value) || currentSourceRoot || '';
         let dst = (dstBox && dstBox.value) || '';
-        if (srcEl) { srcEl.textContent = src || '…'; srcEl.title = src || ''; }
-        applySourceKindTag(document.getElementById('sourceKindTag'), src);
+        applySourceKindTag(document.getElementById('sourceKindTag'), src, 'مسار مخصص');
+        applySourceKindTag(document.getElementById('destKindTag'), dst, 'لم تُحدَّد');
         applySourceKindTag(document.getElementById('sourcePathKindTag'), src);
-        if (dstEl) {
-            dstEl.textContent = dst || 'لم تُحدَّد';
-            dstEl.title = dst || '';
-            dstEl.classList.toggle('is-empty', !dst);
-        }
     }
 
     // Open/closed survives a reload: whoever folded the route away did it on
@@ -4459,16 +4447,28 @@ HTML_TEMPLATE = """
         return SOURCE_KIND_LABELS[kind] || 'وحدة تخزين';
     }
 
-    function applySourceKindTag(el, path) {
+    // `emptyText` lets the folded summary stay visible when the path belongs to
+    // no known volume («مسار مخصص» / «لم تُحدَّد») while the path-line pill keeps
+    // hiding itself in that case (it sits right next to the real path).
+    function applySourceKindTag(el, path, emptyText) {
         if (!el) return;
         let st = storageForPath(path);
         STORAGE_KIND_LIST.forEach(function(k) { el.classList.remove('pill-kind-' + k); });
         if (!st) {
-            el.style.display = 'none';
-            el.textContent = '';
-            el.title = '';
+            if (emptyText) {
+                el.textContent = emptyText;
+                el.title = '';
+                el.classList.add('is-empty');
+                el.style.display = '';
+            } else {
+                el.style.display = 'none';
+                el.textContent = '';
+                el.title = '';
+                el.classList.remove('is-empty');
+            }
             return;
         }
+        el.classList.remove('is-empty');
         el.textContent = sourceKindLabel(st.kind);
         el.title = (st.name || sourceKindLabel(st.kind)) + ' — ' + (st.path || path);
         el.classList.add('pill-kind-' + st.kind);
