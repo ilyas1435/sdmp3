@@ -2179,41 +2179,27 @@ HTML_TEMPLATE = """
         .inline-note { font-size:calc(11.5px * var(--font-scale)); color:var(--text-muted); }
         @media (max-width: 480px) { .section { padding: 17px 0 19px; } body { padding: 12px 12px 116px; } }
 
-        /* Route: source above destination, joined by one connector and numbered
-           so the direction of the whole page reads at a glance. */
-        .route-node { min-width:0; }
-        .route-label { display:flex; align-items:center; gap:8px; margin-bottom:11px; font-size:calc(12px * var(--font-scale)); font-weight:600; color:var(--text-muted); }
-        .section-step { font-size:calc(10.5px * var(--font-scale)); color:var(--accent-text); border:1px solid var(--accent-line); background:var(--accent-soft); border-radius:6px; padding:0 5px; line-height:1.7; }
-        .route-link { position:relative; width:2px; height:20px; margin-inline-start:24px; background:var(--rule); }
-        .route-link::after { content:''; position:absolute; inset-inline-start:-3px; bottom:-2px; width:8px; height:8px; border-inline-end:2px solid var(--rule); border-bottom:2px solid var(--rule); transform:rotate(45deg); }
-        .path-line { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
-        .path-line > input { margin-bottom:0; flex:1 1 170px; }
-        .path-line > .btn { white-space:nowrap; }
-
-        /* The whole route folds into one line that still says both paths: the
-           source/destination pair is chosen rarely, but it must never be a
-           mystery while the rest of the page is in use. */
-        /* The folded line answers "which volume", not "which folder": a path
-           would be unreadable at this size and the expanded block still has it. */
-        .route-details > summary { list-style:none; cursor:pointer; display:flex; align-items:center;
-            gap:9px; padding:12px 12px; border:1px solid var(--field-line); border-radius:10px;
-            background:var(--field); }
-        .route-details > summary::-webkit-details-marker { display:none; }
-        .route-details > summary:hover { border-color:var(--accent-line); }
-        .route-sum { display:flex; align-items:center; gap:8px; min-width:0; flex:1 1 0; }
-        .kind-tag { flex-shrink:0; font-size:calc(10.5px * var(--font-scale)); padding:3px 7px; line-height:1.8; }
-        .kind-tag.is-empty { color:var(--text-muted); border-color:var(--border); background:transparent; }
-        .source-path-input { color:var(--text-muted); font-size:calc(12px * var(--font-scale)); }
-        .route-sum-label { flex-shrink:0; font-size:calc(12px * var(--font-scale)); color:var(--text-muted); }
-        .route-chev { width:15px; height:15px; flex-shrink:0; color:var(--text-muted); transition:transform .15s ease; }
-        .route-details[open] .route-chev { transform:rotate(180deg); }
-        .route-details .route { margin-top:14px; }
-        /* Two occasional actions, side by side, in the Tools section. */
-        .tools-actions { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:12px; }
+        /* Route: one row — source tiles, a small arrow, destination tiles. No
+           headings and no fold: this block is read at a glance, and the folder
+           pair is chosen in the browser right below it. */
+        .route-row { display:grid; grid-template-columns:1fr auto 1fr; align-items:center; gap:10px; }
+        .route-row .storage-grid { margin-bottom:0; justify-content:center; }
+        .route-arrow { display:flex; align-items:center; justify-content:center; color:var(--text-muted); }
+        .route-arrow .icon { width:16px; height:16px; }
+        /* The chosen folder, one line under the tiles: a small picker button and
+           the path itself, so the destination is never a mystery. */
+        .dest-line { display:flex; align-items:center; gap:8px; margin-top:10px; }
+        .dest-line > .btn { flex:0 0 auto; }
+        .dest-line > input { margin-bottom:0; flex:1 1 0; min-width:0;
+            font-size:calc(12px * var(--font-scale)); }
+        /* Occasional actions, side by side, in the Tools section. */
+        .tools-actions { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:10px; }
         .tools-actions .btn { flex:1 1 0; min-width:150px; }
+        .tools-note { display:block; margin:-2px 0 12px; }
         @media (max-width: 480px) {
-            .kind-tag { padding:2px 6px; }
-            .source-path-input { flex-basis:120px; }
+            .route-row { gap:6px; }
+            .storage-card { padding:4px 6px; }
+            .dest-line > input { font-size:calc(11px * var(--font-scale)); }
         }
 
         /* The file browser is one attached block: the sort row, the search row
@@ -2292,19 +2278,29 @@ HTML_TEMPLATE = """
         /* Storage picker: one horizontal row of icon tiles, each captioned with a
            single word. Each kind sets --kind/--kind-soft so a tile is coloured by
            *what it is* (SD / USB / internal) instead of by the global accent. */
-        .storage-grid { display: flex; flex-direction: row; gap: 8px; margin-bottom: 10px; flex-wrap: wrap; align-items: flex-start; }
+        .storage-grid { display: flex; flex-direction: row; gap: 6px; margin-bottom: 10px; flex-wrap: wrap; align-items: flex-start; justify-content: center; }
         /* A tile is barely bigger than its icon: two volumes must not own a whole
            row, and the caption under the icon carries the name. */
-        .storage-card { display: flex; flex: 0 0 auto; flex-direction: column; align-items: center; gap: 3px;
+        .storage-card { position: relative; display: flex; flex: 0 0 auto; flex-direction: column; align-items: center; gap: 3px;
             padding: 5px 7px; border: 1px solid var(--field-line); border-radius: 10px;
             background: var(--field); color: var(--text); cursor: pointer; text-align: center;
             transition: border-color .15s, background .15s; font-family: inherit; appearance: none; -webkit-appearance: none; }
         .storage-card:hover { border-color: var(--kind, var(--accent)); }
-        .storage-card.active { border-color: var(--kind, var(--accent)); background: var(--kind-soft, var(--accent-soft)); }
+        /* The kind hue is always there, but only the selected volume wears it at
+           full strength: an unselected tile stays quiet without losing its identity. */
         .storage-card .storage-ico { width: 26px; height: 26px; padding: 4px; flex-shrink: 0; box-sizing: border-box;
-            border-radius: 8px; background: var(--kind-tile, var(--accent-soft)); color: var(--kind, var(--text-muted)); }
-        .storage-short { font-size: calc(10.5px * var(--font-scale)); font-weight: 600; color: var(--text-muted); line-height:1.2; }
-        .storage-card.active .storage-short { color: var(--kind-ink, var(--accent)); }
+            border-radius: 8px; background: var(--field); color: var(--kind, var(--text-muted));
+            opacity: .42; transition: opacity .15s, background .15s; }
+        .storage-short { font-size: calc(10.5px * var(--font-scale)); font-weight: 600; color: var(--text-muted); line-height:1.2; opacity: .8; }
+        .storage-card.active { border-color: var(--kind, var(--accent)); background: var(--kind-soft, var(--accent-soft)); }
+        .storage-card.active .storage-ico { background: var(--kind-tile, var(--accent-soft)); color: var(--kind, var(--accent)); opacity: 1; }
+        .storage-card.active .storage-short { color: var(--kind-ink, var(--accent)); opacity: 1; }
+        /* A cached source folder is announced by one small bolt above the tile. */
+        .storage-fresh { display:none; position:absolute; top:-7px; inset-inline-start:-5px;
+            width:15px; height:15px; align-items:center; justify-content:center;
+            border-radius:50%; background:var(--accent-fill); color:var(--on-accent); }
+        .storage-fresh svg { width:9px; height:9px; fill:currentColor; }
+        .storage-card.is-fresh .storage-fresh { display:flex; }
         .storage-card.kind-internal { --kind: var(--kind-internal); --kind-ink: var(--kind-internal-ink); --kind-soft: var(--kind-internal-soft); --kind-tile: var(--kind-internal-tile); }
         .storage-card.kind-sdcard { --kind: var(--kind-sdcard); --kind-ink: var(--kind-sdcard-ink); --kind-soft: var(--kind-sdcard-soft); --kind-tile: var(--kind-sdcard-tile); }
         .storage-card.kind-usb { --kind: var(--kind-usb); --kind-ink: var(--kind-usb-ink); --kind-soft: var(--kind-usb-soft); --kind-tile: var(--kind-usb-tile); }
@@ -2672,100 +2668,55 @@ HTML_TEMPLATE = """
         </button>
     </header>
 
-    <!-- The whole task in one block: where files come from, where they go.
-         Numbered and connected so the direction is never ambiguous. -->
+    <!-- The whole task in one row: which volume files come from, the arrow,
+         which volume they go to. No headings and no fold: this block is read at
+         a glance, and the folders themselves are chosen in the browser below. -->
     <section class="section" id="routeSection">
-        <div class="section-head">
-            <svg class="icon" viewBox="0 0 24 24"><path d="M4 17h6l4-10h6"></path><polyline points="17 4 20 7 17 10"></polyline></svg>
-            <h2 class="section-title">المسار</h2>
-        </div>
-        <details class="route-details" id="routeDetails">
-            <summary>
-                <span class="route-sum">
-                    <span class="route-sum-label">المصدر</span>
-                    <span class="pill kind-tag" id="sourceKindTag">—</span>
-                </span>
-                <span class="route-sum">
-                    <span class="route-sum-label">الوجهة</span>
-                    <span class="pill kind-tag is-empty" id="destKindTag">لم تُحدَّد</span>
-                </span>
-                <svg class="icon route-chev" viewBox="0 0 24 24" aria-hidden="true"><polyline points="6 9 12 15 18 9"></polyline></svg>
-            </summary>
-            <div class="route">
-            <div class="route-node">
-                <div class="route-label"><span class="section-step">١</span> مصدر الملفات</div>
-                <div class="storage-grid" id="source_storage_cards">
-                    {% for st in storages %}
-                    <button type="button" class="storage-card kind-{{ st.kind }}" data-path="{{ st.path }}" onclick="chooseStorage('source', this)" title="{{ st.name }} — {{ st.path }}">
-                        <svg class="icon storage-ico"><use href="#{{ st.icon }}"></use></svg>
-                        <span class="storage-short">{{ st.short }}</span>
-                    </button>
-                    {% endfor %}
-                </div>
-                <div class="path-line">
-                    <span class="pill kind-tag" id="sourcePathKindTag" style="display:none;"></span>
-                    <input type="text" id="custom_source_path" class="ltr-input source-path-input" placeholder="/sdcard/..." readonly aria-label="مسار المصدر">
-                    <button class="btn btn-outline btn-sm" onclick="openPathBrowser('source')">
-                        <svg class="icon" viewBox="0 0 24 24"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>
-                        تصفح
-                    </button>
-                </div>
-                <div class="path-line" style="margin-top:8px;">
-                    <button class="btn btn-outline btn-sm" id="cacheFolderBtn" onclick="cacheCurrentFolder()">
-                        <svg class="icon" viewBox="0 0 24 24"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg>
-                        تخزين الفهرس (بحث فوري)
-                    </button>
-                    <span id="cacheStatusText" class="inline-note">جاري التحقق من الفهرس...</span>
-                </div>
+        <div class="route-row">
+            <div class="storage-grid" id="source_storage_cards">
+                {% for st in storages %}
+                <button type="button" class="storage-card kind-{{ st.kind }}" data-path="{{ st.path }}" onclick="chooseStorage('source', this)" title="{{ st.name }} — {{ st.path }}">
+                    <svg class="icon storage-ico"><use href="#{{ st.icon }}"></use></svg>
+                    <span class="storage-short">{{ st.short }}</span>
+                    <span class="storage-fresh" title="الفهرس جاهز — بحث فوري">
+                        <svg viewBox="0 0 24 24" aria-hidden="true"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg>
+                    </span>
+                </button>
+                {% endfor %}
             </div>
-            <div class="route-link" aria-hidden="true"></div>
-            <div class="route-node">
-                <div class="route-label"><span class="section-step">٢</span> وجهة النقل</div>
-                <div class="storage-grid" id="dest_storage_cards">
-                    {% for st in storages %}
-                    <button type="button" class="storage-card kind-{{ st.kind }}" data-path="{{ st.path }}" onclick="chooseStorage('dest', this)" title="{{ st.name }} — {{ st.path }}">
-                        <svg class="icon storage-ico"><use href="#{{ st.icon }}"></use></svg>
-                        <span class="storage-short">{{ st.short }}</span>
-                    </button>
-                    {% endfor %}
-                </div>
-                <div class="path-line">
-                    <input type="text" id="custom_dest_path" class="ltr-input" placeholder="/storage/XXXX-XXXX/..." oninput="checkDiskSpace(this.value); updateRouteSummary()" aria-label="مسار الوجهة">
-                    <button class="btn btn-outline btn-sm" onclick="openPathBrowser('dest')">
-                        <svg class="icon" viewBox="0 0 24 24"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>
-                        تحديد
-                    </button>
-                    <button class="btn btn-outline btn-sm" onclick="runDiagnostic()">
-                        <svg class="icon" viewBox="0 0 24 24"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline></svg>
-                        فحص السرعة
-                    </button>
-                </div>
-
-                <div class="disk-space-container" id="diskSpaceDiv" style="margin-top: 10px;">
-                    <div style="display:flex; justify-content:space-between;">
-                        <span id="diskText">جاري الحساب...</span>
-                        <span id="diskPercent">0% مستخدم</span>
-                    </div>
-                    <div class="disk-bar"><div class="disk-used" id="diskFill"></div></div>
-                </div>
-
-                <label class="check-line" for="verifyAfterCopy">
-                    <input type="checkbox" id="verifyAfterCopy" class="checkbox"
-                           onchange="localStorage.setItem('sdmp3_verify_after_copy', this.checked ? '1' : '0')">
-                    <span>التحقق من الحجم الإجمالي بعد النسخ</span>
-                </label>
-                <small class="check-hint">جولة واحدة بعد النسخ: تقارن حجم كل ملف على الوجهة بما كُتب فعلاً، ولا تقرأ محتوى الملفات ولا تعدّل المصدر.</small>
+            <span class="route-arrow" aria-hidden="true">
+                <svg class="icon" viewBox="0 0 24 24"><path d="M19 12H5"></path><polyline points="12 19 5 12 12 5"></polyline></svg>
+            </span>
+            <div class="storage-grid" id="dest_storage_cards">
+                {% for st in storages %}
+                <button type="button" class="storage-card kind-{{ st.kind }}" data-path="{{ st.path }}" onclick="chooseStorage('dest', this)" title="{{ st.name }} — {{ st.path }}">
+                    <svg class="icon storage-ico"><use href="#{{ st.icon }}"></use></svg>
+                    <span class="storage-short">{{ st.short }}</span>
+                </button>
+                {% endfor %}
             </div>
         </div>
-        </details>
+        <div class="dest-line">
+            <button type="button" class="btn btn-outline btn-sm" onclick="openPathBrowser('dest')" title="اختيار مجلد الحفظ">
+                <svg class="icon" viewBox="0 0 24 24"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>
+                تحديد
+            </button>
+            <input type="text" id="custom_dest_path" class="ltr-input" placeholder="لم تُحدَّد بعد" oninput="checkDiskSpace(this.value)" aria-label="مجلد الحفظ">
+        </div>
 
+        <div class="disk-space-container" id="diskSpaceDiv" style="margin-top: 10px;">
+            <div style="display:flex; justify-content:space-between;">
+                <span id="diskText">جاري الحساب...</span>
+                <span id="diskPercent">0% مستخدم</span>
+            </div>
+            <div class="disk-bar"><div class="disk-used" id="diskFill"></div></div>
+        </div>
     </section>
 
     <section class="section">
         <div class="section-head">
             <svg class="icon" viewBox="0 0 24 24"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>
             <h2 class="section-title">متصفح الملفات</h2>
-            <span class="section-kicker">المصدر</span>
             <span id="searchSpeedBadge" class="section-kicker" style="display:none; margin-inline-start:0; color:var(--accent-text);">
                 <svg class="icon" style="width:12px;height:12px;" viewBox="0 0 24 24"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg> فوري
             </span>
@@ -2819,6 +2770,17 @@ HTML_TEMPLATE = """
                 مجلد البحث
             </button>
         </div>
+        <div class="tools-actions">
+            <button type="button" class="btn btn-outline" id="cacheFolderBtn" onclick="cacheCurrentFolder()">
+                <svg class="icon" viewBox="0 0 24 24"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg>
+                تخزين الفهرس (بحث فوري)
+            </button>
+            <button type="button" class="btn btn-outline" onclick="runDiagnostic()">
+                <svg class="icon" viewBox="0 0 24 24"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline></svg>
+                فحص السرعة
+            </button>
+        </div>
+        <div id="cacheStatusText" class="inline-note tools-note">جاري التحقق من الفهرس...</div>
         <details class="tools">
             <summary>
                 <svg class="icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"></circle><polyline points="12 7 12 12 16 14"></polyline></svg>
@@ -3033,6 +2995,13 @@ HTML_TEMPLATE = """
                     <label for="smartDepthInput">عمق مجلدات «تنظيم ذكي»</label>
                     <input type="number" id="smartDepthInput" min="1" max="3" step="1" value="{{ smart_depth }}" onchange="pickSmartDepth(this.value)">
                     <div class="settings-note" style="margin-top:6px;">١ = مجلد واحد باسم المجلد الأب المباشر. ٢ أو ٣ = إبقاء آخر مستويين أو ثلاثة من المسار الأصلي (مثال: العلماء/ابن باز).</div>
+                </div>
+                <div class="settings-field" style="margin-top:16px;">
+                    <label class="auto-spoof-row" for="verifyAfterCopy" style="display:flex; align-items:center; gap:10px; cursor:pointer; color:var(--text); font-size:calc(14px * var(--font-scale));">
+                        <input type="checkbox" id="verifyAfterCopy" class="checkbox" style="margin:0;" onchange="localStorage.setItem('sdmp3_verify_after_copy', this.checked ? '1' : '0')">
+                        <span>التحقق من الحجم الإجمالي بعد النسخ</span>
+                    </label>
+                    <div class="settings-note" style="margin-top:6px;">جولة واحدة بعد النسخ: تقارن حجم كل ملف على مجلد الحفظ بما كُتب فعلاً، ولا تقرأ محتوى الملفات ولا تعدّل المصدر.</div>
                 </div>
                 <div id="generalSaveState" class="settings-save-state"></div>
             </div>
@@ -4344,7 +4313,6 @@ HTML_TEMPLATE = """
     });
 
     window.onload = function() {
-        document.getElementById('custom_source_path').value = currentSourceRoot;
         syncStorageCards('source', currentSourceRoot);
         let savedDest = localStorage.getItem('joc_last_dest');
         if (savedDest) {
@@ -4354,7 +4322,6 @@ HTML_TEMPLATE = """
         }
         loadSubFolders(currentSourceRoot, document.getElementById('treeContainer'));
         generateRandomSpoofDate();
-        updateRouteSummary();
         // Everything the last visit left behind: the selection, the groups, the
         // search folder. Restoring after the tree has been requested keeps the
         // checkboxes in sync with the rows that arrive a moment later.
@@ -4370,37 +4337,11 @@ HTML_TEMPLATE = """
         if (!path) return;
         currentSourceRoot = path;
         localStorage.setItem('joc_source_root', path);
-        document.getElementById('custom_source_path').value = path;
+        sourceCacheActive = false;
         syncStorageCards('source', path);
         loadSubFolders(path, document.getElementById('treeContainer'));
         checkCacheStatus(path);
-        updateRouteSummary();
         scheduleUiSave();
-    }
-
-    // The route block folds away, so the folded line names *which volume* on
-    // each side: the full path lives in the expanded block and in the pill's
-    // title, and a path at this size would be unreadable anyway.
-    function updateRouteSummary() {
-        let srcBox = document.getElementById('custom_source_path');
-        let dstBox = document.getElementById('custom_dest_path');
-        let src = (srcBox && srcBox.value) || currentSourceRoot || '';
-        let dst = (dstBox && dstBox.value) || '';
-        applySourceKindTag(document.getElementById('sourceKindTag'), src, 'مسار مخصص');
-        // "لم تُحدَّد" is for an empty box only: a chosen path on an unknown
-        // volume is still a destination, and claiming otherwise hides it.
-        applySourceKindTag(document.getElementById('destKindTag'), dst, dst ? 'مسار مخصص' : 'لم تُحدَّد');
-        applySourceKindTag(document.getElementById('sourcePathKindTag'), src);
-    }
-
-    // Open/closed survives a reload: whoever folded the route away did it on
-    // purpose, and reopening the page must not undo that.
-    let routeDetailsEl = document.getElementById('routeDetails');
-    if (routeDetailsEl) {
-        try { routeDetailsEl.open = localStorage.getItem('sdmp3_route_open') === '1'; } catch (_e) {}
-        routeDetailsEl.addEventListener('toggle', function() {
-            try { localStorage.setItem('sdmp3_route_open', routeDetailsEl.open ? '1' : '0'); } catch (_e) {}
-        });
     }
 
     // ---- storage cards (internal / SD card / USB OTG) -------------------
@@ -4409,6 +4350,9 @@ HTML_TEMPLATE = """
     const STORAGE_ROOTS = {{ storages|tojson }};
     // Every kind the server can emit; used to reset the picker path-box colour.
     const STORAGE_KIND_LIST = ['internal', 'sdcard', 'usb', 'card'];
+    // The instant-search cache belongs to one source folder, so its badge must
+    // follow the selected source tile, not the destination.
+    let sourceCacheActive = false;
 
     function chooseStorage(mode, btn) {
         let path = btn.dataset.path;
@@ -4426,13 +4370,22 @@ HTML_TEMPLATE = """
             let active = !!root && (current === root || current.startsWith(root + '/'));
             card.classList.toggle('active', active);
         });
-        // Tint the matching path box so the input itself says which volume it is.
-        let box = document.getElementById(mode === 'source' ? 'custom_source_path' : 'custom_dest_path');
+        // Tint the destination path box so the input itself says which volume it is.
+        let box = document.getElementById('custom_dest_path');
         if (box) {
             let st = storageForPath(current);
             STORAGE_KIND_LIST.forEach(function(k) { box.classList.remove('kind-border-' + k); });
             if (st) box.classList.add('kind-border-' + st.kind);
         }
+        if (mode === 'source') syncFreshBadge();
+    }
+
+    function syncFreshBadge() {
+        let wrap = document.getElementById('source_storage_cards');
+        if (!wrap) return;
+        wrap.querySelectorAll('.storage-card').forEach(function(card) {
+            card.classList.toggle('is-fresh', sourceCacheActive && card.classList.contains('active'));
+        });
     }
 
     function storageForPath(path) {
@@ -4450,48 +4403,9 @@ HTML_TEMPLATE = """
         return best;
     }
 
-    // The source path alone cannot say whether /sdcard is the phone or a card.
-    // These tags reuse the volume-kind tokens, so a theme never needs a new hue.
-    const SOURCE_KIND_LABELS = {
-        internal: 'المساحة الداخلية',
-        sdcard: 'كارت SD',
-        usb: 'USB OTG',
-        card: 'كارت ذاكرة'
-    };
-
-    function sourceKindLabel(kind) {
-        return SOURCE_KIND_LABELS[kind] || 'وحدة تخزين';
-    }
-
-    // `emptyText` lets the folded summary stay visible when the path belongs to
-    // no known volume («مسار مخصص» / «لم تُحدَّد») while the path-line pill keeps
-    // hiding itself in that case (it sits right next to the real path).
-    function applySourceKindTag(el, path, emptyText) {
-        if (!el) return;
-        let st = storageForPath(path);
-        STORAGE_KIND_LIST.forEach(function(k) { el.classList.remove('pill-kind-' + k); });
-        if (!st) {
-            if (emptyText) {
-                el.textContent = emptyText;
-                el.title = '';
-                el.classList.add('is-empty');
-                el.style.display = '';
-            } else {
-                el.style.display = 'none';
-                el.textContent = '';
-                el.title = '';
-                el.classList.remove('is-empty');
-            }
-            return;
-        }
-        el.classList.remove('is-empty');
-        el.textContent = sourceKindLabel(st.kind);
-        el.title = (st.name || sourceKindLabel(st.kind)) + ' — ' + (st.path || path);
-        el.classList.add('pill-kind-' + st.kind);
-        el.style.display = '';
-    }
-
     function renderCacheStatus(data) {
+        sourceCacheActive = !!(data && data.cached);
+        syncFreshBadge();
         let el = document.getElementById('cacheStatusText');
         let badge = document.getElementById('searchSpeedBadge');
         if (data.cached) {
@@ -4561,7 +4475,6 @@ HTML_TEMPLATE = """
             localStorage.setItem('joc_last_dest', path);
             syncStorageCards('dest', path);
             checkDiskSpace(path);
-            updateRouteSummary();
             scheduleUiSave();
         }
     }
@@ -4592,10 +4505,11 @@ HTML_TEMPLATE = """
         let start = '';
         if (mode === 'search') {
             start = searchScopePath;
+        } else if (mode === 'dest') {
+            let val = document.getElementById('custom_dest_path').value;
+            start = val ? val : '/sdcard';
         } else {
-            let inputId = (mode === 'dest') ? 'custom_dest_path' : 'custom_source_path';
-            let val = document.getElementById(inputId).value;
-            start = val ? val : (mode === 'dest' ? '/sdcard' : currentSourceRoot);
+            start = currentSourceRoot || '/sdcard';
         }
         loadDestBrowser(start || '/sdcard');
         document.getElementById('destBrowserModal').style.display = 'flex';
@@ -5239,6 +5153,15 @@ HTML_TEMPLATE = """
     });
     document.getElementById('searchInput').addEventListener('keydown', function(e) {
         if (e.key === 'Enter') { clearTimeout(searchDebounceTimer); searchDeep(true); }
+    });
+    // On a phone the keyboard covers the lower half of the screen. Put the
+    // browser block at the top edge the moment the field gets focus, without an
+    // animation: a smooth scroll would fight the keyboard's own resize.
+    document.getElementById('searchInput').addEventListener('focus', function() {
+        let section = this.closest('section');
+        if (section && section.scrollIntoView) {
+            section.scrollIntoView({ block: 'start', inline: 'nearest', behavior: 'auto' });
+        }
     });
 
     // ---- search history (last 25 results + last 25 queries) -------------

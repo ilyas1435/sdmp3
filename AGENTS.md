@@ -207,7 +207,7 @@ Each storage dict carries `kind` + `icon` so the UI can label it honestly:
 | `usb` | device major **8** (SCSI/USB OTG) | `ico-usb` — USB OTG (UUID) | `--kind-usb` blue `#8fa9c4` (ink `#a8bfd6`) |
 | `card` | anything unrecognised (dm-*, unknown fs) | `ico-card` — كارت ذاكرة (UUID) | `--kind-card` olive `#a3b18a` (ink `#b7c39f`) |
 
-`storage_kind()` looks the volume up in `/proc/mounts` as `/mnt/media_rw/<UUID>` and passes the device to `classify_volume_device()`. `df -h` alone cannot tell an SD card from a USB stick — both are `/storage/XXXX-XXXX`. The icons are one SVG sprite (`<symbol id="ico-*">` right after `<body>`) referenced with `<use href="#ico-...">`; the pickers are `.storage-card` **icon tiles** in one horizontal row (`chooseStorage()` / `syncStorageCards()`), captioned with `STORAGE_KINDS[*]['short']` (الهاتف / SD / OTG / كارت) that `get_available_storages()` copies onto each dict — no UUID name, no raw path, no badge on the tile (the full name + path are in its `title`). A tile is `flex: 0 0 auto` with 5px/7px padding, i.e. barely bigger than its 26px icon: three volumes must not fill the row.
+`storage_kind()` looks the volume up in `/proc/mounts` as `/mnt/media_rw/<UUID>` and passes the device to `classify_volume_device()`. `df -h` alone cannot tell an SD card from a USB stick — both are `/storage/XXXX-XXXX`. The icons are one SVG sprite (`<symbol id="ico-*">` right after `<body>`) referenced with `<use href="#ico-...">`; the pickers are `.storage-card` **icon tiles** in one horizontal row (`chooseStorage()` / `syncStorageCards()`), captioned with `STORAGE_KINDS[*]['short']` (الهاتف / SD / OTG / كارت) that `get_available_storages()` copies onto each dict — no UUID name, no raw path (the full name + path are in its `title`). A tile is `flex: 0 0 auto` with 5px/7px padding, i.e. barely bigger than its 26px icon: three volumes must not fill the row. The kind hue is always present but **only the selected tile wears it at full strength**: an unselected `.storage-ico` is `--kind` at `opacity:.42` on `--field`, the active one switches to `--kind-tile` at `opacity:1`, and only the active caption uses `--kind-ink`. The single badge a tile can carry is the cache bolt (`.storage-fresh`, `is-fresh` on the active **source** tile only, painted by `renderCacheStatus`/`syncFreshBadge`) — it is not a volume badge.
 
 Theme = **Coffee Blues** (https://www.color-hex.com/color-palette/102595) is still the default of the 16-theme registry, but v1.10 hue-rotated it while preserving relative luminance: page `--bg #192133`, card `--card #222b40`, lift `--card-2 #2d374d`, `--field #161c2b`, `--border #2f3c5a`, `--text #e9e2d1`, muted `#aaa297`, accent `--accent #3d8e9c`, accent fill `--accent-fill #327883` (hover `#2a6973`). The warm-sand-on-cool-slate character survives (text ≈ 10.9:1 on a card, muted ≈ 5.6:1); only the hues moved, so contrast stayed inside the contract. `--radius` is 12px; `--rule` (translucent `--border`) is the hairline between sections, `--field-line` outlines inputs/cards, `--bar-bg`/`--bar-line` belong to the opaque action bar, and `--num-font` (`NUM_FONT_STACK`) is the Latin mono face used by `.num`. **No colour literal belongs in the template** — every token, alpha variant and layout colour comes from `sdmp3_themes.py`.
 
@@ -229,29 +229,31 @@ three `<section class="section">` blocks separated by a hairline (`.section + .s
   (`.pill::before` plus `.pill-ok`/`.pill-warn`/`.pill-kind-*`), while the label
   stays `--text-muted` so it clears 4.5:1 on every theme. Pills outside the header
   (picker badge, group chip) keep the older tinted-chip look.
-- **Route section**: the whole block is a `<details class="route-details"
-  id="routeDetails">`, **closed by default**, because the source/destination pair
-  is chosen rarely while the rest of the page is used constantly. Its `<summary>`
-  names **which volume**, never which folder: «المصدر» + `#sourceKindTag` and
-  «الوجهة» + `#destKindTag`, both kind pills coloured by `--kind-*`
-  (`updateRouteSummary()` after every change). The full path lives in the
-  expanded block and in each pill's `title`; an unset destination reads
-  «لم تُحدَّد» and an unknown source «مسار مخصص», both wearing `.is-empty`.
-  Open/closed is remembered in `sdmp3_route_open`. Inside are source
-  (`.section-step` ١) → `.route-link` (hairline + arrow) → destination (٢) — the
-  only place the step numbers live now; each node holds its `.storage-grid` and
-  one `.path-line` (input + buttons). This is the only place the copy direction
-  is chosen — the section has no kicker and no buttons of its own: the two
-  occasional flows live in the Tools section.
+- **Route section**: one always-visible `.route-row`, no `<details>`/`<summary>`
+  and no heading at all. It is a 3-column grid `1fr auto 1fr` — `.storage-grid`
+  `#source_storage_cards` → `.route-arrow` → `.storage-grid`
+  `#dest_storage_cards` — so the two sides stay equal and the arrow never falls
+  onto its own line. The words «المسار» / «المصدر» / «الوجهة» are gone from this
+  block (the section has no `.section-head`): the captions under the icons are
+  the only labels. There is **no source path** in the UI — the source is the
+  folder open in the browser (`currentSourceRoot`), which is also where
+  `openPathBrowser('source')` starts. Under the tiles sits `.dest-line`: a small
+  «تحديد» (`openPathBrowser('dest')`) plus the still-editable `#custom_dest_path`
+  input, and `#diskSpaceDiv` under that. `chooseStorage()` / `syncStorageCards()`
+  are unchanged, so the tile state and the destination box tint keep working.
 - **File browser section**: the sort row, the search row (`#searchControls`) and
   `#treeContainer` are one attached block; search sits directly above the
-  results, so typing never leaves the input far from them. The folder-scope
-  controls are **not** inline: they live in `#searchScopeModal` (see «Search
-  scope»).
-- **Tools section**: the last section of the page. A visible `.tools-actions`
-  row holds «إنشاء فهرس JOC» and «مجلد البحث» (`#scopeToggleBtn` →
-  `openSearchScope()`), then spoofing lives in `<details class="tools">`, closed
-  by default — an occasional action must not out-weigh the copy.
+  results, so typing never leaves the input far from them. Focusing `#searchInput`
+  scrolls this section to the top edge with `scrollIntoView({block:'start',
+  behavior:'auto'})` — instant on purpose, because the phone keyboard resizes the
+  viewport and a smooth animation would fight it. The folder-scope controls are
+  **not** inline: they live in `#searchScopeModal` (see «Search scope»).
+- **Tools section**: the last section of the page. Two visible `.tools-actions`
+  rows: «إنشاء فهرس JOC» + «مجلد البحث» (`#scopeToggleBtn` →
+  `openSearchScope()`), then «تخزين الفهرس (بحث فوري)» (`#cacheFolderBtn`,
+  `#cacheStatusText` under it) + «فحص السرعة» (`runDiagnostic()`). Spoofing lives
+  in `<details class="tools">`, closed by default — an occasional action must
+  not out-weigh the copy.
 - **Action bar** (`#actionBar`, `.actionbar`): fixed, **opaque** `--bar-bg` with a
   `--bar-line` top border (never `backdrop-filter`), and a 3px
   `.actionbar-progress` line at its top edge. The left side is a button
@@ -414,9 +416,11 @@ straight on «الفهرس».
   the select. `pickFont(id)` / `pickFontSize(id)` POST one key each, apply
   `app_font` / `font_scale` from the response and report in
   `#settingsSaveState`. No reload, no re-render.
-- **عام** owns the `auto_spoof` switch (`#autoSpoofCheck` → `pickAutoSpoof`) and
-  the «تنظيم ذكي» depth number (`#smartDepthInput` → `pickSmartDepth`, 1..3,
-  clamped client- and server-side), both reporting in `#generalSaveState`.
+- **عام** owns the `auto_spoof` switch (`#autoSpoofCheck` → `pickAutoSpoof`), the
+  «تنظيم ذكي» depth number (`#smartDepthInput` → `pickSmartDepth`, 1..3, clamped
+  client- and server-side) and the copy-verification switch (`#verifyAfterCopy`,
+  moved here from the route; it still writes `sdmp3_verify_after_copy` and
+  `startTransfer()` still reads it). All report in `#generalSaveState`.
 - **الفهرس** owns the JOC index settings — see «Index settings» below. It is the
   only place they are written.
 - `setSettingsState(text, kind, elementId)` writes one status line per pane
