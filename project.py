@@ -306,8 +306,11 @@ def sync_with_heartbeat(phase_after='copying', dest=None):
     `dest` is flushed with syncfs (one filesystem); without it os.sync() flushes
     everything, which is correct but much slower.
     """
-    set_state(syncing=True, sync_started=time.time(), phase='syncing',
-              file='تثبيت البيانات على الكارت…')
+    # Deliberately does NOT overwrite `file`: the flush is part of the run, and
+    # replacing the current line with «تثبيت البيانات…» made that sentence appear
+    # over and over in the dialog. The UI appends it quietly only when the flush
+    # is actually slow (sync_seconds >= 3).
+    set_state(syncing=True, sync_started=time.time(), phase='syncing')
     # Mark the start of the flush as progress too: the last chunk may have been
     # written a while ago (a long folder scan, a slow file close).
     touch_progress()
@@ -2127,8 +2130,6 @@ HTML_TEMPLATE = """
 {% for name, value in theme_css %}
             {{ name }}: {{ value }};
 {% endfor %}
-            /* Keyboard height, written from visualViewport in JS. */
-            --kb-inset: 0px;
             /* Typography: the family comes from sdmp3_fonts.py, the scale from
                the size preset. Both are rendered server-side so the first paint
                is already correct. */
@@ -2189,19 +2190,19 @@ HTML_TEMPLATE = """
         /* The chosen folder: deliberately quiet. It belongs to the destination
            tiles above it, so it sits on their side, reads like plain text until
            tapped, and never competes with the tiles or the copy button. */
-        .dest-line { display:flex; align-items:center; justify-content:flex-end; gap:6px;
-            margin-top:8px; margin-inline:auto; max-width:520px; }
-        .dest-line > .btn { flex:0 0 auto; min-height:30px; padding:3px 9px; gap:4px;
-            border-radius:8px; font-size:calc(11px * var(--font-scale)); color:var(--text-muted); }
-        .dest-line > .btn .icon { width:12px; height:12px; }
-        .dest-line > .btn:hover { color:var(--accent-text); }
-        /* An id, because the generic input rule further down would otherwise win
-           the cascade (same specificity, later position). */
-        #custom_dest_path { flex:0 1 auto; width:auto; max-width:66%; min-width:0;
-            min-height:30px; margin-bottom:0; padding:3px 8px;
-            font-size:calc(11px * var(--font-scale)); color:var(--text-muted);
-            background:transparent; border-color:transparent; }
-        #custom_dest_path:focus { color:var(--text); background:var(--field); border-color:var(--accent); }
+        .dest-line { display:flex; justify-content:center; margin-top:8px; }
+        /* The destination is one quiet path row: no «تحديد» button, no editable
+           box. Tapping anywhere on it opens the same folder picker. */
+        .dest-path { display:flex; align-items:center; gap:7px; max-width:min(520px, 100%);
+            min-width:0; padding:5px 10px; border-radius:9px; cursor:pointer;
+            border:1px solid transparent; color:var(--text-muted); }
+        .dest-path:hover, .dest-path:focus-visible { background:var(--field); color:var(--text); }
+        .dest-path .icon { width:14px; height:14px; flex-shrink:0; color:var(--accent); }
+        .dest-path .dest-path-go { color:var(--text-muted); }
+        #custom_dest_path { flex:1 1 auto; width:auto; min-width:0; min-height:0;
+            margin:0; padding:0; border:0; background:transparent;
+            font-size:calc(11.5px * var(--font-scale)); color:inherit;
+            pointer-events:none; text-overflow:ellipsis; }
         #custom_dest_path::placeholder { color:var(--text-muted); opacity:.75; }
         /* Occasional actions, side by side, in the Tools section. */
         .tools-actions { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:10px; }
@@ -2209,7 +2210,7 @@ HTML_TEMPLATE = """
         .tools-note { display:block; margin:-2px 0 12px; }
         @media (max-width: 480px) {
             .route-row { gap:9px; }
-            #custom_dest_path { max-width:60%; }
+            .dest-path { padding:5px 7px; }
         }
         @media (max-width: 380px) {
             .route-row { gap:7px; }
@@ -2296,7 +2297,11 @@ HTML_TEMPLATE = """
         .report-row:first-child { font-size:calc(13.5px * var(--font-scale)); }
         .report-row:first-child .report-label { color:var(--text); font-weight:700; }
 
-        .tree { max-height: max(180px, calc(62vh - var(--kb-inset))); overflow: auto; background: var(--field); border: 1px solid var(--border); border-radius: 10px; padding: 8px; scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
+        /* A fixed box, not max-height: searching used to resize the browser with
+           every result set (three hits = a three-row strip), and the keyboard
+           inset shrank it while typing. It is now the same height always, and the
+           page scrolls the section into view instead of resizing the list. */
+        .tree { height: clamp(320px, 54vh, 560px); overflow: auto; background: var(--field); border: 1px solid var(--border); border-radius: 10px; padding: 8px; scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
         /* Search replaces the tree's contents; the header stays put while rows scroll. */
         .search-view-head { position: sticky; top: 0; z-index: 2; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 8px; margin: -8px -8px 8px; background: var(--field); border-bottom: 1px solid var(--field-line); }
         .search-view-head .search-view-label { color: var(--text-muted); font-size: calc(12px * var(--font-scale)); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -2419,6 +2424,29 @@ HTML_TEMPLATE = """
         .settings-tab.active { color:var(--accent-text); border-color:var(--accent); background:var(--accent-soft); }
         .settings-tab:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
         .settings-pane { display:flex; flex-direction:column; gap:12px; }
+        /* Settings are grouped by a title and a hairline, not by a paragraph of
+           explanation: the control says what it does. */
+        .settings-group { display:flex; flex-direction:column; gap:8px; }
+        .settings-group + .settings-group { border-top:1px solid var(--rule); padding-top:12px; }
+        .settings-group-title { font-size:calc(10.5px * var(--font-scale)); font-weight:700; color:var(--text-muted); }
+        .settings-check-row { display:flex; align-items:flex-start; gap:9px; cursor:pointer; color:var(--text);
+            font-size:calc(13px * var(--font-scale)); font-weight:500; }
+        .settings-check-row .checkbox { width:17px; height:17px; margin:1px 0 0; flex-shrink:0; }
+        .settings-check-row small { display:block; margin-top:3px; }
+        .size-seg { display:flex; gap:6px; }
+        .size-seg .size-seg-btn { flex:1; min-height:38px; padding:6px 8px; border-radius:9px;
+            border:1px solid var(--border); background:var(--field); color:var(--text-muted);
+            font-family:inherit; font-size:calc(12px * var(--font-scale)); font-weight:600; cursor:pointer; }
+        .size-seg .size-seg-btn.is-active { border-color:var(--accent); background:var(--accent-soft); color:var(--accent-text); }
+        .draft-banner { display:flex; align-items:center; gap:8px; padding:9px 11px; border-radius:10px;
+            background:var(--accent-soft); border:1px solid var(--accent-line); color:var(--accent-text);
+            font-size:calc(11.5px * var(--font-scale)); font-weight:600; line-height:1.5; }
+        .draft-banner .icon { width:15px; height:15px; flex-shrink:0; }
+        .index-group { display:flex; flex-direction:column; gap:8px; padding-top:12px; border-top:1px solid var(--rule); }
+        .index-group:first-of-type { padding-top:0; border-top:0; }
+        .index-group-title { display:flex; align-items:center; gap:6px; font-size:calc(11px * var(--font-scale));
+            font-weight:700; color:var(--text-muted); }
+        .index-group-title .icon { width:14px; height:14px; color:var(--accent); }
         /* One labelled dropdown per choice: a grid of 16 colour cards buried the
            save state and made the settings dialog scroll for a trivial change. */
         .settings-field { display:flex; flex-direction:column; gap:6px; }
@@ -2486,7 +2514,6 @@ HTML_TEMPLATE = """
             .modal-content.modal-picker { height: 92vh; max-height: 92vh; }
             .modal-content.modal-selected { height: 92vh; max-height: 92vh; }
             .modal-content.modal-settings { height: 92vh; max-height: 92vh; }
-            .assign-sheet { left:8px; right:8px; bottom:8px; }
         }
 
         .progress-bar { width: 100%; height: 10px; background: var(--field); border-radius: 999px; overflow: hidden; margin: 15px 0; border: 1px solid var(--border);}
@@ -2528,13 +2555,12 @@ HTML_TEMPLATE = """
         .check-line .checkbox { width:17px; height:17px; margin:0; flex-shrink:0; }
         .check-hint { display:block; color:var(--text-muted); font-size:calc(11.5px * var(--font-scale)); line-height:1.55; margin:5px 0 0; }
 
-        /* The selected-items window keeps one height: the list scrolls while the
-           group cards and the pick bar stay put, so the action cannot move under
-           the finger while rows are checked. */
+        /* The selected-items window keeps one height: the folder list keeps its
+           place while the file rows scroll, so the action cannot move under the
+           finger. */
         .modal-content.modal-selected { height: min(84vh, 760px); max-height: 84vh; position: relative; overflow: hidden; }
         .selected-head { display:flex; flex-direction:column; gap:9px; flex-shrink:0; padding-bottom:10px; border-bottom:1px solid var(--border); }
         .selected-list { flex:1 1 auto; min-height:0; overflow-y:auto; padding:10px 2px 4px; display:flex; flex-direction:column; gap:8px; }
-        .pick-head { display:flex; align-items:center; justify-content:space-between; gap:8px; flex-shrink:0; padding:8px 2px 0; }
 
         .group-section { display:flex; flex-direction:column; gap:8px; padding:10px 11px; border-radius:12px;
             background:var(--field); border:1px solid var(--border); max-height:34vh; overflow-y:auto; }
@@ -2543,12 +2569,10 @@ HTML_TEMPLATE = """
         .group-section-title .icon { color:var(--accent); width:16px; height:16px; }
         .group-section-actions { display:flex; gap:6px; flex-wrap:wrap; }
 
-        /* Groups are a folder tree: one quiet row per folder, its items only when
-           it is opened. Nesting is the breadcrumb path ("A/B"), so the tree is
-           derived on render and needs no second data model. */
+        /* Copy folders ("مجلدات النسخ"): one flat list. A row is a drop target;
+           its items appear only while it is open. No nesting UI, no pick bar. */
         .group-tree { display:flex; flex-direction:column; gap:2px; }
-        .gt-node { display:flex; flex-direction:column; gap:2px; }
-        .gt-row { display:flex; align-items:center; gap:6px; padding:5px 7px; border-radius:9px;
+        .gt-row { display:flex; align-items:center; gap:6px; padding:6px 7px; border-radius:9px;
             border:1px solid transparent; background:transparent; }
         .gt-row:hover, .gt-row:focus-within { background:var(--accent-soft); }
         .gt-row.is-drop { border-color:var(--accent); border-style:dashed; background:var(--accent-soft); }
@@ -2558,12 +2582,9 @@ HTML_TEMPLATE = """
         .gt-twisty:hover { color:var(--accent-text); }
         .gt-twisty .icon { width:13px; height:13px; transition:transform .15s ease; }
         .gt-twisty.open .icon { transform:rotate(90deg); }
-        .gt-twisty.is-leaf { visibility:hidden; cursor:default; }
         .gt-folder { width:16px; height:16px; flex-shrink:0; color:var(--accent-text); }
-        .gt-row.is-unassigned .gt-folder { color:var(--text-muted); }
         .gt-name { flex:1; min-width:0; font-size:calc(12.5px * var(--font-scale)); font-weight:600; color:var(--text);
-            white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-        .gt-row.is-unassigned .gt-name { color:var(--text-muted); font-weight:500; }
+            white-space:nowrap; overflow:hidden; text-overflow:ellipsis; cursor:pointer; }
         .gt-count { flex-shrink:0; font-size:calc(10px * var(--font-scale)); color:var(--text-muted);
             background:var(--card); border:1px solid var(--border); border-radius:999px; padding:1px 7px; }
         .gt-actions { display:flex; align-items:center; gap:2px; flex-shrink:0; }
@@ -2573,10 +2594,6 @@ HTML_TEMPLATE = """
         .gt-btn:hover { color:var(--accent-text); border-color:var(--accent-line); }
         .gt-btn.danger:hover { color:var(--danger-ink); border-color:var(--danger-line); }
         .gt-btn .icon { width:14px; height:14px; }
-        .gt-add { flex-shrink:0; padding:3px 8px; border-radius:7px; border:1px solid var(--accent-line);
-            background:var(--accent-soft); color:var(--accent-text); cursor:pointer;
-            font-family:inherit; font-size:calc(10.5px * var(--font-scale)); font-weight:600; }
-        .gt-add:hover { border-color:var(--accent); }
         .gt-rename { flex:1; min-width:0; margin:0; padding:3px 8px; border-radius:7px;
             border:1px solid var(--accent); background:var(--field); color:var(--text);
             font-family:inherit; font-size:calc(12.5px * var(--font-scale)); }
@@ -2596,9 +2613,22 @@ HTML_TEMPLATE = """
         .btn-ghost-danger { color:var(--danger-ink); border-color:var(--danger-line); }
         .group-empty-hint { font-size:calc(11px * var(--font-scale)); color:var(--text-muted); line-height:1.55; }
 
+        /* Folder assignment sheet: one row per folder, opened from the chip on a
+           selected file. It is the touch-friendly twin of drag & drop. */
+        .assign-list { display:flex; flex-direction:column; gap:6px; max-height:38vh; overflow-y:auto; }
+        .assign-row { display:flex; align-items:center; gap:9px; width:100%; padding:10px 12px; border-radius:10px;
+            border:1px solid var(--border); background:var(--field); color:var(--text); cursor:pointer;
+            font-family:inherit; font-size:calc(12.5px * var(--font-scale)); text-align:start; }
+        .assign-row:hover { border-color:var(--accent); background:var(--accent-soft); }
+        .assign-row.is-active { border-color:var(--accent); background:var(--accent-soft); color:var(--accent-text); font-weight:600; }
+        .assign-row .icon { width:15px; height:15px; color:var(--accent); flex-shrink:0; }
+        .assign-row .assign-count { margin-inline-start:auto; color:var(--text-muted); font-size:calc(10.5px * var(--font-scale)); }
+        .assign-new { display:flex; gap:8px; margin-top:10px; }
+        .assign-new input { margin:0; flex:1; min-width:0; }
+        .assign-new .btn { flex-shrink:0; }
+
         .selected-row { display:flex; align-items:center; gap:10px; padding:10px 11px; border-radius:10px; background:var(--field); border:1px solid var(--border); }
         .selected-row.is-dragging { opacity:.5; }
-        .selected-row.is-picked { border-color:var(--accent-line); background:var(--accent-soft); }
         .selected-row-main { min-width:0; flex:1; display:flex; flex-direction:column; gap:4px; }
         .selected-row-top { display:flex; align-items:center; gap:8px; min-width:0; }
         .selected-row-name { font-size:calc(13px * var(--font-scale)); font-weight:500; color:var(--text); }
@@ -2608,16 +2638,10 @@ HTML_TEMPLATE = """
         .group-chip { align-self:flex-start; max-width:100%; font-size:calc(10.5px * var(--font-scale)); padding:2px 8px; border-radius:20px;
             background:var(--accent-soft); border:1px solid var(--accent-line); color:var(--accent-text);
             white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-        .group-chip.none { background:transparent; border-color:var(--border); color:var(--text-muted); }
-        .pick-box { width:18px; height:18px; margin:0; }
-
-        .pick-bar { display:flex; align-items:center; justify-content:space-between; gap:8px; flex-wrap:wrap;
-            flex-shrink:0; margin-top:10px; padding:9px 11px; border-radius:12px;
-            background:var(--card-2); border:1px solid var(--accent-line); }
-        .pick-count { font-size:calc(12px * var(--font-scale)); color:var(--text); }
-        .pick-count b { color:var(--accent-text); }
-        .pick-bar-actions { display:flex; flex-wrap:wrap; gap:6px; }
-        .pick-bar-actions .btn { min-height:36px; padding:7px 11px; font-size:calc(12px * var(--font-scale)); }
+        button.group-chip { display:inline-flex; align-items:center; gap:5px; cursor:pointer; font-family:inherit; }
+        button.group-chip .icon { width:12px; height:12px; flex-shrink:0; }
+        button.group-chip:hover { border-color:var(--accent); }
+        .group-chip.none { background:transparent; border-color:var(--border); border-style:dashed; color:var(--text-muted); }
 
         /* «تنظيم ذكي» preview: a proposal the user can trim before it touches
            the groups. Nothing is written until «تطبيق». */
@@ -2765,11 +2789,14 @@ HTML_TEMPLATE = """
             </div>
         </div>
         <div class="dest-line">
-            <button type="button" class="btn btn-outline btn-sm" onclick="openPathBrowser('dest')" title="اختيار مجلد الحفظ">
-                <svg class="icon" viewBox="0 0 24 24"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>
-                تحديد
-            </button>
-            <input type="text" id="custom_dest_path" class="ltr-input" placeholder="لم تُحدَّد بعد" oninput="checkDiskSpace(this.value)" aria-label="مجلد الحفظ">
+            <div class="dest-path" id="destPathRow" role="button" tabindex="0"
+                 onclick="openPathBrowser('dest')"
+                 onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();openPathBrowser('dest');}"
+                 title="اضغط لاختيار مجلد الحفظ">
+                <svg class="icon" aria-hidden="true"><use href="#ico-folder"></use></svg>
+                <input type="text" id="custom_dest_path" class="ltr-input" readonly tabindex="-1" placeholder="لم تُحدَّد بعد" aria-label="مجلد الحفظ — اضغط للاختيار">
+                <svg class="icon dest-path-go" aria-hidden="true"><use href="#ico-chevron-right"></use></svg>
+            </div>
         </div>
 
         <div class="disk-space-container" id="diskSpaceDiv" style="margin-top: 10px;">
@@ -2975,36 +3002,38 @@ HTML_TEMPLATE = """
                 <div class="group-section-head">
                     <div class="group-section-title">
                         <svg class="icon" viewBox="0 0 24 24"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path><line x1="12" y1="11" x2="12" y2="17"></line><line x1="9" y1="14" x2="15" y2="14"></line></svg>
-                        <span>المجلدات الأب</span>
+                        <span>مجلدات النسخ</span>
                     </div>
                     <div class="group-section-actions">
-                        <button type="button" class="btn btn-outline btn-sm" onclick="smartOrganizeGroups()" title="يقترح مجلداً لكل مسار أب في المصدر ويعرض المعاينة قبل التطبيق"><svg class="icon" aria-hidden="true"><use href="#ico-spark"></use></svg> تنظيم ذكي</button>
+                        <button type="button" class="btn btn-outline btn-sm" onclick="smartOrganizeGroups()" title="يقترح مجلداً لكل مسار أب، للمحدد فقط"><svg class="icon" aria-hidden="true"><use href="#ico-spark"></use></svg> تنظيم ذكي</button>
                         <button type="button" class="btn btn-outline btn-sm" onclick="startNewGroup()"><svg class="icon" aria-hidden="true"><use href="#ico-plus"></use></svg> مجلد جديد</button>
                     </div>
                 </div>
                 <div id="groupStatusHint" class="check-hint" style="display:none; margin:0;"></div>
                 <div id="smartPreview" class="smart-preview" style="display:none;"></div>
                 <div id="groupTree" class="group-tree"></div>
-                <div id="groupEmptyHint" class="group-empty-hint">لا توجد مجلدات بعد. اضغط «مجلد جديد» أو «تنظيم ذكي»، أو اسحب عنصراً من القائمة وأفلته على مجلد. الأسهم تفتح المجلد، وزر القلم يعيد التسمية داخل النافذة، وزر الإغلاق يحذف.</div>
+                <div id="groupEmptyHint" class="group-empty-hint">لا توجد مجلدات. أنشئ مجلداً ثم اسحب إليه العناصر.</div>
             </div>
-        </div>
-
-        <div class="pick-head">
-            <label class="check-line" style="margin:0;">
-                <input type="checkbox" id="pickAll" class="checkbox pick-box" value="pick" onchange="togglePickAll(this.checked)">
-                <span>تحديد الكل للتجميع</span>
-            </label>
-            <span id="pickAllHint" class="check-hint" style="margin:0;"></span>
         </div>
 
         <div id="selectedList" class="selected-list"></div>
+    </div>
+</div>
 
-        <div id="pickBar" class="pick-bar" style="display:none;">
-            <span class="pick-count"><b id="pickCount">0</b> مؤشَّر</span>
-            <div class="pick-bar-actions">
-                <button type="button" class="btn btn-outline btn-sm" id="unassignBtn" style="display:none;" onclick="unassignPicked()">إزالة من المجموعة</button>
-                <button type="button" class="btn btn-outline btn-sm" onclick="clearPick()">إلغاء التأشير</button>
-            </div>
+<!-- Folder assignment: the touch-friendly twin of drag & drop. It is opened by
+     the folder chip on any selected file. -->
+<div class="modal" id="assignGroupModal" onclick="closeAssignGroup(event)">
+    <div class="modal-content" style="max-width:420px;" onclick="event.stopPropagation()">
+        <h3 style="margin-top:0; font-size:calc(16px * var(--font-scale)); border-bottom:1px solid var(--border); padding-bottom:14px;">مجلد النسخ</h3>
+        <div id="assignPathName" class="settings-note" style="margin-bottom:10px; direction:ltr; text-align:left; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;"></div>
+        <div id="assignGroupList" class="assign-list"></div>
+        <div class="assign-new">
+            <input type="text" id="assignNewName" placeholder="مجلد جديد..." maxlength="80" autocomplete="off">
+            <button type="button" class="btn btn-primary btn-sm" onclick="createAssignGroup()">إنشاء</button>
+        </div>
+        <div id="assignError" class="settings-save-state err"></div>
+        <div class="modal-footer">
+            <button type="button" class="btn btn-outline" style="flex:1;" onclick="closeAssignGroup()">إغلاق</button>
         </div>
     </div>
 </div>
@@ -3024,33 +3053,34 @@ HTML_TEMPLATE = """
         </div>
         <div class="modal-body">
             <div class="settings-pane" id="settingsPaneAppearance">
-                <div class="settings-note">اختر سمة التطبيق. تُحفظ في ملف الإعدادات على جهازك وتُطبَّق فوراً.</div>
-                <div class="settings-field">
-                    <label for="themeSelect">ألوان الموقع</label>
-                    <select id="themeSelect" onchange="pickTheme(this.value)">
-                        {% for t in themes %}
-                        <option value="{{ t.id }}" data-theme-id="{{ t.id }}"{% if t.id == active_theme.id %} selected{% endif %}>{{ t.name }} — {{ t.desc }}</option>
-                        {% endfor %}
-                    </select>
-                    <div class="field-hint">ست عشرة سمة بين فاتحة وداكنة، كلها مضبوطة لتباين مريح للعين.</div>
+                <div class="settings-group">
+                    <div class="settings-field">
+                        <label for="themeSelect">السمة</label>
+                        <select id="themeSelect" onchange="pickTheme(this.value)">
+                            {% for t in themes %}
+                            <option value="{{ t.id }}" data-theme-id="{{ t.id }}"{% if t.id == active_theme.id %} selected{% endif %}>{{ t.name }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
                 </div>
-                <div class="settings-note" style="margin-top:14px;">الخط وحجمه. كل الخطوط مضمّنة في التطبيق وتعمل دون إنترنت.</div>
-                <div class="settings-field">
-                    <label for="fontSelect">خط الموقع (11 خطاً عربياً)</label>
-                    <select id="fontSelect" onchange="pickFont(this.value)">
-                        {% for f in fonts %}
-                        <option value="{{ f.id }}" data-font-id="{{ f.id }}"{% if f.id == active_font %} selected{% endif %}>{{ f.name }} — {{ f.desc }}</option>
-                        {% endfor %}
-                    </select>
-                    <div id="fontPreview" class="settings-note" style="font-family: {{ app_font }};">نص تجريبي — سورة البقرة ١٢٣</div>
-                </div>
-                <div class="settings-field" style="margin-top:14px;">
-                    <label for="sizeSelect">حجم الخط</label>
-                    <select id="sizeSelect" onchange="pickFontSize(this.value)">
-                        {% for s in font_sizes %}
-                        <option value="{{ s.id }}" data-size-id="{{ s.id }}"{% if s.id == active_font_size %} selected{% endif %}>{{ s.name }}</option>
-                        {% endfor %}
-                    </select>
+                <div class="settings-group">
+                    <div class="settings-field">
+                        <label for="fontSelect">الخط</label>
+                        <select id="fontSelect" onchange="pickFont(this.value)">
+                            {% for f in fonts %}
+                            <option value="{{ f.id }}" data-font-id="{{ f.id }}"{% if f.id == active_font %} selected{% endif %}>{{ f.name }}</option>
+                            {% endfor %}
+                        </select>
+                        <div id="fontPreview" class="settings-note" style="font-family: {{ app_font }};">سورة البقرة ١٢٣</div>
+                    </div>
+                    <div class="settings-field">
+                        <label>حجم الخط</label>
+                        <div class="size-seg" id="sizeSeg">
+                            {% for s in font_sizes %}
+                            <button type="button" class="size-seg-btn{% if s.id == active_font_size %} is-active{% endif %}" data-size-id="{{ s.id }}" onclick="pickFontSize('{{ s.id }}')">{{ s.name }}</button>
+                            {% endfor %}
+                        </div>
+                    </div>
                 </div>
                 <div id="settingsSaveState" class="settings-save-state"></div>
             </div>
@@ -3058,32 +3088,28 @@ HTML_TEMPLATE = """
             <!-- General settings: what happens after a copy. Typography lives in
                  «المظهر» next to the theme it visually belongs with. -->
             <div class="settings-pane" id="settingsPaneGeneral" style="display:none;">
-                <div class="settings-note" style="margin-bottom:6px;">بعد النسخ</div>
-                <label class="auto-spoof-row" for="autoSpoofCheck" style="display:flex; align-items:center; gap:10px; cursor:pointer; color:var(--text); font-size:calc(14px * var(--font-scale));">
-                    <input type="checkbox" id="autoSpoofCheck" class="checkbox" style="margin:0;" {% if auto_spoof %}checked{% endif %} onchange="pickAutoSpoof(this.checked)">
-                    <span>تمويه تواريخ كل الوجهة تلقائياً بعد النسخ</span>
-                </label>
-                <div class="settings-note" style="margin-top:2px;">يشمل كل عناصر مجلد الوجهة بعد اكتمال النسخ والتحقق، ما عدا مسارات المصدر والمجلدات المحمية. يعمل حتى لو أُغلق المتصفح.</div>
-                <div class="settings-field" style="margin-top:16px;">
-                    <label for="smartDepthInput">عمق مجلدات «تنظيم ذكي»</label>
-                    <input type="number" id="smartDepthInput" min="1" max="3" step="1" value="{{ smart_depth }}" onchange="pickSmartDepth(this.value)">
-                    <div class="settings-note" style="margin-top:6px;">١ = مجلد واحد باسم المجلد الأب المباشر. ٢ أو ٣ = إبقاء آخر مستويين أو ثلاثة من المسار الأصلي (مثال: العلماء/ابن باز).</div>
-                </div>
-                <div class="settings-field" style="margin-top:16px;">
-                    <label class="auto-spoof-row" for="verifyAfterCopy" style="display:flex; align-items:center; gap:10px; cursor:pointer; color:var(--text); font-size:calc(14px * var(--font-scale));">
-                        <input type="checkbox" id="verifyAfterCopy" class="checkbox" style="margin:0;" onchange="localStorage.setItem('sdmp3_verify_after_copy', this.checked ? '1' : '0')">
-                        <span>التحقق من الحجم الإجمالي بعد النسخ</span>
+                <div class="settings-group">
+                    <div class="settings-group-title">بعد النسخ</div>
+                    <label class="settings-check-row" for="autoSpoofCheck">
+                        <input type="checkbox" id="autoSpoofCheck" class="checkbox" {% if auto_spoof %}checked{% endif %} onchange="pickAutoSpoof(this.checked)">
+                        <span>تمويه تواريخ الوجهة تلقائياً
+                            <small class="settings-note">بعد التحقق، ويشمل الوجهة كاملة.</small>
+                        </span>
                     </label>
-                    <div class="settings-note" style="margin-top:6px;">جولة واحدة بعد النسخ: تقارن حجم كل ملف على مجلد الحفظ بما كُتب فعلاً، ولا تقرأ محتوى الملفات ولا تعدّل المصدر.</div>
+                    <label class="settings-check-row" for="verifyAfterCopy">
+                        <input type="checkbox" id="verifyAfterCopy" class="checkbox" onchange="localStorage.setItem('sdmp3_verify_after_copy', this.checked ? '1' : '0')">
+                        <span>التحقق من الحجم بعد النسخ
+                            <small class="settings-note">جولة واحدة تقارن الحجم المكتوب.</small>
+                        </span>
+                    </label>
+                    <div id="generalSaveState" class="settings-save-state"></div>
                 </div>
-                <div id="generalSaveState" class="settings-save-state"></div>
 
                 <!-- Device state lives here, never in the header: Shizuku is
                      optional, and «الكارت» is only claimed after a real write
-                     test (the 5-byte probe used to report a healthy card as
-                     dead, so no boolean is shown without a measurement). -->
-                <div class="settings-field" style="margin-top:18px;">
-                    <label>حالة الجهاز</label>
+                     test. -->
+                <div class="settings-group">
+                    <div class="settings-group-title">الجهاز</div>
                     <div class="status-list">
                         <div class="status-row">
                             <span class="status-label">Shizuku</span>
@@ -3094,79 +3120,83 @@ HTML_TEMPLATE = """
                             <span class="status-value" id="generalCardStatus">لم يُفحص بعد</span>
                         </div>
                     </div>
-                    <div class="settings-note">Shizuku اختياري: التطبيق يعمل كاملاً بدونه، ويُستخدم فقط لحذف مجلدات Android المحمية. «الكارت» لا يُحكم عليه إلا بعد كتابة فعلية من زر «فحص الكارت» في نافذة اختيار الوجهة.</div>
+                    <div class="settings-note">Shizuku اختياري. الكارت يُقاس بفحص فعلي من نافذة الوجهة.</div>
                 </div>
             </div>
 
             <!-- Index settings. These are the *saved* values: the create dialog
-                 only names the file and shows a summary of this pane. -->
+                 only names the file and shows a summary of this pane. The same
+                 pane doubles as a throw-away draft when the JOC button opens it. -->
             <div class="settings-pane" id="settingsPaneIndex" style="display:none;">
-                <div class="settings-note">إعدادات إنشاء الفهرس (JOC). تُحفظ مرة واحدة هنا وتُستخدم في كل إنشاء.</div>
-                <div class="index-form">
-                    <div class="grid-2">
-                        <div>
-                            <label>رقم البداية (يبدأ من):</label>
-                            <input type="number" id="jocStart" value="1" min="1">
+                <div id="indexDraftBanner" class="draft-banner" style="display:none;">
+                    <svg class="icon" aria-hidden="true"><use href="#ico-alert"></use></svg>
+                    <span>إعدادات هذه المرة فقط — لن تُحفظ.</span>
+                </div>
+                <div class="index-form" style="display:flex; flex-direction:column; gap:12px;">
+                    <div class="index-group">
+                        <div class="index-group-title">
+                            <svg class="icon" aria-hidden="true"><use href="#ico-index"></use></svg>
+                            النص
                         </div>
-                        <div>
-                            <label>الحد الأقصى للحروف:</label>
-                            <input type="number" id="jocLimit" value="93" min="10">
+                        <div class="grid-2">
+                            <div>
+                                <label for="jocStart">البداية</label>
+                                <input type="number" id="jocStart" value="1" min="1">
+                            </div>
+                            <div>
+                                <label for="jocLimit">أقصى عدد حروف</label>
+                                <input type="number" id="jocLimit" value="93" min="10">
+                            </div>
                         </div>
+                        <label for="jocMode">الوضع</label>
+                        <select id="jocMode">
+                            <option value="1">مجلدات فقط</option>
+                            <option value="2">مجلدات وملفات</option>
+                            <option value="3">المجلد الحالي فقط</option>
+                        </select>
+                        <label for="jocTemplate">التنسيق</label>
+                        <select id="jocTemplate">
+                            <option value="4">الاسم : الرقم.</option>
+                            <option value="1">الرقم : الاسم .</option>
+                            <option value="2">الاسم من الرقم</option>
+                            <option value="3">الاسم من رقم الرقم .</option>
+                        </select>
+                        <label class="settings-check-row" for="jocStrip">
+                            <input type="checkbox" id="jocStrip" class="checkbox" checked>
+                            <span>حذف الحروف الإنجليزية والأرقام والرموز</span>
+                        </label>
+                        <label class="settings-check-row" for="jocDownloadTxt">
+                            <input type="checkbox" id="jocDownloadTxt" class="checkbox">
+                            <span>تحميل ملف النص (.txt)</span>
+                        </label>
+                        <label class="settings-check-row" for="jocReviewTxt">
+                            <input type="checkbox" id="jocReviewTxt" class="checkbox">
+                            <span>مراجعة النص قبل المتابعة</span>
+                        </label>
                     </div>
 
-                    <label>الوضع (Mode):</label>
-                    <select id="jocMode">
-                        <option value="1">مجلدات فقط (فهرس رئيسي)</option>
-                        <option value="2">مجلدات وملفات (الوضع الشامل)</option>
-                        <option value="3">المجلد الحالي فقط (ملفات بدون تفرع)</option>
-                    </select>
-
-                    <label>تنسيق الإخراج (Template):</label>
-                    <select id="jocTemplate">
-                        <option value="4">الاسم : الرقم.</option>
-                        <option value="1">الرقم : الاسم . (مثال: 1 : سورة البقرة .)</option>
-                        <option value="2">الاسم من الرقم (مثال: سورة البقرة من 1)</option>
-                        <option value="3">الاسم من رقم الرقم . (مثال: سورة البقرة من رقم 1 .)</option>
-                    </select>
-
-                    <label style="display:flex; align-items:center; gap:8px; cursor:pointer; color: var(--text); margin-top: 6px; margin-bottom: 10px;">
-                        <input type="checkbox" id="jocStrip" class="checkbox" checked style="margin:0;">
-                        حذف الحروف الإنجليزية والأرقام والرموز
-                    </label>
-
-                    <label style="display:flex; align-items:center; gap:8px; cursor:pointer; color: var(--text); margin-bottom: 10px;">
-                        <input type="checkbox" id="jocDownloadTxt" class="checkbox" style="margin:0;">
-                        تحميل ملف النص (.txt) بعد الإنشاء
-                    </label>
-                    <small class="settings-note" style="margin-top:-6px; display:block; margin-bottom:14px;">يُولّد الفهرس نصياً دائماً، لكنه لا يُحمَّل إلا عند تفعيل هذا الخيار.</small>
-
-                    <label style="display:flex; align-items:center; gap:8px; cursor:pointer; color: var(--text); margin-bottom: 10px;">
-                        <input type="checkbox" id="jocReviewTxt" class="checkbox" style="margin:0;">
-                        مراجعة وتحرير الفهرس النصي قبل متابعة العملية
-                    </label>
-                    <small class="settings-note" style="margin-top:-6px; display:block; margin-bottom:14px;">يفتح محرر النص بعد إنشاء الفهرس للسماح بالتعديل قبل التحميل/النسخ/التحويل إلى MP3.</small>
-
-                    <div style="background:var(--accent-soft); border:1px solid var(--accent); border-radius:10px; padding:14px; margin-bottom:14px;">
-                        <label style="display:flex; align-items:center; gap:10px; cursor:pointer; color:var(--text); font-size:calc(14px * var(--font-scale)); margin-bottom:8px;">
-                            <input type="checkbox" id="jocMp3Index" class="checkbox" style="margin:0; width:18px; height:18px;" onchange="toggleMp3Index()">
-                            تحويل الفهرس إلى MP3 صوتي (Edge TTS) 64kbps
+                    <div class="index-group">
+                        <div class="index-group-title">
+                            <svg class="icon" aria-hidden="true"><use href="#ico-music"></use></svg>
+                            الصوت
+                        </div>
+                        <label class="settings-check-row" for="jocMp3Index">
+                            <input type="checkbox" id="jocMp3Index" class="checkbox" onchange="toggleMp3Index()">
+                            <span>تحويل الفهرس إلى MP3</span>
                         </label>
                         <div id="ttsNotice"></div>
-                        <small class="settings-note" style="display:block; margin-bottom:10px;">يتم توليد MP3 من نص الفهرس تلقائياً (أجزاء تُدمج)، ويتطلب اتصالاً بالإنترنت.</small>
                         <div id="ttsOptions" style="display:none; gap:10px; flex-direction:column;">
-                            <label style="display:flex; align-items:flex-start; gap:10px; cursor:pointer; color:var(--text); margin-bottom:2px;">
-                                <input type="checkbox" id="jocMp3ToDest" class="checkbox" style="margin:2px 0 0;">
-                                <span>حفظ MP3 في الوجهة المحددة مباشرةً
-                                    <small class="settings-note" style="display:block; margin-top:4px;">عند التفعيل يُكتب الملف داخل مجلد الوجهة (بدل تنزيله على الجهاز).</small>
-                                </span>
+                            <label class="settings-check-row" for="jocMp3ToDest">
+                                <input type="checkbox" id="jocMp3ToDest" class="checkbox">
+                                <span>حفظ MP3 في الوجهة<small class="settings-note">بدل تنزيله على الجهاز.</small></span>
                             </label>
                             <div class="grid-2">
                                 <div>
-                                    <label>الصوت (اللكنة):</label>
+                                    <label for="ttsVoice">الصوت</label>
                                     <select id="ttsVoice"></select>
                                 </div>
                                 <div>
-                                    <label>السرعة:</label>
+                                    <label for="ttsRate">السرعة</label>
                                     <select id="ttsRate">
                                         <option value="+0%">عادية (+0%)</option>
                                         <option value="-10%">أبطأ (-10%)</option>
@@ -3177,11 +3207,8 @@ HTML_TEMPLATE = """
                                 </div>
                             </div>
 
-                            <div style="margin-top:6px;">
-                                <div style="display:flex; align-items:center; gap:8px; color:var(--text); font-size:calc(13.5px * var(--font-scale)); font-weight:600; margin-bottom:8px;">
-                                    <svg class="icon" style="width:16px;height:16px;" viewBox="0 0 24 24"><path d="M11 5 6 9H2v6h4l5 4V5z"></path><path d="M15.54 8.46a5 5 0 0 1 0 7.07"></path><path d="M19.07 4.93a10 10 0 0 1 0 14.14"></path></svg>
-                                    إخفاء الملف الصوتي (تمويه)
-                                </div>
+                            <div>
+                                <div class="index-group-title" style="margin-bottom:8px;">تمويه الصوت</div>
                                 <div style="display:flex; gap:6px; background:var(--field); border:1px solid var(--border); border-radius:10px; padding:4px;">
                                     <label class="seg option" data-mode="none" style="flex:1; text-align:center; padding:9px 6px; border-radius:7px; cursor:pointer; font-size:calc(12.5px * var(--font-scale)); color:var(--text-muted); display:flex; align-items:center; justify-content:center; gap:5px;">
                                         <svg class="icon" style="width:15px;height:15px;" viewBox="0 0 24 24"><path d="M11 5 6 9H2v6h4l5 4V5z"></path></svg>
@@ -3189,50 +3216,55 @@ HTML_TEMPLATE = """
                                     </label>
                                     <label class="seg option" data-mode="noise" style="flex:1; text-align:center; padding:9px 6px; border-radius:7px; cursor:pointer; font-size:calc(12.5px * var(--font-scale)); color:var(--text-muted); display:flex; align-items:center; justify-content:center; gap:5px;">
                                         <svg class="icon" style="width:15px;height:15px;" viewBox="0 0 24 24"><line x1="1" y1="12" x2="6" y2="12"></line><line x1="23" y1="12" x2="18" y2="12"></line><line x1="9" y1="9" x2="15" y2="15"></line><line x1="15" y1="9" x2="9" y2="15"></line></svg>
-                                        ضوضاء خفيفة
+                                        ضوضاء
                                     </label>
                                     <label class="seg option" data-mode="file" style="flex:1; text-align:center; padding:9px 6px; border-radius:7px; cursor:pointer; font-size:calc(12.5px * var(--font-scale)); color:var(--text-muted); display:flex; align-items:center; justify-content:center; gap:5px;">
                                         <svg class="icon" style="width:15px;height:15px;" viewBox="0 0 24 24"><path d="M9 18V5l12-2v13"></path><circle cx="6" cy="18" r="3"></circle><circle cx="18" cy="16" r="3"></circle></svg>
-                                        ملف مخصص
+                                        ملف
                                     </label>
                                 </div>
-                                <small id="maskHint" class="settings-note" style="display:block; margin-top:6px;">إضافة ضوضاء منخفضة وغير مزعجة لمدة دقيقتين قبل بدء الفهرس الصوتي.</small>
+                                <small id="maskHint" class="settings-note" style="display:block; margin-top:6px;"></small>
 
                                 <div id="customFileBox" style="display:none; margin-top:8px;">
                                     <div style="display:flex; align-items:center; gap:10px; background:var(--field); border:1px dashed var(--border); border-radius:10px; padding:10px 12px;">
                                         <input type="file" id="jocCustomAudio" accept=".mp3,audio/mpeg" hidden>
-                                        <button class="btn btn-outline btn-sm" style="white-space:nowrap; flex-shrink:0;" onclick="document.getElementById('jocCustomAudio').click()">
+                                        <button type="button" class="btn btn-outline btn-sm" style="white-space:nowrap; flex-shrink:0;" onclick="document.getElementById('jocCustomAudio').click()">
                                             <svg class="icon" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg>
                                             اختر ملف MP3
                                         </button>
                                         <span id="customAudioName" style="flex:1; font-size:calc(12.5px * var(--font-scale)); color:var(--text-muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">لم يتم اختيار ملف بعد</span>
                                     </div>
-                                    <small class="settings-note" style="display:block; margin-top:6px;">يُضاف ملف MP3 المختار كاملاً في بداية الفهرس الصوتي.</small>
                                 </div>
                             </div>
                         </div>
                     </div>
                 </div>
-                <div style="display:flex; gap:10px; align-items:center;">
-                    <button type="button" class="btn btn-primary" style="flex:1;" onclick="saveIndexSettingsNow()">حفظ إعدادات الفهرس</button>
+                <div id="indexSaveActions" style="display:flex; gap:10px; align-items:center;">
+                    <button type="button" id="saveIndexSettingsBtn" class="btn btn-primary" style="flex:1;" onclick="saveIndexSettingsNow()">حفظ إعدادات الفهرس</button>
                 </div>
                 <div id="indexSaveState" class="settings-save-state"></div>
             </div>
 
             <div class="settings-pane" id="settingsPaneAbout" style="display:none;">
-                <div class="settings-note">
-                    SD Card Coffee — نسخة <span class="ltr-input" style="display:inline-block; padding:1px 6px;">v{{ app_version }}</span>
+                <div class="status-list">
+                    <div class="status-row">
+                        <span class="status-label">الإصدار</span>
+                        <span class="status-value num">v{{ app_version }}</span>
+                    </div>
+                    <div class="status-row">
+                        <span class="status-label">العمل</span>
+                        <span class="status-value">على الجهاز — بلا حساب أو سحابة</span>
+                    </div>
                 </div>
-                <div class="settings-note">
-                    كل شيء يعمل على الجهاز: النسخ، الفهرس، تمويه التاريخ، وتحويل النص إلى صوت. لا يوجد حساب ولا سحابة.
-                </div>
-                <div class="settings-note">
-                    ملفات الحالة في <span class="ltr-input" style="display:inline-block; padding:1px 6px;">~/.local/state/sdmp3/</span> — الإعدادات وآخر عمليات البحث وذاكرة البحث.
-                </div>
+                <div class="settings-note">ملفات الحالة في <span class="ltr-input" style="display:inline-block; padding:1px 6px;">~/.local/state/sdmp3/</span>.</div>
             </div>
         </div>
         <div style="display:flex; gap:10px; margin-top:14px; flex-shrink:0;">
-            <button class="btn btn-outline" style="flex:1;" onclick="document.getElementById('settingsModal').style.display='none'">إغلاق</button>
+            <button id="settingsCloseBtn" class="btn btn-outline" style="flex:1;" onclick="closeSettingsModal()">إغلاق</button>
+            <div id="indexDraftActions" style="display:none; flex:1; gap:10px;">
+                <button type="button" class="btn btn-outline" style="flex:1;" onclick="cancelJocDraft()">إلغاء</button>
+                <button type="button" class="btn btn-primary" style="flex:1.4;" onclick="continueJocDraft()">متابعة إلى الإنشاء</button>
+            </div>
         </div>
     </div>
 </div>
@@ -3363,7 +3395,6 @@ HTML_TEMPLATE = """
     // the copy starts - the source tree is never modified.
     let copyGroups = [];
     let nextGroupId = 1;
-    let pickPaths = new Set();   // rows checked in the "selected" window
     let selectedSizes = {};      // path -> {bytes, formatted, owner}
     let selectionSizeTimer = null;   // debounce for the action bar's size
     let selectionSizeSig = '';       // selection the cached sizes belong to
@@ -3441,7 +3472,6 @@ HTML_TEMPLATE = """
         if (selectedPaths.size === 0) {
             // A group only means something for the current selection.
             copyGroups = [];
-            pickPaths = new Set();
             selectedSizes = {};
             // The bar must not keep the previous selection's size or ETA.
             selectionSizeSig = '';
@@ -3499,7 +3529,6 @@ HTML_TEMPLATE = """
         copyGroups.forEach(function(g) {
             g.paths = g.paths.filter(function(p) { return selectedPaths.has(p); });
         });
-        pickPaths.forEach(function(p) { if (!selectedPaths.has(p)) pickPaths.delete(p); });
     }
 
     function findGroup(gid) {
@@ -3526,7 +3555,9 @@ HTML_TEMPLATE = """
     const GROUP_SEG_MAX = 80;
     // How many trailing path segments «تنظيم ذكي» turns into a folder name.
     // Server-rendered from settings.json, editable in الإعدادات › عام.
-    let SMART_DEPTH = {{ smart_depth }};
+    // «تنظيم ذكي» always names a folder after the item's own parent folder: one
+    // level, no hidden depth setting to get wrong.
+    const SMART_DEPTH = 1;
 
     // "العلماء / ابن باز // دروس" -> ['العلماء','ابن باز','دروس']
     function groupPathParts(raw) {
@@ -3599,129 +3630,75 @@ HTML_TEMPLATE = """
         renderGroupTree();
     }
 
-    function groupTreeRows() {
-        let nodes = {};
-        let order = [];
-        copyGroups.forEach(function(g) {
-            let parts = groupPathParts(g.name);
-            for (let i = 0; i < parts.length; i++) {
-                let key = parts.slice(0, i + 1).join('/').toLowerCase();
-                if (!nodes[key]) {
-                    nodes[key] = {key: key, name: parts.slice(0, i + 1).join('/'),
-                                  label: parts[i], depth: i + 1, group: null,
-                                  paths: [], children: []};
-                    order.push(key);
-                }
-            }
-            let ownKey = groupPathKey(g.name);
-            if (nodes[ownKey]) {
-                nodes[ownKey].group = g;
-                nodes[ownKey].paths = g.paths.slice();
-                nodes[ownKey].name = g.name;
-                nodes[ownKey].label = groupPathParts(g.name).slice(-1)[0];
-            }
+    // Folders are flat and sorted by their last segment. A legacy name that
+    // still contains "/" is shown as a breadcrumb, but every new folder is one
+    // segment: nesting is no longer created from the UI.
+    function groupRows() {
+        return copyGroups.slice().sort(function(a, b) {
+            let al = groupPathParts(a.name).slice(-1)[0] || a.name;
+            let bl = groupPathParts(b.name).slice(-1)[0] || b.name;
+            return al.localeCompare(bl, 'ar');
         });
-        // Link each node to its parent: children are rendered inside the parent
-        // so closing a folder really hides its branches.
-        order.forEach(function(key) {
-            let node = nodes[key];
-            if (node.depth === 1) return;
-            let parentKey = groupPathParts(node.name).slice(0, -1).join('/').toLowerCase();
-            if (nodes[parentKey]) nodes[parentKey].children.push(node);
-        });
-        let byLabel = function(a, b) { return a.label.localeCompare(b.label, 'ar'); };
-        let roots = order.map(function(k) { return nodes[k]; })
-            .filter(function(n) { return n.depth === 1; });
-        roots.sort(byLabel);
-        order.forEach(function(k) { nodes[k].children.sort(byLabel); });
-        return roots;
-    }
-
-    // Selections that belong to no folder: they stay visible (and are the drop
-    // area that takes an item out of every group).
-    function ungroupedPaths() {
-        let grouped = {};
-        copyGroups.forEach(function(g) {
-            g.paths.forEach(function(p) { grouped[p] = true; });
-        });
-        return Array.from(selectedPaths.keys()).filter(function(p) { return !grouped[p]; });
     }
 
     let groupRename = null;   // {gid, value} while a folder name is edited inline
 
-    function renameInputHtml(node) {
+    function renameInputHtml(group) {
         return '<input type="text" class="gt-rename" id="gtRenameInput" autocomplete="off" ' +
-            'maxlength="' + GROUP_SEG_MAX + '" value="' + esc(groupRename ? groupRename.value : node.label) + '" ' +
+            'maxlength="' + GROUP_SEG_MAX + '" value="' + esc(groupRename ? groupRename.value : '') + '" ' +
             'aria-label="اسم المجلد">';
     }
 
-    function groupRowActionsHtml(node) {
-        let gid = node.group ? node.group.id : 0;
-        if (groupRename && groupRename.gid === gid && gid) {
+    function groupRowActionsHtml(group) {
+        let gid = group.id;
+        if (groupRename && groupRename.gid === gid) {
             return '<button type="button" class="gt-btn" data-act="rename-save" title="حفظ (Enter)">' +
                     spriteIcon('ico-check') + '</button>' +
                 '<button type="button" class="gt-btn danger" data-act="rename-cancel" title="إلغاء (Esc)">' +
                     spriteIcon('ico-close') + '</button>';
         }
-        let html = '';
-        // Bulk add: only shown while rows are checked, so the normal state of a
-        // folder row stays three quiet glyphs.
-        if (pickPaths.size) {
-            html += '<button type="button" class="gt-add" data-act="add" title="أضف ' + pickPaths.size +
-                ' عنصراً مؤشَّراً إلى هذا المجلد">ضم ' + pickPaths.size + '</button>';
-        }
-        if (!gid) return html;   // a parent that only exists because of a child
-        let depth = groupPathParts(node.name).length;
-        if (groupRename && groupRename.gid === gid) return html;
-        html += '<button type="button" class="gt-btn" data-act="rename" title="إعادة التسمية">' +
-                spriteIcon('ico-pencil') + '</button>';
-        html += '<button type="button" class="gt-btn" data-act="child"' +
-                (depth >= GROUP_MAX_DEPTH ? ' disabled title="أقصى تداخل 3 مستويات"' : ' title="مجلد فرعي داخله"') + '>' +
-                spriteIcon('ico-plus') + '</button>';
-        html += '<button type="button" class="gt-btn danger" data-act="delete" title="حذف المجلد (العناصر تبقى محددة)">' +
+        return '<button type="button" class="gt-btn" data-act="rename" title="إعادة التسمية">' +
+                spriteIcon('ico-pencil') + '</button>' +
+            '<button type="button" class="gt-btn danger" data-act="delete" title="حذف المجلد">' +
                 '<svg class="icon" viewBox="0 0 24 24"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"></path></svg></button>';
-        return html;
     }
 
     function groupPathsHtml(paths, gid) {
-        if (!paths.length) {
-            return gid ? '<div class="gt-empty">مجلد فارغ — أشّر عناصر ثم اضغط «ضم».</div>'
-                       : '<div class="gt-empty">اسحب عنصراً إلى هنا لإخراجه من مجلده.</div>';
-        }
+        if (!paths.length) return '<div class="gt-empty">مجلد فارغ — اسحب إليه عناصر.</div>';
         let names = {};
         paths.forEach(function(p) { names[p] = p.split('/').filter(Boolean).pop() || p; });
         return '<div class="gt-paths">' + paths.map(function(p) {
             return '<div class="gt-path" draggable="true" data-path="' + esc(p) + '">' +
                 (selectedPaths.get(p) ? iconDir : iconFile) +
                 '<span class="gt-path-name" title="' + esc(p) + '">' + esc(names[p]) + '</span>' +
-                (gid ? '<button type="button" class="gt-path-x" data-act="unlink" data-path="' + esc(p) +
-                    '" title="أخرجه من المجلد">' + spriteIcon('ico-close') + '</button>' : '') +
+                '<button type="button" class="gt-path-x" data-act="unlink" data-path="' + esc(p) +
+                    '" title="أخرجه من المجلد">' + spriteIcon('ico-close') + '</button>' +
             '</div>';
         }).join('') + '</div>';
     }
 
-    function groupNodeHtml(node) {
-        let gid = node.group ? node.group.id : 0;
-        let open = isNodeOpen(node.key);
-        let hasChildren = node.children.length > 0;
-        let canToggle = node.paths.length > 0 || hasChildren;
-        let renaming = !!(groupRename && gid && groupRename.gid === gid);
-        return '<div class="gt-node" data-key="' + esc(node.key) + '">' +
+    function groupRowHtml(g) {
+        let gid = g.id;
+        let key = groupPathKey(g.name);
+        let open = isNodeOpen(key);
+        let renaming = !!(groupRename && groupRename.gid === gid);
+        let label = groupPathParts(g.name).length > 1
+            ? groupBreadcrumbHtml(g.name) : esc(g.name);
+        return '<div class="gt-node" data-key="' + esc(key) + '">' +
             '<div class="gt-row' + (renaming ? ' is-renaming' : '') + '" data-gid="' + gid +
-                '" data-key="' + esc(node.key) + '" data-drop="1">' +
-                '<button type="button" class="gt-twisty' + (open ? ' open' : '') + (canToggle ? '' : ' is-leaf') +
-                    '" data-act="toggle" data-key="' + esc(node.key) + '" aria-label="' + (open ? 'طي المجلد' : 'فتح المجلد') + '">' +
+                '" data-key="' + esc(key) + '" data-drop="1">' +
+                '<button type="button" class="gt-twisty' + (open ? ' open' : '') +
+                    '" data-act="toggle" data-key="' + esc(key) + '" aria-label="' + (open ? 'طي المجلد' : 'فتح المجلد') + '">' +
                     spriteIcon('ico-chevron-right') +
                 '</button>' +
                 '<svg class="gt-folder icon" viewBox="0 0 24 24"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>' +
-                (renaming ? renameInputHtml(node)
-                          : '<span class="gt-name" data-act="toggle" data-key="' + esc(node.key) +
-                            '" title="' + esc(node.name) + '">' + esc(node.label) + '</span>') +
-                '<span class="gt-count">' + node.paths.length + '</span>' +
-                '<div class="gt-actions">' + groupRowActionsHtml(node) + '</div>' +
+                (renaming ? renameInputHtml(g)
+                          : '<span class="gt-name" data-act="toggle" data-key="' + esc(key) +
+                            '" title="' + esc(g.name) + '">' + label + '</span>') +
+                '<span class="gt-count">' + g.paths.length + '</span>' +
+                '<div class="gt-actions">' + groupRowActionsHtml(g) + '</div>' +
             '</div>' +
-            (open ? groupPathsHtml(node.paths, gid) : '') +
-            (open ? node.children.map(groupNodeHtml).join('') : '') +
+            (open ? groupPathsHtml(g.paths, gid) : '') +
         '</div>';
     }
 
@@ -3731,25 +3708,7 @@ HTML_TEMPLATE = """
         let empty = document.getElementById('groupEmptyHint');
         if (empty) empty.style.display = copyGroups.length ? 'none' : 'block';
         if (!copyGroups.length && !smartPreview) { el.innerHTML = ''; return; }
-        let html = groupTreeRows().map(groupNodeHtml).join('');
-        if (copyGroups.length) {
-            // The "no folder" node is always present once groups exist: it is
-            // how an item is taken back out (drag onto it, or its close icon).
-            let loose = ungroupedPaths();
-            let open = isNodeOpen('');
-            html += '<div class="gt-node" data-key="">' +
-                '<div class="gt-row is-unassigned" data-gid="0" data-key="" data-drop="1">' +
-                    '<button type="button" class="gt-twisty' + (open ? ' open' : '') +
-                        '" data-act="toggle" data-key="" aria-label="' + (open ? 'طي' : 'فتح') + '">' +
-                        '<svg class="icon" viewBox="0 0 24 24"><polyline points="9 6 15 12 9 18"></polyline></svg></button>' +
-                    '<svg class="gt-folder icon" viewBox="0 0 24 24"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>' +
-                    '<span class="gt-name" data-act="toggle" data-key="">بدون مجلد</span>' +
-                    '<span class="gt-count">' + loose.length + '</span>' +
-                '</div>' +
-                (open ? groupPathsHtml(loose, 0) : '') +
-            '</div>';
-        }
-        el.innerHTML = html;
+        el.innerHTML = groupRows().map(groupRowHtml).join('');
         bindGroupRenameInput();
     }
 
@@ -3853,46 +3812,16 @@ HTML_TEMPLATE = """
         return base + ' ' + Date.now();
     }
 
-    // A new folder is created instantly under a placeholder name and opened for
-    // renaming: no dialog, no second sheet, nothing to confirm.
+    // A new folder is created empty under a placeholder name and opened for
+    // renaming. Nothing is checked first: files are dragged into it afterwards,
+    // or assigned from their folder chip.
     function startNewGroup() {
-        if (!selectedPaths.size) { setGroupStatus('حدّد عنصراً أولاً.'); return; }
         let name = uniqueGroupName('مجلد');
-        let picked = Array.from(pickPaths);
-        copyGroups.forEach(function(g) {
-            g.paths = g.paths.filter(function(p) { return picked.indexOf(p) === -1; });
-        });
-        let g = {id: nextGroupId++, name: name, paths: picked};
+        let g = {id: nextGroupId++, name: name, paths: []};
         copyGroups.push(g);
-        pickPaths = new Set();
         groupRename = {gid: g.id, value: name};
         renderGroupUI();
-        setGroupStatus('اكتب اسماً ثم Enter — أو Esc للإبقاء على «' + name + '».');
-    }
-
-    function startChildGroup(gid) {
-        let parent = findGroup(gid);
-        if (!parent) return;
-        let base = groupPathParts(parent.name);
-        if (base.length >= GROUP_MAX_DEPTH) {
-            setGroupStatus('أقصى تداخل ' + GROUP_MAX_DEPTH + ' مستويات.');
-            return;
-        }
-        let childName = '';
-        for (let n = 1; n < 500; n++) {
-            let candidate = base.concat(['فرع ' + n]).join('/');
-            if (groupNameError(candidate, null) === '') { childName = candidate; break; }
-        }
-        if (!childName) { setGroupStatus('تعذر إنشاء مجلد فرعي.'); return; }
-        let picked = Array.from(pickPaths);
-        copyGroups.forEach(function(g) {
-            g.paths = g.paths.filter(function(p) { return picked.indexOf(p) === -1; });
-        });
-        let child = {id: nextGroupId++, name: childName, paths: picked};
-        copyGroups.push(child);
-        pickPaths = new Set();
-        groupRename = {gid: child.id, value: groupPathParts(childName).slice(-1)[0]};
-        renderGroupUI();
+        setGroupStatus('اكتب اسماً ثم Enter.');
     }
 
     function deleteGroup(gid) {
@@ -3907,7 +3836,7 @@ HTML_TEMPLATE = """
             return !(k === key || k.indexOf(key + '/') === 0);
         });
         renderGroupUI();
-        setGroupStatus('حُذف المجلد — عناصره بقيت محددة.');
+        setGroupStatus('حُذف المجلد.');
     }
 
     function movePathToGroup(path, gid) {
@@ -3919,15 +3848,14 @@ HTML_TEMPLATE = """
             let target = findGroup(gid);
             if (!target) return;
             if (target.paths.indexOf(path) === -1) target.paths.push(path);
-            setGroupStatus('نُقل العنصر إلى «' + target.name + '».');
+            setGroupStatus('نُقل إلى «' + groupPathParts(target.name).join(' › ') + '».');
         } else {
-            setGroupStatus('أُخرج العنصر من مجلده — سيُنسخ مباشرة في الوجهة.');
+            setGroupStatus('أُخرج من المجلد — سيُنسخ في الوجهة.');
         }
         renderGroupUI();
     }
 
-    // Dropping one row on a folder moves it; the same drop on the "no folder"
-    // node takes it out of every group.
+    // Dropping one row on a folder row moves it.
     function clearGroupDropTargets() {
         let rows = document.querySelectorAll('#groupTree .gt-row.is-drop');
         for (let i = 0; i < rows.length; i++) rows[i].classList.remove('is-drop');
@@ -3969,8 +3897,7 @@ HTML_TEMPLATE = """
             if (s.length > GROUP_SEG_MAX) s = s.slice(0, GROUP_SEG_MAX).trim();
             return s;
         }).filter(function(s) { return s && s !== '.' && s !== '..'; });
-        // The user's depth first: 1 means "one folder named after the item's own
-        // parent", not the whole original path chain.
+        // One folder named after the item's own parent: no depth setting.
         if (segs.length > SMART_DEPTH) segs = segs.slice(segs.length - SMART_DEPTH);
         if (segs.length > GROUP_MAX_DEPTH) segs = segs.slice(segs.length - GROUP_MAX_DEPTH);
         while (segs.length > 1 && segs.join('/').length > GROUP_PATH_MAX) segs = segs.slice(1);
@@ -4024,7 +3951,7 @@ HTML_TEMPLATE = """
                 '<span class="smart-preview-meta">' + esc(meta) + '</span>' +
             '</label>';
         }).join('');
-        el.innerHTML = '<div class="smart-preview-head"><span>مقترح التنظيم</span>' +
+        el.innerHTML = '<div class="smart-preview-head"><span>مقترح للمحدد</span>' +
                 '<span class="num">' + smartPreview.length + '</span></div>' +
             '<div class="smart-preview-list">' + rows + '</div>' +
             '<div class="smart-preview-actions">' +
@@ -4095,7 +4022,7 @@ HTML_TEMPLATE = """
         if (!pill) return;
         let used = copyGroups.filter(function(g) { return g.paths.length > 0; });
         if (!selectedPaths.size || !used.length) { pill.style.display = 'none'; return; }
-        let names = used.map(function(g) { return g.name; }).join('، ');
+        let names = used.map(function(g) { return groupPathParts(g.name).join(' › '); }).join('، ');
         pill.style.display = 'inline-block';
         pill.textContent = (used.length === 1 ? 'مجلد: ' : 'مجلدات: ') + names;
         pill.title = 'سيتم إنشاء «' + names + '» داخل الوجهة — اضغط للعرض والتعديل';
@@ -4107,87 +4034,76 @@ HTML_TEMPLATE = """
         let modal = document.getElementById('selectedModal');
         if (!modal || modal.style.display !== 'flex') return;
         renderGroupTree();
-        renderPickBar();
         renderSelectedRows();
     }
 
-    function renderPickBar() {
-        let bar = document.getElementById('pickBar');
-        if (!bar) return;
-        let n = pickPaths.size;
-        bar.style.display = n ? 'flex' : 'none';
-        let count = document.getElementById('pickCount');
-        if (count) count.textContent = String(n);
-        let anyGrouped = false;
-        pickPaths.forEach(function(p) { if (groupNameForPath(p)) anyGrouped = true; });
-        let unassign = document.getElementById('unassignBtn');
-        if (unassign) unassign.style.display = anyGrouped ? 'inline-flex' : 'none';
-        let all = document.getElementById('pickAll');
-        if (all) {
-            all.checked = n > 0 && n === selectedPaths.size;
-            all.indeterminate = n > 0 && n < selectedPaths.size;
-        }
-        let hint = document.getElementById('pickAllHint');
-        if (hint) {
-            hint.textContent = !copyGroups.length ? '' :
-                (n ? 'اضغط «ضم N» على صف أي مجلد' : 'المجلدات: ' + copyGroups.length);
-        }
+    // ---- folder assignment sheet ------------------------------------------
+    // The folder chip on a selected file opens this list. It is the
+    // touch-friendly way to do what drag & drop does on a desktop.
+    let assignPath = '';
+
+    function closeAssignGroup(event) {
+        if (event && event.target && event.target.id !== 'assignGroupModal') return;
+        let modal = document.getElementById('assignGroupModal');
+        if (modal) modal.style.display = 'none';
+        assignPath = '';
     }
 
-    function togglePick(path, checked) {
-        if (checked) pickPaths.add(path); else pickPaths.delete(path);
-        // Compare data-path instead of building a selector: a track name with a
-        // quote or a bracket must never be able to break the lookup.
-        let rows = document.querySelectorAll('#selectedList .selected-row');
-        for (let i = 0; i < rows.length; i++) {
-            if (rows[i].getAttribute('data-path') === path) {
-                rows[i].classList.toggle('is-picked', pickPaths.has(path));
-            }
-        }
-        renderPickBar();
-        renderGroupTree();
+    function openAssignGroup(path) {
+        if (!selectedPaths.has(path)) return;
+        assignPath = path;
+        let label = document.getElementById('assignPathName');
+        if (label) { label.textContent = path; label.title = path; }
+        let err = document.getElementById('assignError');
+        if (err) err.textContent = '';
+        let input = document.getElementById('assignNewName');
+        if (input) input.value = '';
+        renderAssignGroupList();
+        let modal = document.getElementById('assignGroupModal');
+        if (modal) modal.style.display = 'flex';
     }
 
-    function togglePickAll(checked) {
-        pickPaths = checked ? new Set(selectedPaths.keys()) : new Set();
-        renderSelectedRows();
-        renderPickBar();
-        renderGroupTree();
-    }
-
-    function clearPick() {
-        pickPaths = new Set();
-        renderSelectedRows();
-        renderPickBar();
-        renderGroupTree();
-    }
-
-    function addPickedToGroup(gid) {
-        let g = findGroup(gid);
-        if (!g || !pickPaths.size) return;
-        // An item belongs to one group only: adding it here removes it from any
-        // other group, which is the "move it" the user expects.
-        copyGroups.forEach(function(other) {
-            if (other.id !== gid) {
-                other.paths = other.paths.filter(function(p) { return !pickPaths.has(p); });
-            }
+    function renderAssignGroupList() {
+        let list = document.getElementById('assignGroupList');
+        if (!list) return;
+        let current = groupNameForPath(assignPath);
+        let rows = ['<button type="button" class="assign-row' + (current ? '' : ' is-active') + '" data-gid="0">' +
+            spriteIcon('ico-close') + '<span>بدون مجلد</span><span class="assign-count">في الوجهة</span></button>'];
+        groupRows().forEach(function(g) {
+            let active = current && groupPathKey(current) === groupPathKey(g.name);
+            rows.push('<button type="button" class="assign-row' + (active ? ' is-active' : '') +
+                '" data-gid="' + g.id + '">' + spriteIcon('ico-folder') +
+                '<span class="truncate-text">' + groupBreadcrumbHtml(g.name) + '</span>' +
+                '<span class="assign-count">' + g.paths.length + '</span></button>');
         });
-        let set = new Set(g.paths);
-        pickPaths.forEach(function(p) { set.add(p); });
-        g.paths = Array.from(set);
-        pickPaths = new Set();
-        renderGroupUI();
-        setGroupStatus('أُضيفت العناصر إلى «' + g.name + '».');
+        list.innerHTML = rows.join('');
     }
 
-    function unassignPicked() {
-        if (!pickPaths.size) return;
-        copyGroups.forEach(function(g) {
-            g.paths = g.paths.filter(function(p) { return !pickPaths.has(p); });
-        });
-        pickPaths = new Set();
-        renderGroupUI();
-        setGroupStatus('أُخرجت العناصر من مجلداتها.');
+    function assignPathToGroup(gid) {
+        if (!assignPath) return;
+        movePathToGroup(assignPath, gid);
+        closeAssignGroup();
+    }
+
+    function createAssignGroup() {
+        if (!assignPath) return;
+        let input = document.getElementById('assignNewName');
+        let name = ((input && input.value) || '').trim();
+        let err = groupSegmentError(name);
+        if (err) {
+            let box = document.getElementById('assignError');
+            if (box) box.textContent = err;
+            return;
+        }
+        if (groupNameError(name, null)) {
+            let box = document.getElementById('assignError');
+            if (box) box.textContent = 'يوجد مجلد بنفس الاسم';
+            return;
+        }
+        let g = {id: nextGroupId++, name: name, paths: []};
+        copyGroups.push(g);
+        movePathToGroup(assignPath, g.id);
+        closeAssignGroup();
     }
 
     // One delegated listener for the tree: no group name or path is ever
@@ -4201,9 +4117,7 @@ HTML_TEMPLATE = """
             if (act === 'toggle') { toggleGroupNode(hit.getAttribute('data-key') || ''); return; }
             let row = hit.closest('.gt-row');
             let gid = row ? Number(row.getAttribute('data-gid')) : 0;
-            if (act === 'add') addPickedToGroup(gid);
-            else if (act === 'rename') startRenameGroup(gid);
-            else if (act === 'child') startChildGroup(gid);
+            if (act === 'rename') startRenameGroup(gid);
             else if (act === 'delete') deleteGroup(gid);
             else if (act === 'rename-save') commitGroupRename();
             else if (act === 'rename-cancel') cancelGroupRename();
@@ -4263,6 +4177,32 @@ HTML_TEMPLATE = """
         });
     }
 
+    // The folder chip on a selected row opens the assignment sheet.
+    let selectedListEl = document.getElementById('selectedList');
+    if (selectedListEl) {
+        selectedListEl.addEventListener('click', function(e) {
+            let chip = e.target.closest ? e.target.closest('.group-chip[data-path]') : null;
+            if (!chip) return;
+            e.stopPropagation();
+            openAssignGroup(chip.getAttribute('data-path'));
+        });
+    }
+
+    let assignListEl = document.getElementById('assignGroupList');
+    if (assignListEl) {
+        assignListEl.addEventListener('click', function(e) {
+            let btn = e.target.closest ? e.target.closest('button[data-gid]') : null;
+            if (!btn) return;
+            assignPathToGroup(Number(btn.getAttribute('data-gid')));
+        });
+    }
+    let assignNewEl = document.getElementById('assignNewName');
+    if (assignNewEl) {
+        assignNewEl.addEventListener('keydown', function(e) {
+            if (e.key === 'Enter') { e.preventDefault(); createAssignGroup(); }
+        });
+    }
+
     // ---- persistence: the cart survives a refresh ------------------------
     // Paths + groups + the search folder live in localStorage. They are written
     // on a 300ms debounce (checking ten boxes must not ten times serialise) and
@@ -4302,7 +4242,6 @@ HTML_TEMPLATE = """
     function dropMissingPath(path) {
         selectedPaths.delete(path);
         excludedPaths.delete(path);
-        pickPaths.delete(path);
         delete selectedSizes[path];
         copyGroups.forEach(function(g) {
             g.paths = g.paths.filter(function(p) { return p !== path; });
@@ -4463,8 +4402,8 @@ HTML_TEMPLATE = """
             let active = !!root && (current === root || current.startsWith(root + '/'));
             card.classList.toggle('active', active);
         });
-        // Tint the destination path box so the input itself says which volume it is.
-        let box = document.getElementById('custom_dest_path');
+        // Tint the destination path row so it names which volume it is.
+        let box = document.getElementById('destPathRow');
         if (box) {
             let st = storageForPath(current);
             STORAGE_KIND_LIST.forEach(function(k) { box.classList.remove('kind-border-' + k); });
@@ -4845,9 +4784,6 @@ HTML_TEMPLATE = """
             return p;
         }
         copyGroups.forEach(function(g) { g.paths = g.paths.map(remap); });
-        let nextPicks = new Set();
-        pickPaths.forEach(function(p) { nextPicks.add(remap(p)); });
-        pickPaths = nextPicks;
         let nextSizes = {};
         Object.keys(selectedSizes).forEach(function(p) { nextSizes[remap(p)] = selectedSizes[p]; });
         selectedSizes = nextSizes;
@@ -5081,29 +5017,12 @@ HTML_TEMPLATE = """
         else if (field) { field.textContent = path; field.title = path; }
     }
 
-    // The Android keyboard owns the lower part of the screen. visualViewport is
-    // the only honest measurement of how much is left; the CSS inset shrinks the
-    // tree instead of letting the last results hide under the keyboard.
-    let lastKeyboardInset = -1;
-    function syncViewportInset() {
-        let vv = window.visualViewport;
-        let inset = 0;
-        if (vv) {
-            inset = Math.max(0, Math.round((window.innerHeight || 0) -
-                (vv.height || window.innerHeight || 0) - (vv.offsetTop || 0)));
-        }
-        if (inset === lastKeyboardInset) return;
-        lastKeyboardInset = inset;
-        document.documentElement.style.setProperty('--kb-inset', inset + 'px');
-    }
-
     // After a search the results must be visible without a manual scroll. The
     // tree is the results panel and sits right under the search row now, so the
     // common case needs no movement; only an off-screen head is scrolled into
     // view. `nearest`-style scrolling used to do nothing when the head was only
     // partly visible, which is why this computes the delta explicitly.
     function revealSearchResults() {
-        syncViewportInset();
         let tree = document.getElementById('treeContainer');
         if (!tree) return;
         tree.scrollTop = 0;                     // a new result set starts at its first row
@@ -5130,14 +5049,6 @@ HTML_TEMPLATE = """
             else document.documentElement.scrollTop += delta;
         }
     }
-
-    syncViewportInset();
-    if (window.visualViewport && window.visualViewport.addEventListener) {
-        window.visualViewport.addEventListener('resize', syncViewportInset);
-        window.visualViewport.addEventListener('scroll', syncViewportInset);
-    }
-    window.addEventListener('resize', syncViewportInset);
-    window.addEventListener('scroll', syncViewportInset);
 
     function searchViewHeaderHtml(q, scope, count, fromCache) {
         return `<div id="searchViewHead" class="search-view-head">
@@ -5367,10 +5278,51 @@ HTML_TEMPLATE = """
     // Server-rendered so the pickers already show the saved choice.
     let activeFontId = '{{ active_font }}';
     let activeFontSizeId = '{{ active_font_size }}';
+    // True while الإعدادات › الفهرس is showing a throw-away draft opened by
+    // «إنشاء فهرس JOC». Nothing in that mode is written to disk.
+    let indexDraftActive = false;
 
     function openSettings() {
+        indexDraftActive = false;
+        setIndexDraftUi(false);
+        resetIndexForm();
         document.getElementById('settingsModal').style.display = 'flex';
         showSettingsTab('appearance');
+    }
+
+    function closeSettingsModal() {
+        indexDraftActive = false;
+        setIndexDraftUi(false);
+        // Unsaved edits are edits of a form, never of the saved defaults: the
+        // next open must show what is actually stored.
+        resetIndexForm();
+        document.getElementById('settingsModal').style.display = 'none';
+    }
+
+    function setIndexDraftUi(on) {
+        let banner = document.getElementById('indexDraftBanner');
+        if (banner) banner.style.display = on ? 'flex' : 'none';
+        let save = document.getElementById('indexSaveActions');
+        if (save) save.style.display = on ? 'none' : 'flex';
+        let close = document.getElementById('settingsCloseBtn');
+        if (close) close.style.display = on ? 'none' : 'inline-flex';
+        let actions = document.getElementById('indexDraftActions');
+        if (actions) actions.style.display = on ? 'flex' : 'none';
+    }
+
+    // Re-read the form from index_settings.json and drop any uploaded mask.
+    function resetIndexForm() {
+        if (savedIndexSettings) {
+            applyIndexSettingsToUI(savedIndexSettings);
+            let voice = document.getElementById('ttsVoice');
+            if (voice && voice.options.length && savedIndexSettings.tts_voice) {
+                voice.value = savedIndexSettings.tts_voice;
+            }
+        }
+        customUploaded = null;
+        let name = document.getElementById('customAudioName');
+        if (name) name.textContent = 'لم يتم اختيار ملف بعد';
+        setSettingsState('', '', 'indexSaveState');
     }
 
     function showSettingsTab(tab) {
@@ -5385,11 +5337,31 @@ HTML_TEMPLATE = """
         });
     }
 
-    // Open the settings dialog on a specific tab (the create dialog links here).
-    function openIndexSettings() {
-        document.getElementById('jocModal').style.display = 'none';
+    // The JOC button opens the same index pane as a draft: edit freely, then
+    // «متابعة» builds the index with those values. Closing throws them away.
+    function openIndexDraft(reset) {
+        if (reset) resetIndexForm();
+        indexDraftActive = true;
+        setIndexDraftUi(true);
         document.getElementById('settingsModal').style.display = 'flex';
         showSettingsTab('index');
+    }
+
+    // Back from the create dialog: keep the values currently in the form.
+    function openIndexSettings() {
+        document.getElementById('jocModal').style.display = 'none';
+        openIndexDraft(false);
+    }
+
+    function continueJocDraft() {
+        indexDraftActive = false;
+        setIndexDraftUi(false);
+        document.getElementById('settingsModal').style.display = 'none';
+        openJocCreate();
+    }
+
+    function cancelJocDraft() {
+        closeSettingsModal();
     }
 
     // Applying a theme is only token assignment: the whole palette is a set of
@@ -5455,8 +5427,9 @@ HTML_TEMPLATE = """
 
     function pickFontSize(id) {
         if (!id || id === activeFontSizeId) return;
-        let select = document.getElementById('sizeSelect');
-        if (select) select.value = id;
+        document.querySelectorAll('#sizeSeg .size-seg-btn').forEach(function(btn) {
+            btn.classList.toggle('is-active', btn.getAttribute('data-size-id') === id);
+        });
         activeFontSizeId = id;
         saveTypography({ font_size: id }, 'settingsSaveState');
     }
@@ -5467,18 +5440,6 @@ HTML_TEMPLATE = """
         let cb = document.getElementById('autoSpoofCheck');
         if (cb) cb.checked = !!enabled;
         saveTypography({ auto_spoof: !!enabled }, 'generalSaveState');
-    }
-
-    // The number is clamped to 1..GROUP_MAX_DEPTH here as well, so the field can
-    // never show a value the saved settings (or the server) would refuse.
-    function pickSmartDepth(value) {
-        let n = parseInt(value, 10);
-        if (!isFinite(n) || isNaN(n)) n = SMART_DEPTH;
-        n = Math.max(1, Math.min(GROUP_MAX_DEPTH, n));
-        SMART_DEPTH = n;
-        let input = document.getElementById('smartDepthInput');
-        if (input) input.value = String(n);
-        saveTypography({ smart_depth: n }, 'generalSaveState');
     }
 
     function pickTheme(id) {
@@ -5550,7 +5511,6 @@ HTML_TEMPLATE = """
         if (selectedPaths.size === 0) {
             document.getElementById('selectedList').innerHTML = '<div style="text-align:center; padding:40px; color:var(--text-muted);">لا يوجد عناصر محددة</div>';
             document.getElementById('totalSizeSelected').innerHTML = 'لا توجد ملفات محددة';
-            document.getElementById('pickBar').style.display = 'none';
             renderGroupUI();
             return;
         }
@@ -5620,7 +5580,7 @@ HTML_TEMPLATE = """
             let itemName = path.split('/').filter(Boolean).pop() || path;
 
             let row = document.createElement('div');
-            row.className = 'selected-row' + (pickPaths.has(path) ? ' is-picked' : '');
+            row.className = 'selected-row';
             row.setAttribute('data-path', path);
             row.draggable = true;
             row.addEventListener('dragstart', function(e) {
@@ -5632,14 +5592,6 @@ HTML_TEMPLATE = """
                 row.classList.remove('is-dragging');
                 clearGroupDropTargets();
             });
-
-            let box = document.createElement('input');
-            box.type = 'checkbox';
-            box.className = 'checkbox pick-box';
-            box.value = 'pick';   // never a path: refreshCheckboxStates() syncs the tree
-            box.checked = pickPaths.has(path);
-            box.title = 'تأشير للتجميع';
-            box.onchange = function() { togglePick(path, box.checked); };
 
             let main = document.createElement('div');
             main.className = 'selected-row-main';
@@ -5653,19 +5605,22 @@ HTML_TEMPLATE = """
             top.appendChild(nameEl);
             main.appendChild(top);
 
+            // The folder chip is the touch-friendly assignment control; drag &
+            // drop onto the folder list does the same thing.
             let gname = groupNameForPath(path);
-            if (gname) {
-                let chip = document.createElement('span');
-                chip.className = 'group-chip';
-                chip.textContent = 'داخل: ' + groupPathParts(gname).join(' › ');
-                chip.title = 'سيُنسخ داخل مجلد «' + gname + '»';
-                main.appendChild(chip);
-            } else if (copyGroups.length) {
-                let chip = document.createElement('span');
-                chip.className = 'group-chip none';
-                chip.textContent = 'بدون مجلد — سيُنسخ مباشرة في الوجهة';
-                main.appendChild(chip);
-            }
+            let chip = document.createElement('button');
+            chip.type = 'button';
+            chip.className = 'group-chip' + (gname ? '' : ' none');
+            chip.setAttribute('data-path', path);
+            chip.setAttribute('data-act', 'assign');
+            chip.title = gname
+                ? 'داخل «' + groupPathParts(gname).join(' › ') + '» — اضغط للتغيير'
+                : 'بدون مجلد — اضغط للاختيار';
+            chip.innerHTML = spriteIcon(gname ? 'ico-folder' : 'ico-close');
+            let chipLabel = document.createElement('span');
+            chipLabel.textContent = gname ? 'داخل: ' + groupPathParts(gname).join(' › ') : 'بدون مجلد';
+            chip.appendChild(chipLabel);
+            main.appendChild(chip);
 
             let right = document.createElement('div');
             right.className = 'selected-row-right';
@@ -5682,7 +5637,6 @@ HTML_TEMPLATE = """
             right.appendChild(sizeEl);
             right.appendChild(removeBtn);
 
-            row.appendChild(box);
             row.appendChild(main);
             row.appendChild(right);
             list.appendChild(row);
@@ -5723,7 +5677,6 @@ HTML_TEMPLATE = """
         copyGroups.forEach(function(g) {
             g.paths = g.paths.filter(function(p) { return p !== path; });
         });
-        pickPaths.delete(path);
         refreshCheckboxStates();
         updateSelectedTotal(Array.from(selectedPaths.keys()));
     }
@@ -5859,9 +5812,9 @@ HTML_TEMPLATE = """
         });
         document.getElementById('customFileBox').style.display = (mode === 'file') ? 'block' : 'none';
         let hint = document.getElementById('maskHint');
-        if(mode === 'none') hint.innerHTML = 'يبدأ الفهرس الصوتي مباشرة دون أي تمويه.';
-        else if(mode === 'noise') hint.innerHTML = 'إضافة ضوضاء منخفضة وغير مزعجة لمدة دقيقتين قبل بدء الفهرس الصوتي لإخفائه.';
-        else hint.innerHTML = 'إضافة ملف MP3 مخصص كاملاً في بداية الفهرس الصوتي لإخفائه.';
+        if(mode === 'none') hint.innerHTML = 'بلا تمويه.';
+        else if(mode === 'noise') hint.innerHTML = 'ضوضاء منخفضة لدقيقتين قبل الفهرس.';
+        else hint.innerHTML = 'ملف MP3 في بداية الفهرس.';
     }
 
     function uploadCustomAudio(file) {
@@ -6087,6 +6040,10 @@ HTML_TEMPLATE = """
     }
 
     function saveIndexSettingsNow() {
+        // In draft mode (opened by «إنشاء فهرس JOC») this form is a scratch pad:
+        // writing it here would overwrite the user's saved defaults, which is
+        // exactly what the draft exists to prevent.
+        if (indexDraftActive) return;
         setSettingsState('جارٍ الحفظ...', '', 'indexSaveState');
         fetch('/api/index_settings', {
             method: 'POST', headers: {'Content-Type': 'application/json'},
@@ -6141,9 +6098,18 @@ HTML_TEMPLATE = """
             + '</div>' + rows.map(function(r) { return '<div>' + r + '</div>'; }).join('');
     }
 
+    // «إنشاء فهرس JOC» opens the index pane as a throw-away draft first: the
+    // fields are editable, but nothing is written to index_settings.json because
+    // of a creation. Closing the pane returns to the saved defaults.
     function openJocModal() {
         let dest = document.getElementById('custom_dest_path').value;
         if(!dest) return alert('يرجى تحديد مسار الوجهة أولاً.');
+        openIndexDraft(true);
+    }
+
+    // The name/summary step, reached from «متابعة إلى الإنشاء» (and from the
+    // create dialog's «الإعدادات» link when the user goes back and forth).
+    function openJocCreate() {
         // The name is generated per creation and never remembered. It is the one
         // field this dialog owns, and it stays editable until "إنشاء".
         document.getElementById('jocFileName').value = makeRandomName(5);
@@ -6223,6 +6189,10 @@ HTML_TEMPLATE = """
                               saveToDest: saveToDest, saveDir: dest };
         
         document.getElementById('jocModal').style.display = 'none';
+        // Everything this run needs is already captured in pendingJocActions,
+        // so the pane can go back to the saved defaults immediately: a draft must
+        // never leak into the next creation.
+        resetIndexForm();
         
         document.getElementById('modalTitle').innerText = 'جاري إنشاء الفهرس النصي...';
         document.getElementById('currentFile').innerText = 'قد تستغرق العملية بضع ثوانٍ للتحليل...';
@@ -6664,8 +6634,16 @@ HTML_TEMPLATE = """
                 // slow without any volume being in trouble.
                 let currentEl = document.getElementById('currentFile');
                 if (data.phase === 'syncing' && data.action !== 'tts') {
-                    currentEl.innerText = 'تثبيت البيانات على الكارت…'
-                        + (data.sync_seconds ? ' (' + data.sync_seconds + ' ث)' : '');
+                    // A fast flush (the normal case) keeps the current line as it
+                    // is. Only a flush that is genuinely slow earns the suffix,
+                    // once, so the dialog stops repeating it every poll.
+                    let syncSecs = data.sync_seconds || 0;
+                    if (syncSecs >= 3) {
+                        currentEl.innerText = (data.file ? data.file + ' — ' : '') +
+                            'تثبيت البيانات على الكارت (' + syncSecs + ' ث)';
+                    } else {
+                        currentEl.innerText = data.file || '';
+                    }
                     currentEl.style.color = 'var(--text-muted)';
                 } else if (data.phase === 'verifying') {
                     currentEl.innerText = 'جاري التحقق من الحجم الإجمالي... '
@@ -6801,7 +6779,6 @@ HTML_TEMPLATE = """
                         // The parent folders belonged to the copy that just ran.
                         if (data.action === 'copy' && copyGroups.length) {
                             copyGroups = [];
-                            pickPaths = new Set();
                             renderGroupUI();
                         }
                     } else if (data.status === 'cancelled' && data.time_taken) {
@@ -6876,7 +6853,12 @@ HTML_TEMPLATE = """
         if (!open.length) return;
         let front = open.filter(function(m) { return m.classList.contains('modal-front'); })[0]
             || open[open.length - 1];
-        if (front) front.style.display = 'none';
+        if (!front) return;
+        // These two own transient state: closing them must also drop the state,
+        // not just hide the box (a draft must never survive its dialog).
+        if (front.id === 'assignGroupModal') { closeAssignGroup(); return; }
+        if (front.id === 'settingsModal') { closeSettingsModal(); return; }
+        front.style.display = 'none';
     });
 
     function resetTransfer() {

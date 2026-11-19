@@ -149,6 +149,11 @@ byte-identical (DFS pre-order + `natural_sort_key`) and stay single-threaded.
   changes the playback order. `verify: false` from the UI skips the pass.
 - **`copy_file_sequential()`** opens src/dst with `os.open`, `posix_fadvise(POSIX_FADV_SEQUENTIAL)` hints, then uses `os.sendfile` (4 MB chunks) when the kernel/filesystem supports it; on `EINVAL`/`ENOSYS`/`EXDEV`/`EOPNOTSUPP`/`EAGAIN` it continues with the 4 MB buffered loop from the same offset. sendfile measured ~2× faster on Android FUSE. Both paths write front-to-back, and on any error the half-written destination file is deleted so playback order can't be polluted.
 - **No `fsync` per file.** The transfer calls `sync_with_heartbeat()` every `SYNC_THRESHOLD` (256 MB) and once at the end. The threshold is also the length of the single «تثبيت البيانات على الكارت…» step: 1 GB of dirty pages on a card writing at 10 MB/s was a 100-second blocking `syncfs`, which users read as a hang. 256 MB caps that step at ~25 s worst case on a slow card and still flushes once per ~1 GB of a real internal copy. Ordering comes from *sequential writes*, never from fsync — the per-file fsync was removed because it cost tens of ms per MP3 (the main cause of "copy is very slow"). Do not add it back, and keep the threshold large: a small value turns one big copy into hundreds of short stalls.
+  - The flush **does not rewrite `file`**. `sync_with_heartbeat()` sets
+    `phase='syncing'` / `syncing=True` only, so the current line stays «track.mp3»;
+    the UI appends «— تثبيت البيانات على الكارت (N ث)» once `sync_seconds >= 3`
+    and leaves a fast flush alone. Writing the sentence into `file` made it
+    appear over and over for every ordinary flush.
   - `sync_with_heartbeat(phase, dest=...)` flushes with **`flush_destination(dest)`**:
     `syncfs(fd)` from libc via `ctypes` (one filesystem) and only falls back to
     `os.sync()` (every filesystem on the phone) when libc has no `syncfs`. The
@@ -278,14 +283,15 @@ three `<section class="section">` blocks separated by a hairline (`.section + .s
   block (the section has no `.section-head`): the captions under the icons are
   the only labels. There is **no source path** in the UI — the source is the
   folder open in the browser (`currentSourceRoot`), which is also where
-  `openPathBrowser('source')` starts. Under the tiles sits `.dest-line`:
-  deliberately quiet and on the destination side (`justify-content:flex-end`,
-  i.e. the left edge in RTL) — a 30px «تحديد» (`openPathBrowser('dest')`) and the
-  still-editable `#custom_dest_path`, which renders as plain muted text
-  (`transparent` background, no border) until it is focused. It is secondary by
-  design: the tiles say where the copy goes, this line only says which folder.
-  `#diskSpaceDiv` stays under it. `chooseStorage()` / `syncStorageCards()` are
-  unchanged, so the tile state and the destination box tint keep working.
+  `openPathBrowser('source')` starts. Under the tiles sits `.dest-line`, centred:
+  one `.dest-path` row (`#destPathRow`, `role="button"`) holding a folder icon,
+  the **read-only** `#custom_dest_path` and a chevron. There is no «تحديد»
+  button and the input is not editable (`readonly`, `tabindex="-1"`,
+  `pointer-events:none`): tapping anywhere on the row runs
+  `openPathBrowser('dest')`, and the same works with Enter/Space on the row.
+  `syncStorageCards()` tints `#destPathRow` with the volume's
+  `kind-border-*`, never the input. `#diskSpaceDiv` stays under it.
+  `chooseStorage()` / `syncStorageCards()` are otherwise unchanged.
 - **File browser section**: the sort row, the search row (`#searchControls`) and
   `#treeContainer` are one attached block; search sits directly above the
   results, so typing never leaves the input far from them. The row is the input
@@ -304,6 +310,12 @@ three `<section class="section">` blocks separated by a hairline (`.section + .s
   keyboard with the same instant behaviour (a 96px margin keeps the sticky head
   plus one row clear). The folder-scope *options* are still in
   `#searchScopeModal` (see «Search scope»).
+  `#treeContainer` has a **fixed height** (`.tree { height: clamp(320px, 54vh,
+  560px) }`), not a content-driven one: without it a search result set of a few
+  rows collapsed the browser to a sliver and every folder open resized the page.
+  It scrolls inside, so browsing and searching keep the same box. `--kb-inset`
+  and `syncViewportInset()` are gone — the keyboard is handled by
+  `revealSearchResults()` scrolling, never by shrinking the tree.
 - **Tools section**: the last section of the page. **One** `.tools-actions` row
   with two index tools side by side: «إنشاء فهرس JOC» and «بحث فوري»
   (`#cacheFolderBtn`, with `#cacheStatusText` under the row). They are the same
@@ -348,51 +360,50 @@ three `<section class="section">` blocks separated by a hairline (`.section + .s
   the progress dialog's `#speedText` are written with `textContent`, never
   `innerText` (jsdom has no `innerText`, and that is the gate's environment).
 
-## Groups window: folder tree, inline rename, drag & drop
-`#selectedModal` turns the flat group list into a **folder tree** (`#groupTree`).
-The data model did not change: a group is still `{id, name, paths}` and `name` is
-a breadcrumb (`"A/B"`), so the tree is **derived on every render**
-(`groupTreeRows()` → nested nodes) and there is no second model to keep in sync.
+## Groups window: «مجلدات النسخ», flat list, drag & drop
+`#selectedModal` shows the copy folders as **one flat list** (`#groupTree`). A
+group is still `{id, name, paths}` and a path lives in exactly one group; every
+new folder is a single FAT segment. A legacy saved name may still contain `/`
+and is displayed as a breadcrumb, but the UI never creates nesting any more.
 
-- Rows are `.gt-row` with a twisty, a folder icon, the segment label, a count and
-  the actions. Only *closed* nodes are remembered (`groupNodeClosed`): a folder
-  the user just created must appear expanded.
+- Rows are `.gt-row` with a twisty, a folder icon, the name, a count and two
+  small actions (rename, delete). Only *closed* rows are remembered
+  (`groupNodeClosed`): a folder the user just created appears expanded.
 - **Renaming happens in the row** (`startRenameGroup` → `#gtRenameInput`): Enter
-  saves, Esc cancels, ✓/✕ do the same. Only the **last segment** is edited;
-  `commitGroupRename()` renames every nested group under it (`A/B` follows `A`).
-  `groupRenameError` validates the segment (`groupSegmentError`), the whole path
-  length and casefold duplicates *including* the renamed descendants, and Save
+  saves, Esc cancels, ✓/✕ do the same. `groupRenameError` validates the segment
+  (`groupSegmentError`), the whole path length and casefold duplicates, and Save
   is disabled while there is an error. No `showInputModal`, no second sheet.
-- **Creating is one click**: «مجلد جديد» (`startNewGroup`) adds `مجلد N` (unique
-  via `uniqueGroupName`) with the checked rows as its items and opens the rename;
-  the `＋` on a folder (`startChildGroup`) creates `parent/فرع N`, disabled at
-  `GROUP_MAX_DEPTH`. Empty groups are allowed here — «ضم» later fills them.
-- **Delete** (`deleteGroup`) removes the folder *and* its nested groups; its
-  files stay selected and fall back to «بدون مجلد».
-- **Drag & drop** moves one item: rows in `.gt-path` carry
-  `text/x-sdmp3-path`, `.gt-row[data-drop]` is the target and
-  `movePathToGroup(path, gid|0)` re-assigns it (an item lives in exactly one
-  group). The permanent **«بدون مجلد»** node (`ungroupedPaths()`) lists what
-  belongs to no folder and is the drop area that takes an item out of every
-  group. The tree has one **delegated** click/drag listener: no group name or
+- **Creating is one click**: «مجلد جديد» (`startNewGroup`) adds an **empty**
+  folder named `مجلد N` (unique via `uniqueGroupName`) and opens the rename. No
+  checkboxes are involved: files are moved into it by drag & drop or the chip.
+- **Delete** (`deleteGroup`) removes the folder; its files stay selected and
+  fall back to «بدون مجلد».
+- **Assignment has two equally simple paths.** Drag & drop moves one item: rows
+  in `.gt-path` and `.selected-row` carry `text/x-sdmp3-path`,
+  `.gt-row[data-drop]` is the target, and `movePathToGroup(path, gid)` re-assigns
+  it. The touch path is the **folder chip** under each selected file
+  (`button.group-chip[data-path]`): it opens `#assignGroupModal`, one row per
+  folder plus a «بدون مجلد» row and a «مجلد جديد» field. There is no
+  «تحديد الكل للتجميع», no «ضم N» button, no pick bar and no «بدون مجلد» tree
+  node.
+- The group tree has one **delegated** click/drag listener: no group name or
   path is ever interpolated into an inline `onclick` (only `esc()`ed attributes).
-- Checkboxes in the selected-file list still use `value="pick"` and `data-path`;
-  the group tree never writes a path into a checkbox value.
+  Files are never identified by a checkbox `value` any more; the selected-file
+  list has no pick checkboxes at all.
 
-## «تنظيم ذكي»: propose, preview, apply
-`smartOrganizeGroups()` maps **each selection** to its own parent path relative
-to `currentSourceRoot` (`sourceRelativeParent`), keeps the last **`SMART_DEPTH`**
-segments, and falls back to `sourceBasename()` for an item sitting directly in
-the root. That fixes the two old failure modes (a flat selection and selections
-from different parents).
+## «تنظيم ذكي»: propose from the selection, preview, apply
+`smartOrganizeGroups()` builds its proposal **only from `selectedPaths`** — the
+files and folders the user actually checked — never from the whole source tree.
+Each selected item maps to its own parent path relative to `currentSourceRoot`
+(`sourceRelativeParent`), keeping the last `SMART_DEPTH` segments and falling
+back to `sourceBasename()` for an item sitting directly in the root.
 
-`SMART_DEPTH` is the saved `smart_depth` setting (الإعدادات › عام), default
-**1** — one folder named after the item's own parent, not the whole original
-path chain — and capped at `GROUP_MAX_DEPTH` (3). `clampGroupSegments()` applies
-it before the FAT/length rules, so 2 or 3 keeps the trailing path levels and the
-preview never proposes a group the server would refuse. A saved value outside
-1..3 is clamped on load (`sdmp3_state.load_settings`) and on POST
-(`_coerce_smart_depth`).
+`SMART_DEPTH` is now the constant **1**: one folder named after the item's own
+parent, not the whole original path chain. The General setting and
+`pickSmartDepth` are gone; `clampGroupSegments()` still enforces the FAT/length
+rules and `GROUP_MAX_DEPTH` (3) before the preview, so it can never propose a
+group the server would refuse. A legacy saved `smart_depth` in `settings.json`
+is still loaded/clamped by `sdmp3_state` but no longer reaches the page.
 
 The proposal is a **preview** (`smartPreview` → `#smartPreview`), one checkbox
 per folder with its item count and «موجود/جديد»: nothing is written until
@@ -434,29 +445,29 @@ the selection, the groups and the search folder. Additive and cheap:
 - **Markup built with `innerHTML` must escape names/paths with `esc()` (quotes
   included). Row buttons carry no data: one delegated listener reads the path
   from the row, so a filename with `"` or `'` can't break or inject markup.
-- **The group UI has its own checkbox namespace.** Rows inside «الملفات المحددة»
-  use checkboxes with `value="pick"` (never a path) plus `data-path`, so
-  `refreshCheckboxStates()` — which syncs every `.checkbox` whose value starts
-  with `/` — can never treat them as tree selections. `pickPaths` is the separate
-  Set. Group-card and assign-sheet buttons are handled by **delegated** listeners
-  reading `data-gid`/`data-act`, so no group name is ever interpolated into an
-  `onclick`.
+- **The selected-file list has no pick checkboxes.** Rows are `.selected-row`
+  with a folder chip (`button.group-chip[data-path]`) instead, so the picker's
+  `.checkbox` sync (`refreshCheckboxStates()`) can never mistake a group control
+  for a tree selection. Group-card and assign-sheet buttons are handled by
+  **delegated** listeners reading `data-gid`/`data-act`, so no group name is ever
+  interpolated into an `onclick`.
 - **`modal-selected` has a fixed height** (`min(84vh, 760px)`, `92vh` on phones)
-  with `#selectedList` as the flex child that scrolls, so the pick bar and the
-  confirm action cannot slide under the finger while rows are checked. The assign
+  with `#selectedList` as the flex child that scrolls, so the folder list and the
+  confirm action cannot slide under the finger. The assign
   sheet is `position:absolute` inside it (`bottom:14px`) for the same reason.
   `modal-settings` uses the same fixed-height rule for its tabs.
 - Group data lives only in JS: `copyGroups = [{id, name, paths}]`, one path per
-  group; `name` is a breadcrumb (`A/B`), so nesting needs no tree model. It is
+  group. A legacy `name` may still be a breadcrumb (`A/B`) and is shown as one,
+  but the UI never creates nesting. It is
   cleared when a copy finishes with `action === 'copy'` and when the selection
   becomes empty; cancelled/failed copies keep it for retry. It is mirrored to
   `sdmp3_ui_state_v1` (see «Remembered UI state») so a refresh keeps the cart.
-- **Groups are typed as paths, validated client-side too**: `GROUP_BAD_CHARS`
-  deliberately does **not** contain `/` (it is the nesting separator), depth ≤
-  `GROUP_MAX_DEPTH` (3), full path ≤ `GROUP_PATH_MAX` (180), each segment ≤ 80.
-  The card shows the breadcrumb (`A › B`) and a «＋ فرع» button (`startChildGroup`)
-  that pre-fills `parent/`, disabled at depth 3. `saveGroupEditor`/`renameGroup`
-  store the canonical `groupPathParts(...).join('/')`.
+- **Group names are still validated as paths** (`sdmp3_groups.py` is the
+  authority): `GROUP_BAD_CHARS` deliberately does **not** contain `/`,
+  depth ≤ `GROUP_MAX_DEPTH` (3), full path ≤ `GROUP_PATH_MAX` (180), each segment
+  ≤ 80. The page applies the same rules in `groupSegmentError` /
+  `groupRenameError`, but there is no «＋ فرع» / `startChildGroup` any more:
+  new folders are one segment.
 - `/` is rendered per request; do not add a cache header to it — it embeds the
   per-volume storage list, the active theme **and** the saved font/size.
 - `theme-color` is the active theme's `--bg` (`{{ theme_bg }}`), not a constant:
@@ -467,32 +478,36 @@ the selection, the groups and the search folder. Additive and cheap:
 has **four tabs in this order**: «المظهر», «عام», «الفهرس», «حول». One pane per
 tab, all in the DOM (`#settingsPaneAppearance` / `General` / `Index` / `About`);
 `showSettingsTab(tab)` only toggles `display`, so a form value is never rebuilt
-or lost. `openIndexSettings()` (the create dialog's button) opens the modal
-straight on «الفهرس».
+or lost. `openIndexSettings()` (the create dialog's button) returns to the
+«الفهرس» pane in draft mode, keeping whatever is currently in the form.
 
 - **المظهر** owns the look: `#themeSelect` **and** the typography controls —
-  `#fontSelect` (12 options with `data-font-id`), `#sizeSelect` (4 options with
-  `data-size-id`) and a live `#fontPreview` styled with `{{ app_font }}`. The
-  theme select is rendered server-side by Jinja from `themes` (each `<option>`
-  carries `data-theme-id` and is selected server-side), so the page needs no
-  theme JSON in JS. `pickTheme(id)` POSTs `/api/settings`, then `applyTheme()`
-  applies the returned `tokens`/`theme_bg`, sets `<html data-theme>` and syncs
-  the select. `pickFont(id)` / `pickFontSize(id)` POST one key each, apply
-  `app_font` / `font_scale` from the response and report in
+  `#fontSelect` (12 options with `data-font-id`), the `#sizeSeg` segmented
+  control (4 `.size-seg-btn` buttons with `data-size-id`) and a live
+  `#fontPreview` styled with `{{ app_font }}`. There is **no `#sizeSelect`** any
+  more: a four-item choice does not need a dropdown. The theme select is rendered
+  server-side by Jinja from `themes` (each `<option>` carries `data-theme-id` and
+  is selected server-side), so the page needs no theme JSON in JS. `pickTheme(id)`
+  POSTs `/api/settings`, then `applyTheme()` applies the returned
+  `tokens`/`theme_bg`, sets `<html data-theme>` and syncs the select.
+  `pickFont(id)` / `pickFontSize(id)` POST one key each, apply `app_font` /
+  `font_scale` from the response, toggle the active segment button and report in
   `#settingsSaveState`. No reload, no re-render.
 - **عام** owns the `auto_spoof` switch (`#autoSpoofCheck` → `pickAutoSpoof`), the
-  «تنظيم ذكي» depth number (`#smartDepthInput` → `pickSmartDepth`, 1..3, clamped
-  client- and server-side), the copy-verification switch (`#verifyAfterCopy`,
-  moved here from the route; it still writes `sdmp3_verify_after_copy` and
-  `startTransfer()` still reads it) and — at the bottom — the read-only
-  «حالة الجهاز» block: `#generalShizukuStatus` and `#generalCardStatus` (see
-  «Version + status in the UI»). Settings switches report in `#generalSaveState`;
-  the two status rows are filled by `loadSystemInfo()` / `renderCardStatus()`.
+  copy-verification switch (`#verifyAfterCopy`, moved here from the route; it
+  still writes `sdmp3_verify_after_copy` and `startTransfer()` still reads it)
+  and — at the bottom — the read-only «الجهاز» block: `#generalShizukuStatus`
+  and `#generalCardStatus` (see «Version + status in the UI»). The «تنظيم ذكي»
+  depth field is gone. Settings switches report in `#generalSaveState`; the two
+  status rows are filled by `loadSystemInfo()` / `renderCardStatus()`.
 - **الفهرس** owns the JOC index settings — see «Index settings» below. It is the
-  only place they are written.
+  only place they are written, and it also serves as a throw-away draft (banner,
+  no save button) when «إنشاء فهرس JOC» opens it.
 - `setSettingsState(text, kind, elementId)` writes one status line per pane
   (`#settingsSaveState`, `#generalSaveState`, `#indexSaveState`). The header gear
-  button (`.header-settings`) opens the modal on «المظهر».
+  button (`.header-settings`) opens the modal on «المظهر»; its footer «إغلاق»
+  calls `closeSettingsModal()` (never a raw `display='none'`), because closing
+  must also reset the index draft.
 
 ## Typography: fonts (`sdmp3_fonts.py` + `static/fonts/`)
 Eleven Arabic Google fonts plus the `system` default, all **self-hosted**: 28
@@ -649,12 +664,24 @@ The JOC form lives in الإعدادات › الفهرس and is written **only*
   The route echoes the canonical settings so the form shows what was written.
 - The **output name is not part of this shape** (older files may still carry a
   `joc_filename`; it is ignored, never rewritten). It is generated by
-  `openJocModal()` per creation (`makeRandomName(5)`) and stays editable until
+  `openJocCreate()` per creation (`makeRandomName(5)`) and stays editable until
   «إنشاء». `currentJocTxtName` remembers the name the index was built with.
-- The create dialog (`#jocModal`) is now just the name field plus
-  `renderJocSummary()` — a read-out of the saved settings — with buttons
-  «الإعدادات» (`openIndexSettings()`), «إلغاء» and «إنشاء». `submitJocIndex()`
-  does **not** save settings (that was the old, confusing behaviour).
+- **«إنشاء فهرس JOC» opens الإعدادات › الفهرس first, as a draft.** `openJocModal()`
+  calls `openIndexDraft(true)`: the pane is editable, but `indexDraftActive` is
+  true, the draft banner (`#indexDraftBanner`) is shown, the save button
+  (`#indexSaveActions`) is hidden and the draft actions (`#indexDraftActions`:
+  «إلغاء» / «متابعة إلى الإنشاء») replace it. `saveIndexSettingsNow()` returns
+  immediately in that mode, so a one-off tweak **never** overwrites the saved
+  defaults — closing the pane (`closeSettingsModal`) or cancelling
+  (`cancelJocDraft`) restores them via `resetIndexForm()`.
+- «متابعة إلى الإنشاء» (`continueJocDraft()`) closes the settings modal and calls
+  `openJocCreate()`, which generates the name, renders `renderJocSummary()` (a
+  read-out of the settings the run will actually use) and opens `#jocModal`.
+  That dialog is just the name field plus the summary, with buttons «الإعدادات»
+  (`openIndexSettings()`, back to the pane in draft mode), «إلغاء» and «إنشاء».
+  `submitJocIndex()` snapshots everything into `pendingJocActions` and calls
+  `resetIndexForm()` before starting, so a draft never leaks into the next
+  creation; it does **not** save settings.
 
 ### Theme registry (`sdmp3_themes.py`)
 A theme is one dict of palette colours; **every** alpha variant (`--accent-soft`,
