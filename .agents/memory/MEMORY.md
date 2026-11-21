@@ -1,0 +1,1 @@
+- [Android flush restrictions](android-flush.md) — directory descriptor access and syncfs permission failures must not be mistaken for SD-card write failures.

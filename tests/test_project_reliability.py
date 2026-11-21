@@ -368,6 +368,78 @@ class CopyWorkerReliabilityTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, 'تعذر تثبيت البيانات على الوجهة'):
                 project.flush_destination('/unused')
 
+    def test_android_directory_access_restrictions_do_not_report_bad_card(self):
+        for code in (errno.EACCES, errno.EPERM):
+            with self.subTest(errno=code), \
+                    mock.patch.object(project, '_syncfs_fn') as syncfs_factory, \
+                    mock.patch.object(project.os, 'open',
+                                      side_effect=OSError(code, 'directory restricted')), \
+                    mock.patch.object(project.os, 'sync') as fallback:
+                self.assertEqual(project.flush_destination('/storage/card'), '')
+                fallback.assert_called_once_with()
+                syncfs_factory.return_value.assert_not_called()
+
+    def test_syncfs_access_denied_uses_global_fallback(self):
+        with tempfile.TemporaryDirectory() as dest:
+            def denied(_fd):
+                ctypes.set_errno(errno.EACCES)
+                return -1
+
+            with mock.patch.object(project, '_SYNCFS_UNSUPPORTED_DEVICES', set()), \
+                    mock.patch.object(project, '_syncfs_fn', return_value=denied), \
+                    mock.patch.object(project.os, 'sync') as fallback:
+                self.assertEqual(project.flush_destination(dest), '')
+                fallback.assert_called_once_with()
+
+    def test_restricted_directory_does_not_hide_global_flush_failure(self):
+        with mock.patch.object(project, '_syncfs_fn'), \
+                mock.patch.object(project.os, 'open',
+                                  side_effect=PermissionError(errno.EACCES, 'denied')), \
+                mock.patch.object(project.os, 'sync',
+                                  side_effect=OSError(errno.EIO, 'writeback failed')):
+            with self.assertRaisesRegex(RuntimeError, 'تعذر تثبيت البيانات'):
+                project.flush_destination('/storage/card')
+
+    def test_real_directory_io_error_is_not_hidden_by_fallback(self):
+        with mock.patch.object(project, '_syncfs_fn'), \
+                mock.patch.object(project.os, 'open',
+                                  side_effect=OSError(errno.EIO, 'card I/O error')), \
+                mock.patch.object(project.os, 'sync') as fallback:
+            warning = project.flush_destination('/storage/card')
+        self.assertIn('خطأ إدخال/إخراج', warning)
+        self.assertIn('open; errno=5', warning)
+        fallback.assert_called_once_with()
+
+    def test_zero_byte_write_fails_instead_of_looping_forever(self):
+        source = self.write_source('track.mp3', b'payload')
+        destination = self.destination_path('track.mp3')
+        os.makedirs(os.path.dirname(destination))
+        with mock.patch.object(project.os, 'sendfile',
+                               side_effect=OSError(errno.EINVAL, 'unsupported')), \
+                mock.patch.object(project.os, 'write', return_value=0):
+            with self.assertRaisesRegex(OSError, 'made no progress'):
+                project.copy_file_sequential(source, destination)
+        self.assertFalse(os.path.exists(destination))
+
+    def test_fast_verification_only_checks_copied_paths_without_reading_content(self):
+        destination = os.path.join(self.dest, 'track.mp3')
+        with open(destination, 'wb') as fh:
+            fh.write(b'abc')
+        with mock.patch.object(project.os, 'scandir',
+                               side_effect=AssertionError('must not scan destination')), \
+                mock.patch('builtins.open',
+                           side_effect=AssertionError('must not read file content')):
+            result = project.verify_copied_files({destination: 3}, [self.dest])
+        self.assertEqual(result, (1, [], False))
+
+    def test_verification_reports_missing_and_nonregular_files(self):
+        missing = os.path.join(self.dest, 'missing.mp3')
+        result = project.verify_copied_files(
+            {missing: 3, self.root: 0}, [self.dest])
+        self.assertEqual(result[0], 0)
+        self.assertEqual(len(result[1]), 2)
+        self.assertFalse(result[2])
+
     def test_worker_copies_naturally_ordered_tracks_one_at_a_time(self):
         expected = ['track 2.mp3', 'track 10.mp3', 'track 100.mp3']
         for index, name in enumerate(reversed(expected)):

@@ -15,6 +15,7 @@ import asyncio
 import errno
 import hashlib
 import heapq
+import stat
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import deque
 from werkzeug.exceptions import HTTPException
@@ -260,6 +261,7 @@ _SYNCFS_FALLBACK_ERRNOS = frozenset(
         getattr(errno, 'EOPNOTSUPP', None),
         getattr(errno, 'ENOTSUP', None),
         getattr(errno, 'EPERM', None),
+        getattr(errno, 'EACCES', None),
     ) if value is not None)
 _SYNCFS_UNSUPPORTED_DEVICES = set()
 _SYNCFS_UNSUPPORTED_LOCK = threading.Lock()
@@ -296,32 +298,42 @@ def flush_destination(dest):
     """
     fn = _syncfs_fn()
     syncfs_error = None
+    syncfs_stage = 'open'
     if fn is not None and dest:
         fd = -1
         try:
             fd = os.open(dest, os.O_RDONLY)
+            syncfs_stage = 'fstat'
             device_id = os.fstat(fd).st_dev
             with _SYNCFS_UNSUPPORTED_LOCK:
                 unsupported_for_device = device_id in _SYNCFS_UNSUPPORTED_DEVICES
             if not unsupported_for_device:
-                try:
-                    import ctypes
-                    ctypes.set_errno(0)
-                except Exception:
-                    ctypes = None
+                import ctypes
+                syncfs_stage = 'syncfs'
+                ctypes.set_errno(0)
                 result = fn(fd)
                 if result == 0:
                     return ''
-                error_number = ctypes.get_errno() if ctypes is not None else 0
-                if not error_number:
-                    error_number = errno.EIO
+                error_number = ctypes.get_errno()
                 if error_number in _SYNCFS_FALLBACK_ERRNOS:
                     with _SYNCFS_UNSUPPORTED_LOCK:
                         _SYNCFS_UNSUPPORTED_DEVICES.add(device_id)
+                    log_event('flush fallback: stage=syncfs errno={} (restricted/unsupported)'
+                              .format(error_number))
+                elif not error_number:
+                    syncfs_error = RuntimeError(
+                        'syncfs returned {} without an errno'.format(result))
                 else:
                     syncfs_error = OSError(error_number, os.strerror(error_number), dest)
         except OSError as exc:
-            syncfs_error = exc
+            if exc.errno in _SYNCFS_FALLBACK_ERRNOS:
+                # Android may permit copying files but deny opening the directory
+                # descriptor needed by syncfs. This is a capability restriction,
+                # not evidence that any data write failed. Still run os.sync().
+                log_event('flush fallback: stage={} errno={} (restricted/unsupported)'
+                          .format(syncfs_stage, exc.errno))
+            else:
+                syncfs_error = exc
         except Exception as exc:
             syncfs_error = RuntimeError(str(exc))
         finally:
@@ -339,9 +351,12 @@ def flush_destination(dest):
                 describe_os_error(syncfs_error), detail)
         raise RuntimeError('تعذر تثبيت البيانات على الوجهة: ' + detail) from fallback_error
     if syncfs_error is not None:
-        return ('تعذر تثبيت الوجهة مباشرة: {}. تمت محاولة المزامنة العامة احتياطياً، '
+        diagnostic = '{}; errno={}'.format(
+            syncfs_stage, getattr(syncfs_error, 'errno', None))
+        log_event('flush warning: {}: {}'.format(diagnostic, syncfs_error))
+        return ('تعذر تثبيت الوجهة مباشرة: {} [{}]. تمت محاولة المزامنة العامة احتياطياً، '
                 'لكن لا يمكن تأكيد تثبيت بيانات الكارت.'.format(
-                    describe_os_error(syncfs_error)))
+                    describe_os_error(syncfs_error), diagnostic))
     return ''
 
 
@@ -1306,7 +1321,12 @@ def copy_file_sequential(src, dst, cancel_check=None, on_bytes=None):
             view = memoryview(chunk)
             offset = 0
             while offset < len(chunk):
-                offset += os.write(dst_fd, view[offset:])
+                if cancel_check is not None and cancel_check():
+                    raise TransferCancelled()
+                count = os.write(dst_fd, view[offset:])
+                if count <= 0:
+                    raise OSError(errno.EIO, 'Destination write made no progress', dst)
+                offset += count
             written_total += len(chunk)
             if on_bytes is not None:
                 on_bytes(len(chunk))
@@ -1434,6 +1454,8 @@ def verify_copied_files(planned, roots, on_progress=None, cancel_check=None,
     """Verify copied-file sizes, and optionally compare source/content hashes.
 
     `planned` maps absolute destination paths to bytes actually written.
+    Check those paths directly, not unrelated files in merged destination trees.
+    `roots` is retained for compatibility with existing callers.
     Content mode reads each source and destination sequentially and compares
     SHA-256 digests. It is intentionally optional because it adds two full read
     passes; the default size-only check remains metadata-only.
@@ -1513,53 +1535,30 @@ def verify_copied_files(planned, roots, on_progress=None, cancel_check=None,
         report()
 
     report(force=True)
-    for root in roots:
+    for path in planned:
         if cancel_check is not None and cancel_check():
             cancelled = True
             break
+        touch_progress()
         try:
-            if os.path.isfile(root) and not os.path.islink(root):
-                try:
-                    check(root, os.path.getsize(root))
-                except TransferCancelled:
-                    cancelled = True
-                    break
-                continue
-            if not os.path.isdir(root) or os.path.islink(root):
-                continue
-        except OSError as exc:
-            failures.append((root, describe_os_error(exc)))
-            continue
-
-        stack = [root]
-        while stack:
-            if cancel_check is not None and cancel_check():
-                cancelled = True
-                break
-            current = stack.pop()
-            touch_progress()
-            try:
-                with os.scandir(current) as it:
-                    for entry in it:
-                        try:
-                            if entry.is_dir(follow_symlinks=False):
-                                stack.append(entry.path)
-                            elif entry.is_file(follow_symlinks=False):
-                                try:
-                                    check(entry.path, entry.stat(follow_symlinks=False).st_size)
-                                except TransferCancelled:
-                                    cancelled = True
-                                    break
-                        except OSError as exc:
-                            if len(failures) < 40:
-                                failures.append((entry.path, describe_os_error(exc)))
-            except OSError as exc:
+            metadata = os.stat(path, follow_symlinks=False)
+            if not stat.S_ISREG(metadata.st_mode):
+                seen.add(path)
+                done += 1
                 if len(failures) < 40:
-                    failures.append((current, describe_os_error(exc)))
-            if cancelled:
-                break
-        if cancelled:
+                    failures.append((path, 'الوجهة ليست ملفاً عادياً'))
+                report()
+            else:
+                check(path, metadata.st_size)
+        except TransferCancelled:
+            cancelled = True
             break
+        except OSError as exc:
+            seen.add(path)
+            done += 1
+            if len(failures) < 40:
+                failures.append((path, describe_os_error(exc)))
+            report()
 
     if not cancelled:
         for path in planned:
@@ -2528,6 +2527,8 @@ HTML_TEMPLATE = """
         .report-row.is-bad .report-value { color:var(--danger-ink); }
         .report-row:first-child { font-size:calc(13.5px * var(--font-scale)); }
         .report-row:first-child .report-label { color:var(--text); font-weight:700; }
+        .report-row.is-warn:first-child .report-label { color:var(--warning); }
+        .report-row.is-bad:first-child .report-label { color:var(--danger-ink); }
 
         /* A fixed box, not max-height: searching used to resize the browser with
            every result set (three hits = a three-row strip), and the keyboard
@@ -2649,6 +2650,19 @@ HTML_TEMPLATE = """
         /* One fixed height for every tab: switching tabs must never move the
            close button or resize the dialog under the finger. */
         .modal-content.modal-settings { height: min(84vh, 760px); max-height: 84vh; }
+        /* Transfer results can contain a long path list. Keep the whole dialog
+           inside the viewport while allowing its contents to remain reachable. */
+        #progressModal > .modal-content { max-height:min(92dvh, 820px); overflow-y:auto;
+            overscroll-behavior:contain; scrollbar-width:thin; }
+        #progressModal .modal-head-row { position:sticky; top:-20px; z-index:1;
+            background:var(--card); padding-top:2px; }
+        #errorsBox { max-height:32dvh; overflow:auto; overflow-wrap:anywhere; word-break:break-word;
+            line-height:1.75; scrollbar-width:thin; -webkit-overflow-scrolling:touch; }
+        #errorsBox:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+        #progressModal .btn { transition:transform .12s ease, background-color .15s ease, border-color .15s ease; }
+        #progressModal .btn:active { transform:translateY(1px); }
+        #progressModal .btn:focus-visible, #minimizeProgressBtn:focus-visible {
+            outline:2px solid var(--accent); outline-offset:2px; }
         .settings-tabs { display:flex; gap:6px; margin: 2px 0 14px; flex-shrink:0; }
         .settings-tab { flex:1; padding:9px 10px; border-radius:10px; border:1px solid var(--border);
             background:var(--field); color:var(--text-muted); font-size:calc(12.5px * var(--font-scale)); font-weight:600;
@@ -2743,6 +2757,10 @@ HTML_TEMPLATE = """
         @media (max-width: 480px) {
             .modal { padding: 8px; align-items: stretch; }
             .modal-content { padding: 16px; max-height: 92vh; border-radius: 14px; }
+            #progressModal > .modal-content { max-height:94dvh; padding:14px; border-radius:14px; }
+            #progressModal .modal-head-row { top:-14px; }
+            #progressModal .report-row { align-items:flex-start; }
+            #progressModal .report-value { white-space:normal; min-width:0; text-align:end; }
             .modal-content.modal-picker { height: 92vh; max-height: 92vh; }
             .modal-content.modal-selected { height: 92vh; max-height: 92vh; }
             .modal-content.modal-settings { height: 92vh; max-height: 92vh; }
@@ -3560,7 +3578,7 @@ HTML_TEMPLATE = """
 </div>
 
 <div class="modal" id="progressModal">
-    <div class="modal-content" style="max-height: max-content;">
+    <div class="modal-content">
         <div class="modal-head-row">
             <h2 id="modalTitle">العملية قيد التنفيذ...</h2>
             <button type="button" class="icon-btn" id="minimizeProgressBtn" onclick="minimizeProgressModal()" aria-label="تصغير النافذة" title="تصغير ومتابعة تصفح الموقع">
@@ -3578,7 +3596,8 @@ HTML_TEMPLATE = """
             <span id="failedText"></span>
         </div>
         <div id="cardWarningBox" style="display:none; margin-top:10px; padding:10px 12px; border-radius:10px; font-size:calc(12px * var(--font-scale)); line-height:1.7; background:var(--warning-soft); border:1px solid var(--warning-line); color:var(--warning);"></div>
-        <div id="errorsBox" style="display:none; max-height:200px; overflow:auto; background:var(--field); border:1px solid var(--border); border-radius:6px; padding:10px; margin-top:10px; font-size:calc(12px * var(--font-scale)); color:var(--danger-ink);"></div>
+        <div id="errorsBox" role="region" aria-label="تفاصيل الأخطاء والملاحظات" tabindex="0" style="display:none; background:var(--field); border:1px solid var(--border); border-radius:8px; padding:11px 12px; margin-top:10px; font-size:calc(12.5px * var(--font-scale)); color:var(--danger-ink);"></div>
+        <button type="button" class="btn btn-outline btn-sm" id="copyTransferDetailsBtn" onclick="copyTransferDetails()" style="display:none; align-self:flex-start; margin-top:10px;">نسخ التفاصيل</button>
         <div id="timeTakenDiv" class="report" style="display:none;"></div>
         <div id="queueBlock" class="queue-block" style="display:none;">
             <div class="queue-head">
@@ -6612,12 +6631,19 @@ HTML_TEMPLATE = """
     let progressModalVisible = false;
     let progressMinimized = false;
     let transferRunning = false;
+    let terminalTransferData = null;
     // Queue hook for the upcoming scheduled copy: the next batch only has to
     // push {label, sizeText, ...} and call renderQueue(). Nothing enqueues yet.
     let transferQueue = [];
 
     function showProgressModal() {
         progressMinimized = false;
+        terminalTransferData = null;
+        let copyDetailsBtn = document.getElementById('copyTransferDetailsBtn');
+        if (copyDetailsBtn) {
+            copyDetailsBtn.style.display = 'none';
+            copyDetailsBtn.textContent = 'نسخ التفاصيل';
+        }
         document.getElementById('progressModal').style.display = 'flex';
         progressModalVisible = true;
         document.getElementById('cancelProgressBtn').style.display = 'block';
@@ -6627,6 +6653,47 @@ HTML_TEMPLATE = """
         document.getElementById('inlineNotify').style.display = 'none';
         document.getElementById('currentFile').style.color = 'var(--text-muted)';
         document.getElementById('minimizeProgressBtn').style.display = '';
+    }
+
+    function copyTransferDetails() {
+        if (!terminalTransferData) return;
+        let data = terminalTransferData;
+        let versionEl = document.getElementById('appVersionPill');
+        let lines = [
+            'SD Card Coffee — ' + (versionEl ? versionEl.textContent.trim() : ''),
+            'الملف: ' + (data.file || '—'),
+            'الخطأ: ' + (data.log || '—'),
+            'تحذير تثبيت البيانات: ' + (data.flush_warning || '—'),
+            'العناصر الفاشلة:'
+        ];
+        if (data.errors && data.errors.length) {
+            data.errors.forEach(function(item) { lines.push('- ' + item); });
+        } else {
+            lines.push('لا يوجد');
+        }
+        lines.push('عناصر تعذر التحقق منها:');
+        if (data.verify_failed && data.verify_failed.length) {
+            data.verify_failed.forEach(function(item) { lines.push('- ' + item); });
+        } else {
+            lines.push('لا يوجد');
+        }
+        let text = lines.join('\\n');
+        let done = function() {
+            let btn = document.getElementById('copyTransferDetailsBtn');
+            if (btn) {
+                btn.textContent = 'تم النسخ';
+                setTimeout(function() {
+                    if (btn && btn.style.display !== 'none') btn.textContent = 'نسخ التفاصيل';
+                }, 1800);
+            }
+        };
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(text).then(done).catch(function() {
+                fallbackCopyDeleteErrors(text, done);
+            });
+        } else {
+            fallbackCopyDeleteErrors(text, done);
+        }
     }
 
     // The dialog is an interruption, so it folds into the action bar instead of
@@ -6738,17 +6805,28 @@ HTML_TEMPLATE = """
         let isDelete = action === 'delete';
         let isTts = action === 'tts';
         let isSpoof = action === 'spoof';
-        let headline = isTts ? 'تم إنشاء الفهرس الصوتي'
+        let baseHeadline = isTts ? 'تم إنشاء الفهرس الصوتي'
             : isDelete ? 'تم الحذف'
             : isCopy ? 'اكتمل النسخ'
             : isSpoof ? 'اكتمل التمويه'
             : 'اكتملت العملية';
+        let hasFailures = Number(data.failed || 0) > 0
+            || !!(data.errors && data.errors.length)
+            || !!(data.verify_failed && data.verify_failed.length)
+            || !!data.spoof_error;
+        let hasWarnings = !!data.verify_cancelled || !!data.flush_warning
+            || !!(data.skipped && data.skipped.length) || !!data.spoof_cancelled;
+        let headline = hasFailures ? 'اكتملت العملية مع إخفاقات'
+            : hasWarnings ? 'اكتملت العملية مع ملاحظات' : baseHeadline;
+        let headlineTone = hasFailures ? 'bad' : hasWarnings ? 'warn' : 'ok';
         let unit = isCopy ? 'ملف' : 'عنصر';
         // `copied` is chunks for TTS, not files: only the file-moving actions
         // have a count worth printing.
         let count = (isCopy || isDelete || isSpoof) ? (data.copied || 0) : 0;
-        let rows = [reportRow(isTts ? 'ico-music' : 'ico-check', headline,
-                              count ? count + ' ' + unit : '', 'ok')];
+        let headlineIcon = headlineTone === 'ok'
+            ? (isTts ? 'ico-music' : 'ico-check') : 'ico-alert';
+        let rows = [reportRow(headlineIcon, headline,
+                              count ? count + ' ' + unit : '', headlineTone)];
 
         if (isCopy) {
             // Copy time and average speed share one row: they are the two halves
@@ -6839,8 +6917,21 @@ HTML_TEMPLATE = """
         fetch('/transfer/status?_t=' + new Date().getTime(), { cache: 'no-store' })
         .then(r=>r.json())
         .then(data => {
+            if(data.status !== 'idle' && !progressModalVisible && !progressMinimized) {
+                showProgressModal();
+            }
+            let copyDetailsBtn = document.getElementById('copyTransferDetailsBtn');
+            if (data.status === 'copying') {
+                terminalTransferData = null;
+                if (copyDetailsBtn) {
+                    copyDetailsBtn.style.display = 'none';
+                    copyDetailsBtn.textContent = 'نسخ التفاصيل';
+                }
+            } else if (data.status === 'done' || data.status === 'cancelled' || data.status === 'error') {
+                terminalTransferData = data;
+                if (copyDetailsBtn) copyDetailsBtn.style.display = 'inline-flex';
+            }
             if(data.status !== 'idle') {
-                if(!progressModalVisible && !progressMinimized) showProgressModal();
                 // A delete has no known total (counting a tree first would double
                 // the card I/O), so its bar sweeps and the count is "deleted so
                 // far" instead of a fake percentage.
@@ -7131,6 +7222,12 @@ HTML_TEMPLATE = """
             let barLabel = document.getElementById('barActionLabel');
             if (barLabel) barLabel.textContent = 'بدء النسخ';
             document.getElementById('errorsBox').style.display = 'none';
+            terminalTransferData = null;
+            let copyDetailsBtn = document.getElementById('copyTransferDetailsBtn');
+            if (copyDetailsBtn) {
+                copyDetailsBtn.style.display = 'none';
+                copyDetailsBtn.textContent = 'نسخ التفاصيل';
+            }
             document.getElementById('cardWarningBox').style.display = 'none';
             document.getElementById('inlineNotify').style.display = 'none';
             document.getElementById('cancelProgressBtn').disabled = false;
