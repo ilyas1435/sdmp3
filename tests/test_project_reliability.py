@@ -361,6 +361,38 @@ class CopyWorkerReliabilityTests(unittest.TestCase):
         self.assertEqual(warning, '')
         global_sync.assert_called_once_with()
 
+    def test_syncfs_enoent_uses_fallback_without_warning(self):
+        with tempfile.TemporaryDirectory() as dest:
+            calls = []
+
+            def syncfs_reports_enoent(_fd):
+                calls.append(None)
+                ctypes.set_errno(errno.ENOENT)
+                return -1
+
+            with mock.patch.object(project, '_SYNCFS_UNSUPPORTED_DEVICES', set()), \
+                    mock.patch.object(project, '_syncfs_fn',
+                                      return_value=syncfs_reports_enoent), \
+                    mock.patch.object(project.os, 'sync') as fallback:
+                first_warning = project.flush_destination(dest)
+                second_warning = project.flush_destination(dest)
+
+        self.assertEqual(first_warning, '')
+        self.assertEqual(second_warning, '')
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(fallback.call_count, 2)
+
+    def test_missing_destination_open_is_not_mistaken_for_syncfs_enoent(self):
+        missing_destination = '/definitely-not-an-sdmp3-destination'
+        with mock.patch.object(project, '_syncfs_fn'), \
+                mock.patch.object(project.os, 'open',
+                                  side_effect=FileNotFoundError(errno.ENOENT, 'missing')), \
+                mock.patch.object(project.os, 'sync') as fallback:
+            warning = project.flush_destination(missing_destination)
+        self.assertIn('open; errno=2', warning)
+        self.assertIn('غير موجود', warning)
+        fallback.assert_called_once_with()
+
     def test_global_flush_failure_raises_a_clear_error(self):
         with mock.patch.object(project, '_syncfs_fn', return_value=None), \
                 mock.patch.object(project.os, 'sync',

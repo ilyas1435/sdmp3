@@ -315,7 +315,9 @@ def flush_destination(dest):
                 if result == 0:
                     return ''
                 error_number = ctypes.get_errno()
-                if error_number in _SYNCFS_FALLBACK_ERRNOS:
+                syncfs_fallback_errnos = _SYNCFS_FALLBACK_ERRNOS | {
+                    getattr(errno, 'ENOENT', 2)}
+                if error_number in syncfs_fallback_errnos:
                     with _SYNCFS_UNSUPPORTED_LOCK:
                         _SYNCFS_UNSUPPORTED_DEVICES.add(device_id)
                     log_event('flush fallback: stage=syncfs errno={} (restricted/unsupported)'
@@ -326,10 +328,16 @@ def flush_destination(dest):
                 else:
                     syncfs_error = OSError(error_number, os.strerror(error_number), dest)
         except OSError as exc:
-            if exc.errno in _SYNCFS_FALLBACK_ERRNOS:
+            syncfs_enoent = (
+                syncfs_stage == 'syncfs'
+                and exc.errno == getattr(errno, 'ENOENT', 2))
+            if exc.errno in _SYNCFS_FALLBACK_ERRNOS or syncfs_enoent:
                 # Android may permit copying files but deny opening the directory
                 # descriptor needed by syncfs. This is a capability restriction,
                 # not evidence that any data write failed. Still run os.sync().
+                if syncfs_stage == 'syncfs':
+                    with _SYNCFS_UNSUPPORTED_LOCK:
+                        _SYNCFS_UNSUPPORTED_DEVICES.add(device_id)
                 log_event('flush fallback: stage={} errno={} (restricted/unsupported)'
                           .format(syncfs_stage, exc.errno))
             else:
