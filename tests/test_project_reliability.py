@@ -1,5 +1,8 @@
 import os
 import tempfile
+import errno
+import threading
+import time
 import unittest
 from unittest import mock
 
@@ -73,6 +76,193 @@ class PlanTransferTests(unittest.TestCase):
             'track 2.mp3',
             'track 10.mp3',
         ])
+
+
+class CopyWorkerReliabilityTests(unittest.TestCase):
+    def setUp(self):
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.root = os.path.join(self.tempdir.name, 'source')
+        self.dest = os.path.join(self.tempdir.name, 'destination')
+        os.makedirs(self.root)
+        os.makedirs(self.dest)
+        project.reset_state()
+
+    def tearDown(self):
+        project.reset_state()
+        self.tempdir.cleanup()
+
+    def write_source(self, name, data):
+        path = os.path.join(self.root, name)
+        with open(path, 'wb') as fh:
+            fh.write(data)
+        return path
+
+    def destination_path(self, name):
+        return os.path.join(self.dest, os.path.basename(self.root), name)
+
+    def run_worker(self, verify=False):
+        with mock.patch.object(project, 'has_enough_space', return_value=True), \
+                mock.patch.object(project, 'acquire_wakelock'), \
+                mock.patch.object(project, 'release_wakelock'), \
+                mock.patch.object(project, 'invalidate_cache_for_path'), \
+                mock.patch.object(project, 'flush_destination', return_value=False):
+            project.copy_thread_task([self.root], self.dest, verify=verify)
+        return project.get_state_snapshot()
+
+    def test_cancel_during_a_file_removes_partial_mp3_and_finishes_cancelled(self):
+        self.write_source('track.mp3', b'a' * (project.SENDFILE_CHUNK * 3))
+        original_copy = project.copy_file_sequential
+
+        def cancel_after_first_chunk(src, dst, cancel_check=None, on_bytes=None):
+            def report_bytes(count):
+                if on_bytes is not None:
+                    on_bytes(count)
+                project.set_state(cancel=True)
+            return original_copy(src, dst, cancel_check=cancel_check,
+                                 on_bytes=report_bytes)
+
+        with mock.patch.object(project, 'copy_file_sequential',
+                               side_effect=cancel_after_first_chunk):
+            snapshot = self.run_worker()
+
+        self.assertEqual(snapshot['status'], 'cancelled')
+        self.assertFalse(os.path.exists(self.destination_path('track.mp3')))
+
+    def test_flush_error_after_cancellation_finishes_with_an_error_status(self):
+        self.write_source('track.mp3', b'a' * (project.SENDFILE_CHUNK * 3))
+        original_copy = project.copy_file_sequential
+
+        def cancel_after_first_chunk(src, dst, cancel_check=None, on_bytes=None):
+            def report_bytes(count):
+                if on_bytes is not None:
+                    on_bytes(count)
+                project.set_state(cancel=True)
+            return original_copy(src, dst, cancel_check=cancel_check,
+                                 on_bytes=report_bytes)
+
+        with mock.patch.object(project, 'copy_file_sequential',
+                               side_effect=cancel_after_first_chunk), \
+                mock.patch.object(project, 'sync_with_heartbeat',
+                                  side_effect=OSError(errno.EIO, 'simulated flush failure')):
+            snapshot = self.run_worker()
+
+        self.assertEqual(snapshot['status'], 'error')
+        self.assertEqual(snapshot['phase'], 'error')
+        self.assertIn('تم إلغاء النسخ', snapshot['file'])
+        self.assertIn('تعذر تثبيت البيانات', snapshot['file'])
+        self.assertFalse(os.path.exists(self.destination_path('track.mp3')))
+
+    def test_buffered_copy_completes_short_writes_without_changing_bytes(self):
+        payload = b'playback-order-preserved'
+        src = self.write_source('track.mp3', payload)
+        dst = os.path.join(self.tempdir.name, 'short-write.mp3')
+        real_write = os.write
+        writes = []
+
+        def short_write(fd, data):
+            count = real_write(fd, data[:3])
+            writes.append(count)
+            return count
+
+        with mock.patch.object(project.os, 'sendfile',
+                               side_effect=OSError(errno.EINVAL, 'unsupported')), \
+                mock.patch.object(project.os, 'write', side_effect=short_write):
+            written = project.copy_file_sequential(src, dst)
+
+        with open(dst, 'rb') as fh:
+            copied = fh.read()
+        self.assertEqual(written, len(payload))
+        self.assertEqual(copied, payload)
+        self.assertGreater(len(writes), 1)
+        self.assertTrue(all(count > 0 for count in writes))
+
+    def test_write_error_after_a_short_write_removes_partial_file_and_reports_failure(self):
+        self.write_source('track.mp3', b'not-a-complete-copy')
+        real_write = os.write
+        calls = []
+
+        def short_then_fail(fd, data):
+            calls.append(None)
+            if len(calls) == 1:
+                return real_write(fd, data[:4])
+            raise OSError(errno.EIO, 'simulated card write failure')
+
+        with mock.patch.object(project.os, 'sendfile',
+                               side_effect=OSError(errno.EINVAL, 'unsupported')), \
+                mock.patch.object(project.os, 'write', side_effect=short_then_fail):
+            snapshot = self.run_worker()
+
+        self.assertEqual(snapshot['status'], 'done')
+        self.assertEqual(snapshot['failed'], 1)
+        self.assertTrue(snapshot['errors'])
+        self.assertFalse(os.path.exists(self.destination_path('track.mp3')))
+
+    def test_final_flush_error_finishes_in_error_instead_of_staying_copying(self):
+        self.write_source('track.mp3', b'complete file')
+        with mock.patch.object(project, 'sync_with_heartbeat',
+                               side_effect=OSError(errno.EIO, 'simulated flush failure')):
+            snapshot = self.run_worker()
+
+        self.assertEqual(snapshot['status'], 'error')
+        self.assertEqual(snapshot['phase'], 'error')
+        self.assertIn('flush failure', snapshot['log'])
+        self.assertIn('تعذر إكمال النسخ', snapshot['file'])
+
+    def test_verification_size_mismatch_is_reported_in_the_terminal_result(self):
+        self.write_source('track.mp3', b'expected complete content')
+        original_verify = project.verify_copied_files
+
+        def alter_before_verify(planned, roots, on_progress=None, cancel_check=None):
+            destination = next(iter(planned))
+            with open(destination, 'wb') as fh:
+                fh.write(b'x')
+            return original_verify(planned, roots, on_progress=on_progress,
+                                   cancel_check=cancel_check)
+
+        with mock.patch.object(project, 'verify_copied_files',
+                               side_effect=alter_before_verify):
+            snapshot = self.run_worker(verify=True)
+
+        self.assertEqual(snapshot['status'], 'done')
+        self.assertEqual(snapshot['verified'], 0)
+        self.assertEqual(snapshot['verify_total'], 1)
+        self.assertEqual(len(snapshot['verify_failed']), 1)
+        self.assertIn('التحقق وجد 1 ملفاً مخالفاً', snapshot['file'])
+
+    def test_worker_copies_naturally_ordered_tracks_one_at_a_time(self):
+        expected = ['track 2.mp3', 'track 10.mp3', 'track 100.mp3']
+        for index, name in enumerate(reversed(expected)):
+            self.write_source(name, ('track-{}'.format(index)).encode())
+
+        original_copy = project.copy_file_sequential
+        copied_sources = []
+        active = 0
+        max_active = 0
+        guard = threading.Lock()
+
+        def track_copy(src, dst, cancel_check=None, on_bytes=None):
+            nonlocal active, max_active
+            with guard:
+                active += 1
+                max_active = max(max_active, active)
+            try:
+                copied_sources.append(os.path.basename(src))
+                time.sleep(0.01)
+                return original_copy(src, dst, cancel_check=cancel_check,
+                                     on_bytes=on_bytes)
+            finally:
+                with guard:
+                    active -= 1
+
+        with mock.patch.object(project, 'copy_file_sequential', side_effect=track_copy):
+            snapshot = self.run_worker(verify=True)
+
+        self.assertEqual(snapshot['status'], 'done')
+        self.assertEqual(copied_sources, expected)
+        self.assertEqual(max_active, 1)
+        for name in expected:
+            with open(self.destination_path(name), 'rb') as fh:
+                self.assertTrue(fh.read().startswith(b'track-'))
 
 
 class SearchRankingTests(unittest.TestCase):

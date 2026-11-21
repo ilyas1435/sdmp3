@@ -1885,13 +1885,36 @@ def copy_thread_task(paths, dest, excludes=None, groups=None, verify=True):
         })
 
     except TransferCancelled:
-        sync_with_heartbeat('copying', dest=dest)
+        try:
+            sync_with_heartbeat('copying', dest=dest)
+        except Exception as flush_error:
+            # Cancellation still needs a terminal state even if the best-effort
+            # durability flush fails. Do not leave the UI showing a live copy.
+            log_event('copy cancellation flush failed: {}: {}'.format(
+                type(flush_error).__name__, flush_error))
+            finish_transfer(
+                'error',
+                'تم إلغاء النسخ، لكن تعذر تثبيت البيانات على الوجهة: {}'.format(
+                    describe_os_error(flush_error)),
+                extra={'log': str(flush_error), 'phase': 'error'})
+            return
         log_event('copy cancelled by user after {}s'.format(int(time.time() - started)))
         finish_transfer('cancelled', 'تم إلغاء النسخ.')
     except Exception as e:
-        sync_with_heartbeat('copying', dest=dest)
+        flush_error = None
+        try:
+            sync_with_heartbeat('copying', dest=dest)
+        except Exception as exc:
+            flush_error = exc
         log_event('copy ERROR: {}: {}'.format(type(e).__name__, e))
-        set_state(status='error', log=str(e))
+        if flush_error is not None:
+            log_event('copy error flush failed: {}: {}'.format(
+                type(flush_error).__name__, flush_error))
+        error_text = str(e)
+        if flush_error is not None:
+            error_text += ' (flush also failed: {})'.format(flush_error)
+        finish_transfer('error', 'تعذر إكمال النسخ: {}'.format(
+            describe_os_error(e)), extra={'log': error_text, 'phase': 'error'})
     finally:
         release_wakelock()
 
