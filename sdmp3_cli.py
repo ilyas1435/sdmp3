@@ -31,6 +31,7 @@ APP_DIR = os.path.dirname(os.path.abspath(__file__))
 APP_PY = os.path.join(APP_DIR, "project.py")
 VERSION_FILE = os.path.join(APP_DIR, "VERSION")
 REQUIREMENTS = os.path.join(APP_DIR, "requirements.txt")
+PROC_ROOT = "/proc"
 
 STATE_DIR = os.path.join(os.path.expanduser("~"), ".local", "state", "sdmp3")
 STATE_FILE = os.path.join(STATE_DIR, "instance.json")
@@ -159,6 +160,23 @@ def pid_alive(pid):
     return True
 
 
+def is_sdmp3_process(pid):
+    """Return whether `/proc` shows this PID running this app's entry point.
+
+    PID files can outlive a crashed server, and the operating system may reuse
+    the number. Do not let `stop` or `restart` signal an unrelated process just
+    because that reused PID is currently alive.
+    """
+    try:
+        with open(os.path.join(PROC_ROOT, str(int(pid)), "cmdline"), "rb") as fh:
+            argv = fh.read().split(b"\0")
+        expected = os.path.realpath(APP_PY)
+        return any(os.path.realpath(os.fsdecode(arg)) == expected
+                   for arg in argv if arg)
+    except (OSError, ValueError, TypeError):
+        return False
+
+
 def read_instance():
     """Return {"pid", "port", "host", "started"} for a live instance, else None."""
     try:
@@ -167,7 +185,7 @@ def read_instance():
         pid = int(data.get("pid") or 0)
     except (OSError, ValueError, json.JSONDecodeError):
         return None
-    if pid <= 0 or not pid_alive(pid):
+    if pid <= 0 or not pid_alive(pid) or not is_sdmp3_process(pid):
         return None
     data["pid"] = pid
     return data

@@ -13,6 +13,7 @@ import atexit
 import tempfile
 import asyncio
 import errno
+import heapq
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import deque
 from werkzeug.exceptions import HTTPException
@@ -1307,10 +1308,18 @@ def plan_transfer(paths, dest, excludes=None, cancel_check=None, on_progress=Non
         name = entry.name if entry is not None else os.path.basename(src)
         dst_path = os.path.join(dst, name)
         try:
-            # DirEntry.is_file()/is_dir() reuse the stat scandir already did, so
-            # a file costs no extra FUSE round-trip here.
-            is_file = entry.is_file() if entry is not None else os.path.isfile(src)
-            is_dir = entry.is_dir() if entry is not None else os.path.isdir(src)
+            # Do not follow links: a directory link can escape the selected tree
+            # or point back to an ancestor, causing unrelated files to be copied
+            # or the recursive planner to run until Python raises RecursionError.
+            if (entry.is_symlink() if entry is not None else os.path.islink(src)):
+                skipped.append((src, 'تم تجاهل الرابط الرمزي'))
+                return
+            # DirEntry.is_file()/is_dir() reuse scandir's metadata without
+            # following links, so regular entries cost no extra FUSE round-trip.
+            is_file = (entry.is_file(follow_symlinks=False)
+                       if entry is not None else os.path.isfile(src))
+            is_dir = (entry.is_dir(follow_symlinks=False)
+                      if entry is not None else os.path.isdir(src))
         except OSError as exc:
             skipped.append((src, describe_os_error(exc)))
             return
@@ -7002,7 +7011,12 @@ def _search_should_skip(entry_name, parent_name):
     return False
 
 def _rank_search_results(results, q):
-    """Sort so exact/startswith matches surface first, then natural-sort the rest."""
+    """Return the best search hits without sorting every match.
+
+    The UI only displays SEARCH_MAX_RESULTS rows. A cached index can contain
+    hundreds of thousands of matches, so selecting the best 40 with a bounded
+    heap avoids allocating and sorting the entire result set on every query.
+    """
     q_lower = q.lower()
     def rank_key(r):
         name_lower = r['name'].lower()
@@ -7010,8 +7024,7 @@ def _rank_search_results(results, q):
         elif name_lower.startswith(q_lower): tier = 1
         else: tier = 2
         return (tier, natural_sort_key(r['name']))
-    results.sort(key=rank_key)
-    return results
+    return heapq.nsmallest(SEARCH_MAX_RESULTS, results, key=rank_key)
 
 # ------------- Folder Cache (instant search index) -------------
 # Manually built per source folder via the "Cache Folder" button. Kept in memory
@@ -7266,16 +7279,15 @@ def deep_search():
 
     if cached:
         # Instant path: filter the pre-built in-memory index, no disk access at all.
-        results = []
-        for it in cached['items']:
-            if folders_only and not it['is_dir']:
-                continue
-            if q in it['name_lower']:
-                results.append({'name': it['name'], 'path': it['path'], 'is_dir': it['is_dir']})
-        _rank_search_results(results, q)
+        matches = (
+            {'name': it['name'], 'path': it['path'], 'is_dir': it['is_dir']}
+            for it in cached['items']
+            if (not folders_only or it['is_dir']) and q in it['name_lower']
+        )
+        results = _rank_search_results(matches, q)
         if remember:
             remember_search(q, root, results)
-        return jsonify({'results': _fill_search_result_sizes(results[:SEARCH_MAX_RESULTS]), 'from_cache': True, 'cache_count': cached['count']})
+        return jsonify({'results': _fill_search_result_sizes(results), 'from_cache': True, 'cache_count': cached['count']})
 
     results = []
     stack = deque([root])  
