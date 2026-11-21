@@ -10,7 +10,7 @@
 
 ### 🗂️ File Transfer & Organizing
 - 📁 **Multi-storage support** — internal storage, **SD card** and **USB OTG** are detected separately and each gets its own icon, label and colour (MMC vs USB is read from the block device, since Android shows both as `/storage/XXXX-XXXX`).
-- 📦 **Fast sequential copying** — `sendfile` when the kernel supports it (about twice as fast on Android FUSE) with a 4 MB fallback buffer, one write pass per file, and destination-only flushes every 256 MB and at completion; playback order comes from writing files in order, not from per-file `fsync`. Real flush errors are surfaced; filesystems that do not support `syncfs` use the fallback without false alarms.
+- 📦 **Fast sequential copying** — `sendfile` when the kernel supports it (about twice as fast on Android FUSE) with a 4 MB fallback buffer, one write pass per file, and destination-only flushes every 256 MB and at completion; playback order comes from writing files in order, not from per-file `fsync`. Real flush errors are surfaced; filesystems where `syncfs` is unsupported or restricted use the fallback without false alarms.
 - 🧭 **JOC physical-order sequencing** — files are copied in a natural, physical order (DFS traversal + natural sort) so hardware MP3 players play them reliably in sequence.
 - 🗂️ **Copy groups as a folder tree** — open «الملفات المحددة» and the groups are a real folder tree: create a folder in one click, rename it **in place** (Enter saves, Esc cancels — nested folders follow their parent), add «＋ فرع» sub-folders up to three levels deep, and move any item by **dragging** it onto a folder or onto «بدون مجلد» to take it out. Everything is created inside the destination at copy time only — the source is never modified — and if a group folder already exists the app asks once, before writing, whether to merge. Groups clear themselves when a copy finishes, and cancelled/failed copies keep the cart for a retry.
 - 🪄 **«تنظيم ذكي» with a preview** — one tap proposes a folder per source parent (e.g. `الصف الأول/a.mp3` → «الصف الأول», keeping the last three path segments). Nothing is written until you review the list: uncheck the folders you don't want, then «تطبيق على N مجلد» — existing folders are reused instead of duplicated.
@@ -73,7 +73,7 @@
 - ⚡ **Termux wake lock** — keeps the CPU awake during long transfers; `--no-wakelock` never releases a lock owned by another session.
 - ♻️ **Safe shutdown** — Ctrl+C / SIGTERM cleans up TTS cache cleanly.
 - 🌐 **Network access** — serves on `0.0.0.0:5050` for access from any device.
-- 📊 **Honest progress** — live (last-6-seconds) MB/s and ETA, per-file failure reasons, and a calm amber "الكارت بطيء" state that only becomes the red "الكارت لا يستجيب" after 60s of real silence. Unsupported `syncfs` calls use the global fallback quietly; real flush errors remain visible in the final result.
+- 📊 **Honest progress** — live (last-6-seconds) MB/s and ETA, per-file failure reasons, and a calm amber "الكارت بطيء" state that only becomes the red "الكارت لا يستجيب" after 60s of real silence. Unsupported or restricted `syncfs` calls use the global fallback quietly; real flush errors remain visible in the final result.
 - 🧾 **Every transfer is logged** — start, per-file failures, finish (with average
   speed) and errors go to `sdmp3.log` under `[sdmp3]`.
 

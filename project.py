@@ -253,12 +253,13 @@ def touch_progress():
         pass
 
 _syncfs_ref = {'resolved': False, 'fn': None}
-_SYNCFS_UNSUPPORTED_ERRNOS = frozenset(
+_SYNCFS_FALLBACK_ERRNOS = frozenset(
     value for value in (
         getattr(errno, 'EINVAL', None),
         getattr(errno, 'ENOSYS', None),
         getattr(errno, 'EOPNOTSUPP', None),
         getattr(errno, 'ENOTSUP', None),
+        getattr(errno, 'EPERM', None),
     ) if value is not None)
 _SYNCFS_UNSUPPORTED_DEVICES = set()
 _SYNCFS_UNSUPPORTED_LOCK = threading.Lock()
@@ -287,8 +288,9 @@ def flush_destination(dest):
     single syscall. syncfs(fd) on the destination touches exactly one filesystem.
 
     Returns a user-facing warning if syncfs hit a real error but the global
-    fallback ran. Filesystems that explicitly do not support syncfs are cached
-    and use the fallback without being reported as card failures.
+    fallback ran. Filesystems that report syncfs as unsupported or policy-
+    restricted are cached and use the fallback without being reported as card
+    failures.
     Raises when even the fallback fails; a successful global fallback is silent
     when syncfs is simply unavailable on this platform.
     """
@@ -313,7 +315,7 @@ def flush_destination(dest):
                 error_number = ctypes.get_errno() if ctypes is not None else 0
                 if not error_number:
                     error_number = errno.EIO
-                if error_number in _SYNCFS_UNSUPPORTED_ERRNOS:
+                if error_number in _SYNCFS_FALLBACK_ERRNOS:
                     with _SYNCFS_UNSUPPORTED_LOCK:
                         _SYNCFS_UNSUPPORTED_DEVICES.add(device_id)
                 else:

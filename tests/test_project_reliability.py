@@ -346,6 +346,21 @@ class CopyWorkerReliabilityTests(unittest.TestCase):
         self.assertEqual(len(calls), 1)  # Unsupported capability is cached per filesystem.
         self.assertEqual(global_sync.call_count, 2)
 
+    def test_syncfs_permission_restriction_uses_fallback_without_false_warning(self):
+        with tempfile.TemporaryDirectory() as dest:
+            def restricted_syncfs(_fd):
+                ctypes.set_errno(errno.EPERM)
+                return -1
+
+            with mock.patch.object(project, '_SYNCFS_UNSUPPORTED_DEVICES', set()), \
+                    mock.patch.object(project, '_syncfs_fn',
+                                      return_value=restricted_syncfs), \
+                    mock.patch.object(project.os, 'sync') as global_sync:
+                warning = project.flush_destination(dest)
+
+        self.assertEqual(warning, '')
+        global_sync.assert_called_once_with()
+
     def test_global_flush_failure_raises_a_clear_error(self):
         with mock.patch.object(project, '_syncfs_fn', return_value=None), \
                 mock.patch.object(project.os, 'sync',
