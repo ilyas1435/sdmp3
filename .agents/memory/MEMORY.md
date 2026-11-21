@@ -1,1 +1,1 @@
-- [Android flush restrictions](android-flush.md) — directory descriptor access and syncfs permission failures must not be mistaken for SD-card write failures.
+- [Android flush restrictions](android-flush.md) — use syscall stage plus errno; Android may return ENOENT from syncfs on a valid SD-card directory.
