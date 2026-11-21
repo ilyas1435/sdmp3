@@ -325,6 +325,27 @@ class CopyWorkerReliabilityTests(unittest.TestCase):
         self.assertIn('تثبيت بيانات الكارت', warning)
         global_sync.assert_called_once_with()
 
+    def test_unsupported_syncfs_uses_fallback_without_false_warning(self):
+        with tempfile.TemporaryDirectory() as dest:
+            calls = []
+
+            def unsupported_syncfs(_fd):
+                calls.append(None)
+                ctypes.set_errno(errno.EINVAL)
+                return -1
+
+            with mock.patch.object(project, '_SYNCFS_UNSUPPORTED_DEVICES', set()), \
+                    mock.patch.object(project, '_syncfs_fn',
+                                      return_value=unsupported_syncfs), \
+                    mock.patch.object(project.os, 'sync') as global_sync:
+                first_warning = project.flush_destination(dest)
+                second_warning = project.flush_destination(dest)
+
+        self.assertEqual(first_warning, '')
+        self.assertEqual(second_warning, '')
+        self.assertEqual(len(calls), 1)  # Unsupported capability is cached per filesystem.
+        self.assertEqual(global_sync.call_count, 2)
+
     def test_global_flush_failure_raises_a_clear_error(self):
         with mock.patch.object(project, '_syncfs_fn', return_value=None), \
                 mock.patch.object(project.os, 'sync',

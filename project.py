@@ -253,6 +253,15 @@ def touch_progress():
         pass
 
 _syncfs_ref = {'resolved': False, 'fn': None}
+_SYNCFS_UNSUPPORTED_ERRNOS = frozenset(
+    value for value in (
+        getattr(errno, 'EINVAL', None),
+        getattr(errno, 'ENOSYS', None),
+        getattr(errno, 'EOPNOTSUPP', None),
+        getattr(errno, 'ENOTSUP', None),
+    ) if value is not None)
+_SYNCFS_UNSUPPORTED_DEVICES = set()
+_SYNCFS_UNSUPPORTED_LOCK = threading.Lock()
 
 
 def _syncfs_fn():
@@ -277,7 +286,9 @@ def flush_destination(dest):
     any other volume), which is why one big copy could stall for 30-60s inside a
     single syscall. syncfs(fd) on the destination touches exactly one filesystem.
 
-    Returns a user-facing warning if syncfs failed but the global fallback ran.
+    Returns a user-facing warning if syncfs hit a real error but the global
+    fallback ran. Filesystems that explicitly do not support syncfs are cached
+    and use the fallback without being reported as card failures.
     Raises when even the fallback fails; a successful global fallback is silent
     when syncfs is simply unavailable on this platform.
     """
@@ -287,17 +298,26 @@ def flush_destination(dest):
         fd = -1
         try:
             fd = os.open(dest, os.O_RDONLY)
-            try:
-                import ctypes
-                ctypes.set_errno(0)
-            except Exception:
-                ctypes = None
-            if fn(fd) == 0:
-                return ''
-            error_number = ctypes.get_errno() if ctypes is not None else 0
-            if not error_number:
-                error_number = errno.EIO
-            syncfs_error = OSError(error_number, os.strerror(error_number), dest)
+            device_id = os.fstat(fd).st_dev
+            with _SYNCFS_UNSUPPORTED_LOCK:
+                unsupported_for_device = device_id in _SYNCFS_UNSUPPORTED_DEVICES
+            if not unsupported_for_device:
+                try:
+                    import ctypes
+                    ctypes.set_errno(0)
+                except Exception:
+                    ctypes = None
+                result = fn(fd)
+                if result == 0:
+                    return ''
+                error_number = ctypes.get_errno() if ctypes is not None else 0
+                if not error_number:
+                    error_number = errno.EIO
+                if error_number in _SYNCFS_UNSUPPORTED_ERRNOS:
+                    with _SYNCFS_UNSUPPORTED_LOCK:
+                        _SYNCFS_UNSUPPORTED_DEVICES.add(device_id)
+                else:
+                    syncfs_error = OSError(error_number, os.strerror(error_number), dest)
         except OSError as exc:
             syncfs_error = exc
         except Exception as exc:
