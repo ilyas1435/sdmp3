@@ -13,6 +13,7 @@ import atexit
 import tempfile
 import asyncio
 import errno
+import hashlib
 import heapq
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import deque
@@ -150,6 +151,11 @@ DEFAULT_STATE = {
     'verify_progress': 0,
     'verify_failed': [],
     'verify_cancelled': False,
+    'verify_mode': 'off',
+    'verify_content': False,
+    'verify_bytes_done': 0,
+    'verify_bytes_total': 0,
+    'flush_warning': '',
     # Auto-spoof runs inside the copy worker, after verification. These fields
     # keep its result in the SAME final snapshot as the copy numbers.
     'spoof_total': 0,
@@ -270,17 +276,32 @@ def flush_destination(dest):
     os.sync() flushes every mounted filesystem on the phone (/data, /sdcard,
     any other volume), which is why one big copy could stall for 30-60s inside a
     single syscall. syncfs(fd) on the destination touches exactly one filesystem.
-    Returns True when the narrow call was used, False for the global fallback.
+
+    Returns a user-facing warning if syncfs failed but the global fallback ran.
+    Raises when even the fallback fails; a successful global fallback is silent
+    when syncfs is simply unavailable on this platform.
     """
     fn = _syncfs_fn()
+    syncfs_error = None
     if fn is not None and dest:
         fd = -1
         try:
             fd = os.open(dest, os.O_RDONLY)
+            try:
+                import ctypes
+                ctypes.set_errno(0)
+            except Exception:
+                ctypes = None
             if fn(fd) == 0:
-                return True
-        except OSError:
-            pass
+                return ''
+            error_number = ctypes.get_errno() if ctypes is not None else 0
+            if not error_number:
+                error_number = errno.EIO
+            syncfs_error = OSError(error_number, os.strerror(error_number), dest)
+        except OSError as exc:
+            syncfs_error = exc
+        except Exception as exc:
+            syncfs_error = RuntimeError(str(exc))
         finally:
             if fd >= 0:
                 try:
@@ -289,9 +310,17 @@ def flush_destination(dest):
                     pass
     try:
         os.sync()
-    except OSError:
-        pass
-    return False
+    except OSError as fallback_error:
+        detail = 'المزامنة العامة: {}'.format(describe_os_error(fallback_error))
+        if syncfs_error is not None:
+            detail = 'مزامنة الوجهة: {}؛ {}'.format(
+                describe_os_error(syncfs_error), detail)
+        raise RuntimeError('تعذر تثبيت البيانات على الوجهة: ' + detail) from fallback_error
+    if syncfs_error is not None:
+        return ('تعذر تثبيت الوجهة مباشرة: {}. تمت محاولة المزامنة العامة احتياطياً، '
+                'لكن لا يمكن تأكيد تثبيت بيانات الكارت.'.format(
+                    describe_os_error(syncfs_error)))
+    return ''
 
 
 def sync_with_heartbeat(phase_after='copying', dest=None):
@@ -326,12 +355,14 @@ def sync_with_heartbeat(phase_after='copying', dest=None):
 
     worker = threading.Thread(target=beat, daemon=True)
     worker.start()
+    warning = ''
     try:
-        flush_destination(dest)
+        warning = flush_destination(dest) or ''
     finally:
         stop.set()
         worker.join(timeout=2)
         set_state(syncing=False, sync_started=0, phase=phase_after)
+    return warning
 
 
 def is_busy():
@@ -1355,13 +1386,35 @@ def plan_transfer(paths, dest, excludes=None, cancel_check=None, on_progress=Non
     return tasks, total_files, total_bytes, skipped
 
 
-def verify_copied_files(planned, roots, on_progress=None, cancel_check=None):
-    """Check the copied files in ONE metadata-only pass.
+def _hash_file_for_verification(path, cancel_check=None, on_bytes_progress=None):
+    """Hash one file sequentially while keeping cancellation and progress live."""
+    digest = hashlib.sha256()
+    with open(path, 'rb') as fh:
+        while True:
+            if cancel_check is not None and cancel_check():
+                raise TransferCancelled()
+            chunk = fh.read(COPY_BUFFER_SIZE)
+            if not chunk:
+                break
+            digest.update(chunk)
+            touch_progress()
+            if on_bytes_progress is not None:
+                try:
+                    on_bytes_progress(len(chunk), path)
+                except Exception:
+                    pass
+    return digest.digest()
 
-    `planned` maps an absolute destination path to the bytes the copy loop
-    actually wrote; `roots` are the destination roots created for this copy.
-    The walk ignores anything that was already inside the destination (a merge
-    must not be reported as extra files) and never reads file contents.
+
+def verify_copied_files(planned, roots, on_progress=None, cancel_check=None,
+                        source_by_dest=None, verify_content=False,
+                        on_bytes_progress=None):
+    """Verify copied-file sizes, and optionally compare source/content hashes.
+
+    `planned` maps absolute destination paths to bytes actually written.
+    Content mode reads each source and destination sequentially and compares
+    SHA-256 digests. It is intentionally optional because it adds two full read
+    passes; the default size-only check remains metadata-only.
 
     Returns (verified, failures, cancelled).
     """
@@ -1391,13 +1444,50 @@ def verify_copied_files(planned, roots, on_progress=None, cancel_check=None):
         expected = planned.get(path)
         if expected is None:
             return
+        if size != expected:
+            seen.add(path)
+            done += 1
+            if len(failures) < 40:
+                failures.append((path, 'الحجم على الوجهة {} بايت والمتوقع {} بايت'.format(
+                    size, expected)))
+            report()
+            return
+
+        if verify_content:
+            source = (source_by_dest or {}).get(path)
+            if not source:
+                seen.add(path)
+                done += 1
+                if len(failures) < 40:
+                    failures.append((path, 'تعذر تحديد المصدر لمقارنة المحتوى'))
+                report()
+                return
+            try:
+                source_digest = _hash_file_for_verification(
+                    source, cancel_check, on_bytes_progress)
+                dest_digest = _hash_file_for_verification(
+                    path, cancel_check, on_bytes_progress)
+            except TransferCancelled:
+                raise
+            except OSError as exc:
+                seen.add(path)
+                done += 1
+                if len(failures) < 40:
+                    failures.append((path, 'تعذر قراءة الملف للتحقق: {}'.format(
+                        describe_os_error(exc))))
+                report()
+                return
+            if source_digest != dest_digest:
+                seen.add(path)
+                done += 1
+                if len(failures) < 40:
+                    failures.append((path, 'محتوى الملف لا يطابق المصدر (SHA-256)'))
+                report()
+                return
+
         seen.add(path)
         done += 1
-        if size == expected:
-            verified += 1
-        elif len(failures) < 40:
-            failures.append((path, 'الحجم على الوجهة {} بايت والمتوقع {} بايت'.format(
-                size, expected)))
+        verified += 1
         report()
 
     report(force=True)
@@ -1407,7 +1497,11 @@ def verify_copied_files(planned, roots, on_progress=None, cancel_check=None):
             break
         try:
             if os.path.isfile(root) and not os.path.islink(root):
-                check(root, os.path.getsize(root))
+                try:
+                    check(root, os.path.getsize(root))
+                except TransferCancelled:
+                    cancelled = True
+                    break
                 continue
             if not os.path.isdir(root) or os.path.islink(root):
                 continue
@@ -1429,13 +1523,19 @@ def verify_copied_files(planned, roots, on_progress=None, cancel_check=None):
                             if entry.is_dir(follow_symlinks=False):
                                 stack.append(entry.path)
                             elif entry.is_file(follow_symlinks=False):
-                                check(entry.path, entry.stat(follow_symlinks=False).st_size)
+                                try:
+                                    check(entry.path, entry.stat(follow_symlinks=False).st_size)
+                                except TransferCancelled:
+                                    cancelled = True
+                                    break
                         except OSError as exc:
                             if len(failures) < 40:
                                 failures.append((entry.path, describe_os_error(exc)))
             except OSError as exc:
                 if len(failures) < 40:
                     failures.append((current, describe_os_error(exc)))
+            if cancelled:
+                break
         if cancelled:
             break
 
@@ -1494,9 +1594,15 @@ def dest_inside_source(paths, dest):
     return False
 
 
-def copy_thread_task(paths, dest, excludes=None, groups=None, verify=True):
+def copy_thread_task(paths, dest, excludes=None, groups=None, verify=True,
+                     verify_content=False):
     acquire_wakelock()
-    reset_state(status='copying', action='copy', start_time=time.time(), phase='planning')
+    verify_content = bool(verify_content)
+    verify = bool(verify or verify_content)
+    verify_mode = 'content' if verify_content else ('size' if verify else 'off')
+    reset_state(status='copying', action='copy', start_time=time.time(),
+                phase='planning', verify_mode=verify_mode,
+                verify_content=verify_content, flush_warning='')
     copied = 0
     bytes_done = 0
     bytes_since_sync = 0
@@ -1507,10 +1613,22 @@ def copy_thread_task(paths, dest, excludes=None, groups=None, verify=True):
     UI_UPDATE_INTERVAL = 0.5
     started = time.time()
     planned_files = {}
+    planned_sources = {}
+    flush_warnings = []
     dest = os.path.normpath(dest)
     groups = list(groups or [])
     speed_window = deque()
     speed_ema = None
+
+    def flush_copy(phase_after):
+        warning = sync_with_heartbeat(phase_after, dest=dest)
+        if warning:
+            warning = str(warning)
+            if warning not in flush_warnings:
+                flush_warnings.append(warning)
+                log_event('copy flush warning: {}'.format(warning))
+            set_state(flush_warning='; '.join(flush_warnings))
+        return warning
 
     try:
         # Re-validate inside the worker: the queue must never be built from an
@@ -1665,6 +1783,7 @@ def copy_thread_task(paths, dest, excludes=None, groups=None, verify=True):
                     written = copy_file_sequential(
                         src, dst_path, cancel_check=is_cancelled, on_bytes=on_bytes)
                     planned_files[dst_path] = written
+                    planned_sources[dst_path] = src
                     copied += 1
                 except TransferCancelled:
                     raise
@@ -1682,7 +1801,7 @@ def copy_thread_task(paths, dest, excludes=None, groups=None, verify=True):
 
                 # Flush the whole transfer to the card occasionally, never per file.
                 if bytes_since_sync >= SYNC_THRESHOLD:
-                    sync_with_heartbeat('copying', dest=dest)
+                    flush_copy('copying')
                     bytes_since_sync = 0
 
             elif kind == 'dir':
@@ -1727,7 +1846,7 @@ def copy_thread_task(paths, dest, excludes=None, groups=None, verify=True):
 
         # A single flush at the end (plus the 1GB checkpoints above). The
         # heartbeat keeps a slow flush from looking like a hung card.
-        sync_with_heartbeat('verifying' if verify else 'copying', dest=dest)
+        flush_copy('verifying' if verify else 'copying')
 
         # Copy time and verify time are reported separately from now on: verify
         # walks the whole destination tree (~2ms/file), and folding it into the
@@ -1739,23 +1858,57 @@ def copy_thread_task(paths, dest, excludes=None, groups=None, verify=True):
         verify_failures = []
         verified = 0
         verify_seconds = 0.0
+        verify_done_count = 0
+        verify_bytes_total = (sum(planned_files.values()) * 2
+                              if verify_content else 0)
+        verify_bytes_done = 0
         if verify and planned_files:
-            set_state(phase='verifying', file='جاري التحقق من الحجم الإجمالي...',
+            verify_label = ('جاري قراءة المحتوى ومقارنته بالمصدر...'
+                            if verify_content else 'جاري التحقق من الحجم الإجمالي...')
+            set_state(phase='verifying', file=verify_label,
                       verify_total=len(planned_files), verify_done=0, verify_progress=0,
+                      verify_bytes_done=0, verify_bytes_total=verify_bytes_total,
                       speed_mbps=0, avg_mbps=round(avg_speed, 2), eta_seconds=0)
             touch_progress()
             verify_started = time.time()
 
             def on_verify(done, total_files):
+                nonlocal verify_done_count
+                verify_done_count = done
                 touch_progress()
-                pct = int((done / total_files) * 100) if total_files else 99
+                if verify_content and verify_bytes_total:
+                    pct = int((verify_bytes_done / verify_bytes_total) * 100)
+                else:
+                    pct = int((done / total_files) * 100) if total_files else 99
+                if done >= total_files and not verify_cancelled:
+                    pct = 100
                 set_state(verify_done=done, verify_total=total_files,
+                          verify_progress=min(pct, 100), file=verify_label)
+
+            last_verify_bytes_update = [0.0]
+
+            def on_verify_bytes(count, path):
+                nonlocal verify_bytes_done
+                verify_bytes_done += count
+                touch_progress()
+                now = time.time()
+                if (now - last_verify_bytes_update[0] < UI_UPDATE_INTERVAL
+                        and verify_bytes_done < verify_bytes_total):
+                    return
+                last_verify_bytes_update[0] = now
+                pct = (int(verify_bytes_done / verify_bytes_total * 100)
+                       if verify_bytes_total else 0)
+                set_state(verify_bytes_done=verify_bytes_done,
                           verify_progress=min(pct, 99),
-                          file='جاري التحقق من الحجم الإجمالي...')
+                          file='جاري التحقق من المحتوى: {}'.format(
+                              os.path.basename(path)))
 
             verified, verify_failures, verify_cancelled = verify_copied_files(
                 planned_files, verify_roots,
-                on_progress=on_verify, cancel_check=is_cancelled)
+                on_progress=on_verify, cancel_check=is_cancelled,
+                source_by_dest=planned_sources,
+                verify_content=verify_content,
+                on_bytes_progress=on_verify_bytes if verify_content else None)
             verify_seconds = max(time.time() - verify_started, 0.0)
             for p, r in verify_failures[:10]:
                 log_event('verify failed: {!r} -> {}'.format(p, r))
@@ -1836,13 +1989,25 @@ def copy_thread_task(paths, dest, excludes=None, groups=None, verify=True):
                 final_msg = 'اكتمل النسخ{} — تم إيقاف التحقق قبل نهايته{}{}.'.format(
                     group_note, speed_note, verify_note)
             elif verify_failures:
-                final_msg = ('اكتمل النسخ{} لكن التحقق وجد {} ملفاً مخالفاً — راجع التفاصيل{}{}'
-                             .format(group_note, len(verify_failures), speed_note, verify_note))
+                if verify_content:
+                    final_msg = ('اكتمل النسخ{} لكن مقارنة محتوى الملفات وجدت {} ملفاً '
+                                 'مخالفاً — راجع التفاصيل{}{}').format(
+                                     group_note, len(verify_failures),
+                                     speed_note, verify_note)
+                else:
+                    final_msg = ('اكتمل النسخ{} لكن التحقق وجد {} ملفاً مخالفاً — راجع التفاصيل{}{}'
+                                 .format(group_note, len(verify_failures),
+                                         speed_note, verify_note))
             else:
-                final_msg = 'اكتمل النسخ{} والتحقق بنجاح — {} ملفاً سليماً{}{}.'.format(
-                    group_note, verified, speed_note, verify_note)
+                check_name = 'محتوى الملفات' if verify_content else 'الأحجام'
+                final_msg = 'اكتمل النسخ{} والتحقق من {} بنجاح — {} ملفاً سليماً{}{}.'.format(
+                    group_note, check_name, verified, speed_note, verify_note)
         else:
             final_msg = 'اكتمل النسخ{} بنجاح{}.'.format(group_note, speed_note)
+
+        flush_warning = '; '.join(flush_warnings)
+        if flush_warning:
+            final_msg += ' • تحذير تثبيت البيانات: ' + flush_warning
 
         if APP_SETTINGS.get('auto_spoof'):
             if spoof_cancelled:
@@ -1853,9 +2018,9 @@ def copy_thread_task(paths, dest, excludes=None, groups=None, verify=True):
                 final_msg += ' • تم تمويه {} عنصراً'.format(spoof_done)
 
         log_event('copy done: copied={} failed={} bytes={} in {:.1f}s ({:.2f} MB/s) '
-                  'verify={:.1f}s verified={} verify_failed={}'.format(
+                  'verify_mode={} verify={:.1f}s verified={} verify_failed={}'.format(
                       copied, len(failed_details), bytes_done, copy_seconds, avg_speed,
-                      verify_seconds, verified, len(verify_failures)))
+                       verify_mode, verify_seconds, verified, len(verify_failures)))
 
         invalidate_cache_for_path(dest)
         finish_transfer('done', final_msg, extra={
@@ -1873,10 +2038,17 @@ def copy_thread_task(paths, dest, excludes=None, groups=None, verify=True):
             'eta_seconds': 0,
             'verified': verified,
             'verify_total': len(planned_files) if verify else 0,
-            'verify_done': len(planned_files) if verify else 0,
-            'verify_progress': 100 if verify and planned_files else 0,
+            'verify_done': verify_done_count if verify else 0,
+            'verify_progress': (get_state_snapshot().get('verify_progress', 0)
+                                if verify_cancelled else
+                                (100 if verify and planned_files else 0)),
             'verify_failed': ['{} — {}'.format(p, r) for p, r in verify_failures[:30]],
             'verify_cancelled': verify_cancelled,
+            'verify_mode': verify_mode,
+            'verify_content': verify_content,
+            'verify_bytes_done': verify_bytes_done,
+            'verify_bytes_total': verify_bytes_total,
+            'flush_warning': flush_warning,
             'spoof_total': spoof_total,
             'spoof_done': spoof_done,
             'spoof_error': spoof_error,
@@ -1886,7 +2058,7 @@ def copy_thread_task(paths, dest, excludes=None, groups=None, verify=True):
 
     except TransferCancelled:
         try:
-            sync_with_heartbeat('copying', dest=dest)
+            flush_copy('copying')
         except Exception as flush_error:
             # Cancellation still needs a terminal state even if the best-effort
             # durability flush fails. Do not leave the UI showing a live copy.
@@ -1896,14 +2068,19 @@ def copy_thread_task(paths, dest, excludes=None, groups=None, verify=True):
                 'error',
                 'تم إلغاء النسخ، لكن تعذر تثبيت البيانات على الوجهة: {}'.format(
                     describe_os_error(flush_error)),
-                extra={'log': str(flush_error), 'phase': 'error'})
+                extra={'log': str(flush_error), 'phase': 'error',
+                       'flush_warning': '; '.join(flush_warnings)})
             return
         log_event('copy cancelled by user after {}s'.format(int(time.time() - started)))
-        finish_transfer('cancelled', 'تم إلغاء النسخ.')
+        cancel_msg = 'تم إلغاء النسخ.'
+        if flush_warnings:
+            cancel_msg += ' تحذير تثبيت البيانات: ' + '; '.join(flush_warnings)
+        finish_transfer('cancelled', cancel_msg,
+                        extra={'flush_warning': '; '.join(flush_warnings)})
     except Exception as e:
         flush_error = None
         try:
-            sync_with_heartbeat('copying', dest=dest)
+            flush_copy('copying')
         except Exception as exc:
             flush_error = exc
         log_event('copy ERROR: {}: {}'.format(type(e).__name__, e))
@@ -1914,7 +2091,8 @@ def copy_thread_task(paths, dest, excludes=None, groups=None, verify=True):
         if flush_error is not None:
             error_text += ' (flush also failed: {})'.format(flush_error)
         finish_transfer('error', 'تعذر إكمال النسخ: {}'.format(
-            describe_os_error(e)), extra={'log': error_text, 'phase': 'error'})
+            describe_os_error(e)), extra={'log': error_text, 'phase': 'error',
+                                          'flush_warning': '; '.join(flush_warnings)})
     finally:
         release_wakelock()
 
@@ -3130,8 +3308,14 @@ HTML_TEMPLATE = """
                     </label>
                     <label class="settings-check-row" for="verifyAfterCopy">
                         <input type="checkbox" id="verifyAfterCopy" class="checkbox" onchange="localStorage.setItem('sdmp3_verify_after_copy', this.checked ? '1' : '0')">
-                        <span>التحقق من الحجم بعد النسخ
-                            <small class="settings-note">جولة واحدة تقارن الحجم المكتوب.</small>
+                        <span>التحقق السريع من الحجم بعد النسخ
+                            <small class="settings-note">يقارن حجم كل ملف دون إعادة قراءة محتواه.</small>
+                        </span>
+                    </label>
+                    <label class="settings-check-row" for="verifyContentAfterCopy">
+                        <input type="checkbox" id="verifyContentAfterCopy" class="checkbox" onchange="localStorage.setItem('sdmp3_verify_content_after_copy', this.checked ? '1' : '0')">
+                        <span>مقارنة محتوى الملفات (أبطأ)
+                            <small class="settings-note">يقرأ المصدر والنسخة ويقارن SHA-256 لاكتشاف اختلاف المحتوى.</small>
                         </span>
                     </label>
                     <div id="generalSaveState" class="settings-save-state"></div>
@@ -3436,12 +3620,15 @@ HTML_TEMPLATE = """
     let currentSort = localStorage.getItem('sdmp3_source_sort') || 'name';
     let pickerMode = 'dest'; 
 
-    // Restore the copy verification preference. Fast and on by default: one
-    // metadata pass after the copy, never a per-file read during it.
+    // Fast size verification stays on by default; full content comparison is
+    // opt-in because it reads both source and destination after copying.
     (function restoreCopyPrefs() {
         let saved = localStorage.getItem('sdmp3_verify_after_copy');
         let el = document.getElementById('verifyAfterCopy');
         if (el) el.checked = (saved === null) ? true : (saved === '1');
+        let contentSaved = localStorage.getItem('sdmp3_verify_content_after_copy');
+        let contentEl = document.getElementById('verifyContentAfterCopy');
+        if (contentEl) contentEl.checked = contentSaved === '1';
     })();
 
     function isPathSelected(path) {
@@ -5730,6 +5917,8 @@ HTML_TEMPLATE = """
         let dest = document.getElementById('custom_dest_path').value;
         if(!dest) return alert('حدد مسار الوجهة.');
         let verifyEl = document.getElementById('verifyAfterCopy');
+        let verifyContentEl = document.getElementById('verifyContentAfterCopy');
+        let verifyContent = verifyContentEl ? verifyContentEl.checked : false;
 
         let reqData = {
             dest: dest,
@@ -5738,7 +5927,8 @@ HTML_TEMPLATE = """
             groups: copyGroups
                 .filter(function(g) { return g.paths.length > 0; })
                 .map(function(g) { return { name: g.name, paths: g.paths.slice() }; }),
-            verify: verifyEl ? verifyEl.checked : true,
+            verify: (verifyEl ? verifyEl.checked : true) || verifyContent,
+            verify_content: verifyContent,
             confirm_merge: !!confirmMerge
         };
 
@@ -6561,7 +6751,13 @@ HTML_TEMPLATE = """
                     + ' — ' + data.verify_failed.length + ' مخالف';
             }
             if (data.verify_seconds) value += ' · ' + data.verify_seconds + ' ث';
-            rows.push(reportRow('ico-shield', 'التحقق من الحجم', value, tone));
+            let verifyLabel = data.verify_mode === 'content'
+                ? 'مقارنة المحتوى (SHA-256)' : 'التحقق من الحجم';
+            rows.push(reportRow('ico-shield', verifyLabel, value, tone));
+        }
+        if (data.flush_warning) {
+            rows.push(reportRow('ico-alert', 'تثبيت البيانات',
+                'تحذير — راجع التفاصيل', 'warn'));
         }
 
         if (data.spoof_total) {
@@ -6678,7 +6874,11 @@ HTML_TEMPLATE = """
                     }
                     currentEl.style.color = 'var(--text-muted)';
                 } else if (data.phase === 'verifying') {
-                    currentEl.innerText = 'جاري التحقق من الحجم الإجمالي... '
+                    let verifyLabel = data.verify_content
+                        ? 'جاري مقارنة المحتوى' : 'جاري التحقق من الحجم';
+                    let currentName = (data.verify_content && data.file)
+                        ? ' — ' + data.file : '';
+                    currentEl.innerText = verifyLabel + currentName + ' · '
                         + (data.verify_done || 0) + ' / ' + (data.verify_total || 0);
                     currentEl.style.color = 'var(--accent-text)';
                 } else if (data.phase === 'spoofing') {
@@ -6832,8 +7032,14 @@ HTML_TEMPLATE = """
                         data.skipped.forEach(function(n){ lines.push('- ' + esc(n)); });
                     }
                     if (data.verify_failed && data.verify_failed.length > 0) {
-                        lines.push('<b>التحقق من الحجم:</b>');
+                        lines.push(data.verify_mode === 'content'
+                            ? '<b>مقارنة محتوى الملفات (SHA-256):</b>'
+                            : '<b>التحقق من الحجم:</b>');
                         data.verify_failed.forEach(function(n){ lines.push('- ' + esc(n)); });
+                    }
+                    if (data.flush_warning) {
+                        lines.push('<b>تثبيت البيانات على الكارت:</b> '
+                            + esc(data.flush_warning));
                     }
                     if (data.spoof_error) {
                         lines.push('<b>تمويه التواريخ:</b> ' + esc(data.spoof_error));
@@ -8244,7 +8450,9 @@ def start_transfer():
         if copy_targets_source(ungrouped, dest):
             return jsonify({'error': 'الوجهة هي مجلد المصدر نفسه — اختر مجلداً جديداً داخلها بدل اختيارها هي'})
 
-    verify = bool(data.get('verify', True))
+    verify_content = bool(data.get('verify_content', False))
+    verify = bool(data.get('verify', True)) or verify_content
+    verify_mode = 'content' if verify_content else ('size' if verify else 'off')
     global ACTIVE_THREAD
     with transfer_lock:
         if transfer_state['status'] == 'copying' and is_thread_alive(ACTIVE_THREAD):
@@ -8257,10 +8465,13 @@ def start_transfer():
         # Clear the previous run here, not in the worker: otherwise a poll that
         # lands between this request and the thread start still sees the old
         # 'done'/'error' state and the UI reports the wrong result.
-        reset_state(status='copying', action='copy', start_time=time.time(), phase='planning')
+        reset_state(status='copying', action='copy', start_time=time.time(),
+                    phase='planning', verify_mode=verify_mode,
+                    verify_content=verify_content, flush_warning='')
         ACTIVE_THREAD = threading.Thread(
             target=copy_thread_task,
-            args=(paths, dest, set(p for p in data.get('excludes', []) if p), groups, verify),
+            args=(paths, dest, set(p for p in data.get('excludes', []) if p),
+                  groups, verify, verify_content),
             daemon=True)
         ACTIVE_THREAD.start()
     return jsonify({'success': True})

@@ -1,6 +1,7 @@
 import os
 import tempfile
 import errno
+import ctypes
 import threading
 import time
 import unittest
@@ -100,13 +101,14 @@ class CopyWorkerReliabilityTests(unittest.TestCase):
     def destination_path(self, name):
         return os.path.join(self.dest, os.path.basename(self.root), name)
 
-    def run_worker(self, verify=False):
+    def run_worker(self, verify=False, verify_content=False):
         with mock.patch.object(project, 'has_enough_space', return_value=True), \
                 mock.patch.object(project, 'acquire_wakelock'), \
                 mock.patch.object(project, 'release_wakelock'), \
                 mock.patch.object(project, 'invalidate_cache_for_path'), \
-                mock.patch.object(project, 'flush_destination', return_value=False):
-            project.copy_thread_task([self.root], self.dest, verify=verify)
+                mock.patch.object(project, 'flush_destination', return_value=''):
+            project.copy_thread_task([self.root], self.dest, verify=verify,
+                                     verify_content=verify_content)
         return project.get_state_snapshot()
 
     def test_cancel_during_a_file_removes_partial_mp3_and_finishes_cancelled(self):
@@ -228,12 +230,11 @@ class CopyWorkerReliabilityTests(unittest.TestCase):
         self.write_source('track.mp3', b'expected complete content')
         original_verify = project.verify_copied_files
 
-        def alter_before_verify(planned, roots, on_progress=None, cancel_check=None):
+        def alter_before_verify(planned, roots, **kwargs):
             destination = next(iter(planned))
             with open(destination, 'wb') as fh:
                 fh.write(b'x')
-            return original_verify(planned, roots, on_progress=on_progress,
-                                   cancel_check=cancel_check)
+            return original_verify(planned, roots, **kwargs)
 
         with mock.patch.object(project, 'verify_copied_files',
                                side_effect=alter_before_verify):
@@ -244,6 +245,92 @@ class CopyWorkerReliabilityTests(unittest.TestCase):
         self.assertEqual(snapshot['verify_total'], 1)
         self.assertEqual(len(snapshot['verify_failed']), 1)
         self.assertIn('التحقق وجد 1 ملفاً مخالفاً', snapshot['file'])
+
+    def test_content_verification_detects_same_size_corruption(self):
+        self.write_source('track.mp3', b'original')
+        original_copy = project.copy_file_sequential
+
+        def corrupt_after_copy(src, dst, cancel_check=None, on_bytes=None):
+            written = original_copy(src, dst, cancel_check=cancel_check,
+                                    on_bytes=on_bytes)
+            with open(dst, 'wb') as fh:
+                fh.write(b'corrupt!')
+            return written
+
+        with mock.patch.object(project, 'copy_file_sequential',
+                               side_effect=corrupt_after_copy):
+            # Content mode must enable verification even if fast-size mode is off.
+            snapshot = self.run_worker(verify=False, verify_content=True)
+
+        self.assertEqual(snapshot['status'], 'done')
+        self.assertEqual(snapshot['verify_mode'], 'content')
+        self.assertTrue(snapshot['verify_content'])
+        self.assertEqual(snapshot['verify_total'], 1)
+        self.assertEqual(snapshot['verified'], 0)
+        self.assertTrue(any('SHA-256' in failure for failure in snapshot['verify_failed']))
+        self.assertIn('مقارنة محتوى الملفات وجدت 1 ملفاً مخالفاً', snapshot['file'])
+
+    def test_content_verification_accepts_matching_bytes(self):
+        src = self.write_source('track.mp3', b'identical content')
+        dst = os.path.join(self.tempdir.name, 'copy.mp3')
+        with open(dst, 'wb') as fh:
+            fh.write(b'identical content')
+
+        verified, failures, cancelled = project.verify_copied_files(
+            {dst: os.path.getsize(src)}, [dst],
+            source_by_dest={dst: src}, verify_content=True)
+
+        self.assertEqual((verified, failures, cancelled), (1, [], False))
+
+    def test_content_verification_can_be_cancelled_during_readback(self):
+        src = self.write_source('track.mp3', b'content')
+        dst = os.path.join(self.tempdir.name, 'copy.mp3')
+        with open(dst, 'wb') as fh:
+            fh.write(b'content')
+        checks = [0]
+
+        def cancel_after_readback_starts():
+            checks[0] += 1
+            return checks[0] >= 3
+
+        verified, failures, cancelled = project.verify_copied_files(
+            {dst: 7}, [dst], cancel_check=cancel_after_readback_starts,
+            source_by_dest={dst: src}, verify_content=True)
+
+        self.assertEqual(verified, 0)
+        self.assertEqual(failures, [])
+        self.assertTrue(cancelled)
+
+    def test_flush_fallback_warning_is_kept_in_transfer_result(self):
+        self.write_source('track.mp3', b'completed')
+        warning = 'تعذر تثبيت الوجهة مباشرة: خطأ إدخال/إخراج'
+        with mock.patch.object(project, 'sync_with_heartbeat', return_value=warning):
+            snapshot = self.run_worker()
+
+        self.assertEqual(snapshot['status'], 'done')
+        self.assertIn(warning, snapshot['flush_warning'])
+        self.assertIn(warning, snapshot['file'])
+
+    def test_syncfs_failure_is_reported_after_global_fallback(self):
+        with tempfile.TemporaryDirectory() as dest:
+            def failed_syncfs(_fd):
+                ctypes.set_errno(errno.EIO)
+                return -1
+
+            with mock.patch.object(project, '_syncfs_fn', return_value=failed_syncfs), \
+                    mock.patch.object(project.os, 'sync') as global_sync:
+                warning = project.flush_destination(dest)
+
+        self.assertIn('تعذر تثبيت الوجهة مباشرة', warning)
+        self.assertIn('تثبيت بيانات الكارت', warning)
+        global_sync.assert_called_once_with()
+
+    def test_global_flush_failure_raises_a_clear_error(self):
+        with mock.patch.object(project, '_syncfs_fn', return_value=None), \
+                mock.patch.object(project.os, 'sync',
+                                  side_effect=OSError(errno.EIO, 'simulated flush failure')):
+            with self.assertRaisesRegex(RuntimeError, 'تعذر تثبيت البيانات على الوجهة'):
+                project.flush_destination('/unused')
 
     def test_worker_copies_naturally_ordered_tracks_one_at_a_time(self):
         expected = ['track 2.mp3', 'track 10.mp3', 'track 100.mp3']
@@ -313,6 +400,36 @@ class SearchRankingTests(unittest.TestCase):
         self.assertEqual(
             [item['name'] for item in body['results']],
             ['Track {:03d}.mp3'.format(i) for i in range(project.SEARCH_MAX_RESULTS)])
+
+
+class TransferRouteTests(unittest.TestCase):
+    def test_content_verification_flag_reaches_worker_and_enables_verification(self):
+        with tempfile.TemporaryDirectory() as tempdir:
+            source = os.path.join(tempdir, 'source')
+            destination = os.path.join(tempdir, 'destination')
+            os.makedirs(source)
+            os.makedirs(destination)
+            project.reset_state()
+            try:
+                with mock.patch.object(project, 'check_destination', return_value=None), \
+                        mock.patch.object(project.threading, 'Thread') as thread_factory, \
+                        mock.patch.object(project, 'ACTIVE_THREAD', None):
+                    response = project.app.test_client().post('/transfer/start', json={
+                        'paths': [source],
+                        'dest': destination,
+                        'verify': False,
+                        'verify_content': True,
+                    })
+
+                self.assertEqual(response.status_code, 200)
+                self.assertTrue(response.get_json()['success'])
+                args = thread_factory.call_args.kwargs['args']
+                self.assertEqual(args[-2:], (True, True))
+                snapshot = project.get_state_snapshot()
+                self.assertEqual(snapshot['verify_mode'], 'content')
+                self.assertTrue(snapshot['verify_content'])
+            finally:
+                project.reset_state()
 
 
 class CliProcessIdentityTests(unittest.TestCase):
