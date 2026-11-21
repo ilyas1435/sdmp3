@@ -208,6 +208,22 @@ class CopyWorkerReliabilityTests(unittest.TestCase):
         self.assertIn('flush failure', snapshot['log'])
         self.assertIn('تعذر إكمال النسخ', snapshot['file'])
 
+    def test_periodic_flush_targets_only_the_copy_destination(self):
+        self.write_source('track.mp3', b'flush me')
+        calls = []
+
+        def record_sync(phase_after='copying', dest=None):
+            calls.append((phase_after, dest))
+
+        with mock.patch.object(project, 'SYNC_THRESHOLD', 1), \
+                mock.patch.object(project, 'sync_with_heartbeat',
+                                  side_effect=record_sync):
+            snapshot = self.run_worker()
+
+        self.assertEqual(snapshot['status'], 'done')
+        self.assertGreaterEqual(len(calls), 2)  # periodic checkpoint and final flush
+        self.assertTrue(all(dest == self.dest for _phase, dest in calls))
+
     def test_verification_size_mismatch_is_reported_in_the_terminal_result(self):
         self.write_source('track.mp3', b'expected complete content')
         original_verify = project.verify_copied_files

@@ -1682,7 +1682,7 @@ def copy_thread_task(paths, dest, excludes=None, groups=None, verify=True):
 
                 # Flush the whole transfer to the card occasionally, never per file.
                 if bytes_since_sync >= SYNC_THRESHOLD:
-                    sync_with_heartbeat('copying')
+                    sync_with_heartbeat('copying', dest=dest)
                     bytes_since_sync = 0
 
             elif kind == 'dir':
