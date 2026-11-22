@@ -133,7 +133,7 @@ class ThemePaletteTests(unittest.TestCase):
             self.assertEqual(preset.get_json()['tokens'],
                              sdmp3_themes.theme_tokens('coffee-blues'))
 
-    def test_custom_theme_rejects_bad_hex_and_low_contrast_without_saving(self):
+    def test_custom_theme_accepts_low_contrast_and_rejects_bad_hex(self):
         original = dict(project.APP_SETTINGS)
         colors = sdmp3_themes.custom_color_values('coffee-blues')
         client = project.app.test_client()
@@ -147,25 +147,52 @@ class ThemePaletteTests(unittest.TestCase):
             })
             self.assertEqual(response.status_code, 400)
             self.assertIn('#RRGGBB', response.get_json()['error'])
+            preview_invalid = client.post('/api/settings/theme-preview', json={
+                'theme': 'coffee-blues', 'custom_colors': invalid_hex,
+            })
+            self.assertEqual(preview_invalid.status_code, 400)
+            self.assertIn('#RRGGBB', preview_invalid.get_json()['error'])
 
-            low_contrast = dict(colors)
-            low_contrast['text'] = low_contrast['bg']
+            low_contrast = {
+                'bg': '#000000',
+                'card_2': '#000000',
+                'accent': '#000000',
+                'kind_sdcard': '#D0B49F',
+                'text': '#000000',
+            }
             response = client.post('/api/settings/theme-preview', json={
                 'theme': 'coffee-blues', 'custom_colors': low_contrast,
             })
-            self.assertEqual(response.status_code, 400)
-            self.assertIn('التباين غير كافٍ', response.get_json()['error'])
-            self.assertIsNone(project.APP_SETTINGS.get('custom_colors'))
+            self.assertEqual(response.status_code, 200, response.get_json())
+            preview = response.get_json()
+            self.assertEqual(preview['tokens']['--bg'], '#000000')
+            self.assertEqual(preview['tokens']['--card'], '#000000')
+            self.assertEqual(preview['tokens']['--text'], '#000000')
+            self.assertEqual(preview['tokens']['--accent'], '#000000')
+            self.assertEqual(preview['tokens']['--kind-sdcard'], '#D0B49F')
+            self.assertIsNone(project.APP_SETTINGS.get('custom_colors'),
+                              'preview must not persist the palette')
+
+            saved = client.post('/api/settings', json={
+                'theme': 'coffee-blues', 'custom_colors': low_contrast,
+            })
+            self.assertEqual(saved.status_code, 200, saved.get_json())
+            self.assertEqual(saved.get_json()['settings']['custom_colors'], low_contrast)
             self.assertEqual(sdmp3_state.load_settings(
                 sdmp3_themes.theme_ids(), sdmp3_themes.DEFAULT_THEME,
-                project.font_ids(), project.DEFAULT_FONT,
-                project.font_size_ids(), project.DEFAULT_FONT_SIZE)['custom_colors'], None)
+                project.font_ids(), project.DEFAULT_FONT, project.font_size_ids(),
+                project.DEFAULT_FONT_SIZE)['custom_colors'], low_contrast)
+            page = client.get('/').get_data(as_text=True)
+            self.assertIn('<option value="custom" selected>تخصيص</option>', page)
+            self.assertIn('<div class="custom-theme-editor" id="customThemeEditor">', page)
+            self.assertIn('--bg: #000000', page)
 
-    def test_custom_sd_color_keeps_storage_categories_distinguishable(self):
+    def test_custom_sd_color_may_match_another_category(self):
         colors = sdmp3_themes.custom_color_values('coffee-blues')
         colors['kind_sdcard'] = '#D0B49F'
-        with self.assertRaisesRegex(ValueError, 'أوضح لبطاقة SD'):
-            sdmp3_themes.build_custom_theme('coffee-blues', colors)
+        theme = sdmp3_themes.build_custom_theme('coffee-blues', colors)
+        self.assertEqual(theme['colors']['kind_sdcard'], '#D0B49F')
+        self.assertEqual(theme['tokens']['--kind-sdcard'], '#D0B49F')
 
     def test_settings_page_renders_selected_theme_preview_and_palette_data(self):
         with mock.patch.object(project, 'APP_SETTINGS', dict(project.APP_SETTINGS)):
@@ -175,6 +202,24 @@ class ThemePaletteTests(unittest.TestCase):
         self.assertIn('id="themeColorPreview"', html)
         self.assertIn('id="themePreviewName"', html)
         self.assertIn('data-swatches=', html)
+        self.assertIn('<option value="custom">تخصيص</option>', html)
+
+    def test_custom_theme_editor_starts_hidden_until_custom_is_saved(self):
+        settings = dict(project.APP_SETTINGS)
+        settings.update({'theme': 'coffee-blues', 'custom_colors': None})
+        with mock.patch.object(project, 'APP_SETTINGS', settings):
+            html = project.app.test_client().get('/').get_data(as_text=True)
+        self.assertIn('<div class="custom-theme-editor" id="customThemeEditor" hidden>', html)
+        self.assertIn('<option value="custom">تخصيص</option>', html)
+
+    def test_saved_custom_theme_selects_and_shows_custom_editor(self):
+        settings = dict(project.APP_SETTINGS)
+        colors = sdmp3_themes.custom_color_values('coffee-blues')
+        settings.update({'theme': 'coffee-blues', 'custom_colors': colors})
+        with mock.patch.object(project, 'APP_SETTINGS', settings):
+            html = project.app.test_client().get('/').get_data(as_text=True)
+        self.assertIn('<option value="custom" selected>تخصيص</option>', html)
+        self.assertIn('<div class="custom-theme-editor" id="customThemeEditor">', html)
 
     def test_about_panel_has_version_local_notice_and_profile_link(self):
         page = project.app.test_client().get('/').get_data(as_text=True)

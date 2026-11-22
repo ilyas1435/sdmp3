@@ -1009,11 +1009,12 @@ def _ensure_ink_contrast(foreground, target, backgrounds, floor):
 
 
 def build_custom_theme(theme_id, raw_colors):
-    """Overlay the five user colours on a preset and keep every UI token safe.
+    """Overlay the five user colours on a preset without blocking their choices.
 
     The built-in preset remains untouched. Custom colours are a validated
     overlay; related surfaces, accent shades and readable status inks are
-    derived from it for the active page only.
+    derived from it for the active page only. Contrast and hue are not reasons
+    to reject a valid user palette.
     """
     if theme_id not in THEMES:
         raise ValueError('سمة غير معروفة')
@@ -1060,38 +1061,6 @@ def build_custom_theme(theme_id, raw_colors):
             definition[key], colors['text'], surfaces, 4.5)
     definition['kind_sdcard_ink'] = _ensure_ink_contrast(
         colors['kind_sdcard'], colors['text'], surfaces, 4.5)
-
-    contrast_failures = check_contrast(definition)
-    if contrast_failures:
-        labels = {
-            'text on card': 'النص على السطح',
-            'text on page': 'النص على الخلفية',
-            'muted on card': 'النص الثانوي على السطح',
-            'muted on field': 'النص الثانوي على الحقول',
-            'accent text on card': 'لون التمييز على السطح',
-            'warning on card': 'التحذير على السطح',
-            'success on card': 'النجاح على السطح',
-            'danger text on card': 'الخطأ على السطح',
-            'label on primary': 'نص الأزرار الرئيسية',
-            'label on success': 'نص أزرار النجاح',
-            'label on danger': 'نص أزرار الخطأ',
-            'label on sand': 'نص الأزرار الثانوية',
-            'internal ink on card': 'لون التخزين الداخلي',
-            'sd ink on card': 'لون بطاقة SD',
-            'usb ink on card': 'لون USB',
-            'card ink on card': 'لون بطاقة الذاكرة',
-        }
-        details = '، '.join(labels.get(label, label) for label, _ratio, _floor in contrast_failures)
-        raise ValueError('التباين غير كافٍ في: ' + details)
-
-    hue_failures = check_kind_hues(definition)
-    if hue_failures:
-        labels = {
-            'internal vs sd card': 'لون بطاقة SD قريب جداً من التخزين الداخلي',
-            'sd card vs memory card': 'لون بطاقة SD قريب جداً من بطاقة الذاكرة',
-        }
-        raise ValueError('اختر لوناً أوضح لبطاقة SD: ' + '، '.join(
-            labels.get(label, label) for label, _gap, _floor in hue_failures))
 
     tokens = build_tokens(definition)
     return {

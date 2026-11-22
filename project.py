@@ -2746,6 +2746,7 @@ HTML_TEMPLATE = """
         #themePreviewName { min-width:0; text-align:end; overflow-wrap:anywhere; }
         .custom-theme-editor { display:flex; flex-direction:column; gap:8px; padding:10px 11px;
             border:1px solid var(--border); border-radius:12px; background:var(--field); }
+        .custom-theme-editor[hidden] { display:none; }
         .custom-theme-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; }
         .custom-theme-field { display:flex; flex-direction:column; gap:4px; min-width:0; }
         .custom-theme-field label { color:var(--text); font-size:calc(11.5px * var(--font-scale)); font-weight:600; }
@@ -3517,8 +3518,9 @@ HTML_TEMPLATE = """
                         <label for="themeSelect"><svg class="icon" aria-hidden="true"><use href="#ico-palette"></use></svg>السمة</label>
                         <select id="themeSelect" onchange="pickTheme(this.value)">
                             {% for t in themes %}
-                            <option value="{{ t.id }}" data-theme-id="{{ t.id }}" data-swatches="{{ t.swatches|join(',') }}"{% if t.id == active_theme.id %} selected{% endif %}>{{ t.name }}</option>
+                            <option value="{{ t.id }}" data-theme-id="{{ t.id }}" data-swatches="{{ t.swatches|join(',') }}"{% if t.id == active_theme.id and not has_custom_colors %} selected{% endif %}>{{ t.name }}</option>
                             {% endfor %}
+                            <option value="custom"{% if has_custom_colors %} selected{% endif %}>تخصيص</option>
                         </select>
                         <div class="theme-preview-row">
                             <div id="themeColorPreview" class="theme-preview" role="img"
@@ -3531,7 +3533,7 @@ HTML_TEMPLATE = """
                             <span id="themePreviewName" class="field-hint">{{ active_theme.name }}</span>
                         </div>
                     </div>
-                    <div class="custom-theme-editor">
+                    <div class="custom-theme-editor" id="customThemeEditor"{% if not has_custom_colors %} hidden{% endif %}>
                         <div class="settings-group-title">
                             <svg class="icon" aria-hidden="true"><use href="#ico-palette"></use></svg>
                             تخصيص الألوان
@@ -6021,6 +6023,16 @@ HTML_TEMPLATE = """
 
     // ---- settings + themes ---------------------------------------------
     let activeThemeId = document.documentElement.getAttribute('data-theme') || '';
+    let customThemeEditorOpen = {{ has_custom_colors|tojson }};
+
+    function setCustomThemeEditorOpen(open) {
+        customThemeEditorOpen = !!open;
+        let editor = document.getElementById('customThemeEditor');
+        if (editor) editor.hidden = !customThemeEditorOpen;
+        let select = document.getElementById('themeSelect');
+        if (select) select.value = customThemeEditorOpen ? 'custom' : activeThemeId;
+    }
+
     // Server-rendered so the pickers already show the saved choice.
     let activeFontId = '{{ active_font }}';
     let activeFontSizeId = '{{ active_font_size }}';
@@ -6126,7 +6138,7 @@ HTML_TEMPLATE = """
             activeThemeId = id;
             document.documentElement.setAttribute('data-theme', id);
             let select = document.getElementById('themeSelect');
-            if (select) select.value = id;
+            if (select) select.value = customThemeEditorOpen ? 'custom' : id;
             if (Array.isArray(swatches)) renderThemePreview(swatches, previewName || 'ألوان مخصصة');
             else updateThemePreview(id);
         }
@@ -6247,11 +6259,12 @@ HTML_TEMPLATE = """
         }).then(function(res) {
             if (sequence !== customThemePreviewSequence) return;
             if (!res.ok) {
-                setCustomThemeState(res.data.error || 'تركيبة الألوان غير مناسبة.', 'err');
+                setCustomThemeState(res.data.error || 'تعذر تطبيق قيم الألوان.', 'err');
                 return;
             }
             applyTheme(res.data.tokens, res.data.theme_bg, activeThemeId,
                 res.data.swatches, 'معاينة مخصصة');
+            setCustomThemeEditorOpen(true);
             setCustomThemeState('معاينة مباشرة — اضغط «حفظ الألوان» للاحتفاظ بها.', '');
         }).catch(function() {
             if (sequence === customThemePreviewSequence) {
@@ -6278,6 +6291,7 @@ HTML_TEMPLATE = """
             setCustomThemeInputs(savedCustomThemeColors);
             applyTheme(res.data.tokens, res.data.theme_bg, activeThemeId,
                 res.data.swatches, 'ألوان مخصصة');
+            setCustomThemeEditorOpen(true);
             setCustomThemeState('تم حفظ الألوان المخصصة على هذا الجهاز.', 'ok');
         }).catch(function() {
             setCustomThemeState('تعذر الاتصال لحفظ الألوان.', 'err');
@@ -6301,6 +6315,7 @@ HTML_TEMPLATE = """
             setCustomThemeInputs({swatches: res.data.swatches});
             applyTheme(res.data.tokens, res.data.theme_bg, activeThemeId,
                 res.data.swatches, res.data.theme_name);
+            setCustomThemeEditorOpen(true);
             setCustomThemeState('تمت استعادة ألوان الثيم الجاهز.', 'ok');
         }).catch(function() {
             setCustomThemeState('تعذر الاتصال لاستعادة الألوان.', 'err');
@@ -6359,22 +6374,34 @@ HTML_TEMPLATE = """
     }
 
     function pickTheme(id) {
-        if (!id || id === activeThemeId) return;
+        if (id === 'custom') {
+            cancelCustomThemePreview();
+            setCustomThemeEditorOpen(true);
+            if (savedCustomThemeColors) {
+                setCustomThemeInputs(savedCustomThemeColors);
+                renderThemePreview(CUSTOM_THEME_INPUTS.map(function(item) {
+                    return savedCustomThemeColors[item[0]];
+                }), 'ألوان مخصصة');
+                setCustomThemeState('ألوان مخصصة محفوظة', 'ok');
+            } else {
+                updateThemePreview(activeThemeId);
+                setCustomThemeState('ألوان الثيم الحالي', '');
+            }
+            return;
+        }
+        if (!id || (id === activeThemeId && !customThemeEditorOpen)) return;
+        let reopenCustomEditor = customThemeEditorOpen;
+        setCustomThemeEditorOpen(false);
         cancelCustomThemePreview();
         updateThemePreview(id);
         setSettingsState('جارٍ الحفظ...', '');
         fetch('/api/settings', { method: 'POST', headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({ theme: id }) })
+            body: JSON.stringify({ theme: id, custom_colors: null }) })
             .then(function(r) { return r.json().then(function(d) { return { ok: r.ok, data: d }; }); })
             .then(function(res) {
                 if (!res.ok) {
-                    let select = document.getElementById('themeSelect');
-                    if (select) select.value = activeThemeId;
-                    if (savedCustomThemeColors) {
-                        renderThemePreview(CUSTOM_THEME_INPUTS.map(function(item) {
-                            return savedCustomThemeColors[item[0]];
-                        }), 'ألوان مخصصة');
-                    } else updateThemePreview(activeThemeId);
+                    setCustomThemeEditorOpen(reopenCustomEditor);
+                    if (!reopenCustomEditor) updateThemePreview(activeThemeId);
                     setSettingsState(res.data.error || 'تعذر حفظ السمة', 'err');
                     return;
                 }
@@ -6382,18 +6409,14 @@ HTML_TEMPLATE = """
                 setCustomThemeInputs(savedCustomThemeColors || {swatches: res.data.swatches});
                 applyTheme(res.data.tokens, res.data.theme_bg, id,
                     res.data.swatches, res.data.theme_name);
+                setCustomThemeEditorOpen(false);
                 setCustomThemeState('ألوان الثيم الحالي', '');
                 setSettingsState('تم الحفظ — السمة مطبقة.', 'ok');
                 setTimeout(function() { setSettingsState('', ''); }, 2500);
             })
             .catch(function() {
-                let select = document.getElementById('themeSelect');
-                if (select) select.value = activeThemeId;
-                if (savedCustomThemeColors) {
-                    renderThemePreview(CUSTOM_THEME_INPUTS.map(function(item) {
-                        return savedCustomThemeColors[item[0]];
-                    }), 'ألوان مخصصة');
-                } else updateThemePreview(activeThemeId);
+                setCustomThemeEditorOpen(reopenCustomEditor);
+                if (!reopenCustomEditor) updateThemePreview(activeThemeId);
                 setSettingsState('تعذر الاتصال بالخادم', 'err');
             });
     }
