@@ -2956,7 +2956,7 @@ HTML_TEMPLATE = """
            folder drops; the parent picker provides the same operation on touch. */
         .group-tree { display:flex; flex-direction:column; gap:2px; }
         .gt-row { display:flex; align-items:center; gap:6px; padding:6px 7px; border-radius:9px;
-            border:1px solid transparent; background:transparent; cursor:grab; }
+            border:1px solid transparent; background:transparent; cursor:grab; direction:rtl; }
         .gt-row:hover, .gt-row:focus-within { background:var(--accent-soft); }
         .gt-row.is-drop { border-color:var(--accent); border-style:dashed; background:var(--accent-soft); }
         .gt-row.is-group-dragging { opacity:.45; }
@@ -2964,8 +2964,12 @@ HTML_TEMPLATE = """
         .gt-twisty { width:22px; height:22px; padding:0; border:0; background:none; color:var(--text-muted);
             display:inline-flex; align-items:center; justify-content:center; cursor:pointer; flex-shrink:0; border-radius:6px; }
         .gt-twisty:hover { color:var(--accent-text); }
-        .gt-twisty .icon { width:13px; height:13px; transition:transform .15s ease; }
-        .gt-twisty.open .icon { transform:rotate(90deg); }
+        .gt-twisty .icon { width:13px; height:13px; }
+        .gt-root-drop { display:flex; align-items:center; justify-content:center; gap:7px; min-height:38px;
+            padding:7px 10px; border:1px dashed var(--border); border-radius:9px; color:var(--text-muted);
+            font-size:calc(10.5px * var(--font-scale)); text-align:center; transition:background .15s,border-color .15s; }
+        .gt-root-drop .icon { width:14px; height:14px; flex:0 0 auto; }
+        .gt-root-drop.is-drop { border-color:var(--accent); background:var(--accent-soft); color:var(--accent-text); }
         .gt-folder { width:16px; height:16px; flex-shrink:0; color:var(--accent-text); }
         .gt-name { flex:1; min-width:0; font-size:calc(12.5px * var(--font-scale)); font-weight:600; color:var(--text);
             white-space:nowrap; overflow:hidden; text-overflow:ellipsis; cursor:pointer; }
@@ -4233,7 +4237,7 @@ HTML_TEMPLATE = """
         }
         return '<button type="button" class="gt-btn" data-act="child" title="إنشاء مجلد فرعي داخل هذا المجلد" aria-label="إنشاء مجلد فرعي">' +
                 spriteIcon('ico-plus') + '</button>' +
-            '<button type="button" class="gt-btn" data-act="move" title="اختيار المجلد الأب" aria-label="اختيار المجلد الأب">' +
+            '<button type="button" class="gt-btn" data-act="move" title="تغيير مستوى المجلد أو إخراجه للمستوى الرئيسي" aria-label="تغيير مستوى المجلد">' +
                 spriteIcon('ico-folder') + '</button>' +
             '<button type="button" class="gt-btn" data-act="rename" title="إعادة التسمية">' +
                 spriteIcon('ico-pencil') + '</button>' +
@@ -4269,8 +4273,10 @@ HTML_TEMPLATE = """
                 '" data-key="' + esc(key) + '" data-drop="1" draggable="true" style="margin-inline-start:' +
                 (depth * 14) + 'px">' +
                 '<button type="button" class="gt-twisty' + (open ? ' open' : '') +
-                    '" data-act="toggle" data-key="' + esc(key) + '" aria-label="' + (open ? 'طي المجلد' : 'فتح المجلد') + '">' +
-                    spriteIcon('ico-chevron-right') +
+                    '" data-act="toggle" data-key="' + esc(key) + '" aria-expanded="' +
+                    (open ? 'true' : 'false') + '" aria-label="' +
+                    (open ? 'طي المجلد' : 'فتح المجلد') + '">' +
+                    spriteIcon(open ? 'ico-chevron-down' : 'ico-chevron-right') +
                 '</button>' +
                 '<svg class="gt-folder icon" viewBox="0 0 24 24"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>' +
                 (renaming ? renameInputHtml(g)
@@ -4300,7 +4306,10 @@ HTML_TEMPLATE = """
             }
             return true;
         });
-        el.innerHTML = visible.map(groupRowHtml).join('');
+        el.innerHTML = visible.map(groupRowHtml).join('') +
+            (copyGroups.length
+                ? '<div class="gt-root-drop" data-root-drop="1"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#ico-up"></use></svg><span>اسحب المجلد هنا لإخراجه إلى المستوى الرئيسي</span></div>'
+                : '');
         bindGroupRenameInput();
     }
 
@@ -4547,8 +4556,8 @@ HTML_TEMPLATE = """
 
     // Dropping one row on a folder row moves it.
     function clearGroupDropTargets() {
-        let rows = document.querySelectorAll('#groupTree .gt-row.is-drop');
-        for (let i = 0; i < rows.length; i++) rows[i].classList.remove('is-drop');
+        let targets = document.querySelectorAll('#groupTree .is-drop');
+        for (let i = 0; i < targets.length; i++) targets[i].classList.remove('is-drop');
     }
 
     // ---- «تنظيم ذكي»: propose one folder per source parent, preview it ----
@@ -4821,29 +4830,36 @@ HTML_TEMPLATE = """
         });
         groupTreeEl.addEventListener('dragover', function(e) {
             let row = e.target.closest ? e.target.closest('.gt-row[data-drop]') : null;
-            if (!row) return;
+            let root = e.target.closest ? e.target.closest('.gt-root-drop[data-root-drop]') : null;
+            if (!row && !root) return;
             e.preventDefault();
             if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
             let rows = groupTreeEl.querySelectorAll('.gt-row');
             for (let i = 0; i < rows.length; i++) rows[i].classList.toggle('is-drop', rows[i] === row);
+            let rootDrop = groupTreeEl.querySelector('.gt-root-drop[data-root-drop]');
+            if (rootDrop) rootDrop.classList.toggle('is-drop', rootDrop === root);
         });
         groupTreeEl.addEventListener('dragleave', function(e) {
             let row = e.target.closest ? e.target.closest('.gt-row[data-drop]') : null;
+            let root = e.target.closest ? e.target.closest('.gt-root-drop[data-root-drop]') : null;
             if (row) row.classList.remove('is-drop');
+            if (root) root.classList.remove('is-drop');
         });
         groupTreeEl.addEventListener('drop', function(e) {
             let row = e.target.closest ? e.target.closest('.gt-row[data-drop]') : null;
-            if (!row) return;
+            let root = e.target.closest ? e.target.closest('.gt-root-drop[data-root-drop]') : null;
+            if (!row && !root) return;
             e.preventDefault();
             clearGroupDropTargets();
+            let parentId = row ? Number(row.getAttribute('data-gid')) || 0 : 0;
             let draggedGroup = e.dataTransfer
                 ? e.dataTransfer.getData('text/x-sdmp3-group') : '';
             if (draggedGroup) {
-                moveGroupToParent(Number(draggedGroup), Number(row.getAttribute('data-gid')) || 0);
+                moveGroupToParent(Number(draggedGroup), parentId);
                 return;
             }
             let path = e.dataTransfer ? e.dataTransfer.getData('text/x-sdmp3-path') : '';
-            if (path) movePathToGroup(path, Number(row.getAttribute('data-gid')) || 0);
+            if (path) movePathToGroup(path, parentId);
         });
         // Items can be moved between folders; folder rows can also be nested by
         // dragging them onto their new parent.

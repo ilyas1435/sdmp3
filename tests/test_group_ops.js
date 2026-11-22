@@ -55,6 +55,30 @@ assert.equal(leafName('مجموعة/مادة/درس'), 'درس',
 }
 
 {
+    const smartGroups = [
+        group(1, 'جذر'),
+        group(2, 'جذر/فنان', ['/src/artist.mp3']),
+        group(3, 'جذر/فنان/ألبوم', ['/src/album.mp3']),
+        group(4, 'الأرشيف')
+    ];
+    const extracted = moveGroup(smartGroups, 2, 0);
+    assert.equal(extracted.error, '');
+    assert.deepEqual(extracted.groups.map(item => item.name), [
+        'جذر', 'فنان', 'فنان/ألبوم', 'الأرشيف'
+    ], 'smart-created nested folders can be extracted to the root');
+    assert.deepEqual(extracted.groups[1].paths, ['/src/artist.mp3']);
+    assert.deepEqual(extracted.groups[2].paths, ['/src/album.mp3']);
+
+    const reparented = moveGroup(extracted.groups, 2, 4);
+    assert.equal(reparented.error, '');
+    assert.deepEqual(reparented.groups.map(item => item.name), [
+        'جذر', 'الأرشيف/فنان', 'الأرشيف/فنان/ألبوم', 'الأرشيف'
+    ], 'smart-created folders can be moved to another depth and parent');
+    assert.deepEqual(reparented.groups[1].paths, ['/src/artist.mp3']);
+    assert.deepEqual(reparented.groups[2].paths, ['/src/album.mp3']);
+}
+
+{
     const groups = [group(1, 'أ'), group(2, 'أ/ب'), group(3, 'ج/د')];
     const result = moveGroup(groups, 1, 3);
     assert.match(result.error, /3 مستويات/);
