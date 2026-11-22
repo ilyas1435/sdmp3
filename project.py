@@ -3836,6 +3836,18 @@ HTML_TEMPLATE = """
         return null;
     }
 
+    function ensureGroupParents(name) {
+        let parts = groupPathParts(name);
+        for (let i = 1; i < parts.length; i++) {
+            let parentName = parts.slice(0, i).join('/');
+            if (!copyGroups.some(function(group) {
+                return groupPathKey(group.name) === groupPathKey(parentName);
+            })) {
+                copyGroups.push({id: nextGroupId++, name: parentName, paths: []});
+            }
+        }
+    }
+
     function groupNameForPath(path) {
         for (let i = 0; i < copyGroups.length; i++) {
             if (copyGroups[i].paths.indexOf(path) !== -1) return copyGroups[i].name;
@@ -3851,12 +3863,6 @@ HTML_TEMPLATE = """
     const GROUP_MAX_DEPTH = 3;
     const GROUP_PATH_MAX = 180;
     const GROUP_SEG_MAX = 80;
-    // How many trailing path segments «تنظيم ذكي» turns into a folder name.
-    // Server-rendered from settings.json, editable in الإعدادات › عام.
-    // «تنظيم ذكي» always names a folder after the item's own parent folder: one
-    // level, no hidden depth setting to get wrong.
-    const SMART_DEPTH = 1;
-
     // "العلماء / ابن باز // دروس" -> ['العلماء','ابن باز','دروس']
     function groupPathParts(raw) {
         return String(raw || '').split('/').map(function(s) { return s.trim(); })
@@ -4294,23 +4300,8 @@ HTML_TEMPLATE = """
     // limits the server enforces; a value that cannot be fixed is dropped and
     // the caller falls back to the source folder's own name.
     function clampGroupSegments(parts) {
-        let segs = parts.map(function(s) {
-            s = String(s || '').trim();
-            for (let i = 0; i < GROUP_BAD_CHARS.length; i++) {
-                if (s.indexOf(GROUP_BAD_CHARS[i]) !== -1) s = s.split(GROUP_BAD_CHARS[i]).join('-');
-            }
-            s = s.replace(/[ .]+/g, ' ').trim();
-            if (s.length > GROUP_SEG_MAX) s = s.slice(0, GROUP_SEG_MAX).trim();
-            return s;
-        }).filter(function(s) { return s && s !== '.' && s !== '..'; });
-        // One folder named after the item's own parent: no depth setting.
-        if (segs.length > SMART_DEPTH) segs = segs.slice(segs.length - SMART_DEPTH);
-        if (segs.length > GROUP_MAX_DEPTH) segs = segs.slice(segs.length - GROUP_MAX_DEPTH);
-        while (segs.length > 1 && segs.join('/').length > GROUP_PATH_MAX) segs = segs.slice(1);
-        if (segs.length && segs.join('/').length > GROUP_PATH_MAX) {
-            segs[0] = segs[0].slice(0, GROUP_PATH_MAX);
-        }
-        return segs;
+        // Keep the closest source folders, within the app's three-level limit.
+        return window.SDMP3GroupOps.clampSegments(parts, GROUP_MAX_DEPTH);
     }
 
     function buildSmartProposal() {
@@ -4404,6 +4395,7 @@ HTML_TEMPLATE = """
         });
         chosen.forEach(function(p) {
             let key = p.name.toLowerCase();
+            ensureGroupParents(p.name);
             let target = null;
             for (let i = 0; i < copyGroups.length; i++) {
                 if (groupPathKey(copyGroups[i].name) === key) { target = copyGroups[i]; break; }
@@ -4414,9 +4406,10 @@ HTML_TEMPLATE = """
             }
             let set = new Set(target.paths);
             p.paths.forEach(function(x) { set.add(x); });
-            target.paths = Array.from(set);
+            target.paths = Array.from(selectedPaths.keys()).filter(function(path) {
+                return set.has(path);
+            });
         });
-        copyGroups = copyGroups.filter(function(g) { return g.paths.length > 0; });
         smartPreview = null;
         renderSmartPreview();
         renderGroupUI();
@@ -4765,17 +4758,7 @@ HTML_TEMPLATE = """
             // A nested group may have been restored without an explicit parent
             // record (older saved state or a smart proposal). Keep its parent
             // available for expansion, choosing, and adding sibling folders.
-            copyGroups.slice().forEach(function(group) {
-                let parts = groupPathParts(group.name);
-                for (let i = 1; i < parts.length; i++) {
-                    let parentName = parts.slice(0, i).join('/');
-                    if (!copyGroups.some(function(candidate) {
-                        return groupPathKey(candidate.name) === groupPathKey(parentName);
-                    })) {
-                        copyGroups.push({id: nextGroupId++, name: parentName, paths: []});
-                    }
-                }
-            });
+            copyGroups.slice().forEach(function(group) { ensureGroupParents(group.name); });
         }
         if (typeof state.source === 'string' && state.source) updateSourceRoot(state.source);
         if (typeof state.search === 'string' && state.search) setSearchScope(state.search, false);

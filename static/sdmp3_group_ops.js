@@ -18,6 +18,26 @@
         return parts(path).join('/').toLowerCase();
     }
 
+    function clampSegments(input, maxDepth) {
+        const depthLimit = Number.isInteger(maxDepth) && maxDepth > 0
+            ? Math.min(maxDepth, MAX_DEPTH) : MAX_DEPTH;
+        let segments = (input || []).map(function (segment) {
+            return String(segment || '').trim()
+                .replace(BAD_CHARS, '-')
+                .replace(/[ .]+/g, ' ')
+                .trim()
+                .slice(0, MAX_SEGMENT)
+                .trim();
+        }).filter(function (segment) {
+            return segment && segment !== '.' && segment !== '..';
+        });
+        if (segments.length > depthLimit) segments = segments.slice(-depthLimit);
+        while (segments.length > 1 && segments.join('/').length > MAX_PATH) {
+            segments = segments.slice(1);
+        }
+        return segments;
+    }
+
     function assignPaths(groups, requestedPaths, targetId, selectedOrder) {
         const requested = new Set(requestedPaths || []);
         const ordered = [];
@@ -125,5 +145,5 @@
         return {groups: next, error: '', moved: true};
     }
 
-    return {assignPaths: assignPaths, moveGroup: moveGroup};
+    return {assignPaths: assignPaths, moveGroup: moveGroup, clampSegments: clampSegments};
 });

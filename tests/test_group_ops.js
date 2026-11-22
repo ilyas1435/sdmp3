@@ -1,9 +1,14 @@
 const assert = require('node:assert/strict');
-const {assignPaths, moveGroup} = require('../static/sdmp3_group_ops.js');
+const {assignPaths, moveGroup, clampSegments} = require('../static/sdmp3_group_ops.js');
 
 function group(id, name, paths = []) {
     return {id, name, paths};
 }
+
+assert.deepEqual(clampSegments(['قديم', 'الصف', 'المادة', 'الدرس']), [
+    'الصف', 'المادة', 'الدرس'
+], 'smart organization keeps nested source folders up to the supported limit');
+assert.deepEqual(clampSegments(['../outside', 'مسار:قديم']), ['-outside', 'مسار-قديم']);
 
 {
     const groups = [group(1, 'أ', ['/src/1']), group(2, 'ب', ['/src/2'])];
