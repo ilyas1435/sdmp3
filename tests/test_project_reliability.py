@@ -543,6 +543,44 @@ class SearchRankingTests(unittest.TestCase):
 
 
 class TransferRouteTests(unittest.TestCase):
+    def test_main_page_loads_nested_group_and_bulk_assignment_controls(self):
+        client = project.app.test_client()
+        page = client.get('/')
+        self.assertEqual(page.status_code, 200)
+        html = page.get_data(as_text=True)
+        self.assertIn('/static/sdmp3_group_ops.js', html)
+        self.assertIn('groupParentModal', html)
+        self.assertIn('data-bulk-act', html)
+        self.assertIn('bulk-item-check', html)
+        helper = client.get('/static/sdmp3_group_ops.js')
+        self.assertEqual(helper.status_code, 200)
+        helper.close()
+
+    def test_transfer_route_preserves_nested_copy_group_paths(self):
+        with tempfile.TemporaryDirectory() as tempdir:
+            source = os.path.join(tempdir, 'source')
+            destination = os.path.join(tempdir, 'destination')
+            os.makedirs(source)
+            os.makedirs(destination)
+            project.reset_state()
+            try:
+                with mock.patch.object(project, 'check_destination', return_value=None), \
+                        mock.patch.object(project.threading, 'Thread') as thread_factory, \
+                        mock.patch.object(project, 'ACTIVE_THREAD', None):
+                    response = project.app.test_client().post('/transfer/start', json={
+                        'paths': [source],
+                        'dest': destination,
+                        'groups': [{'name': 'المادة/الدرس', 'paths': [source]}],
+                        'verify': False,
+                    })
+
+                self.assertEqual(response.status_code, 200)
+                self.assertTrue(response.get_json()['success'])
+                args = thread_factory.call_args.kwargs['args']
+                self.assertEqual(args[3], [('المادة/الدرس', [source])])
+            finally:
+                project.reset_state()
+
     def test_content_verification_flag_reaches_worker_and_enables_verification(self):
         with tempfile.TemporaryDirectory() as tempdir:
             source = os.path.join(tempdir, 'source')

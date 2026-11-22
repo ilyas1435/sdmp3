@@ -2827,13 +2827,14 @@ HTML_TEMPLATE = """
         .group-section-title .icon { color:var(--accent); width:16px; height:16px; }
         .group-section-actions { display:flex; gap:6px; flex-wrap:wrap; }
 
-        /* Copy folders ("مجلدات النسخ"): one flat list. A row is a drop target;
-           its items appear only while it is open. No nesting UI, no pick bar. */
+        /* Copy folders ("مجلدات النسخ"): nested rows accept both item and
+           folder drops; the parent picker provides the same operation on touch. */
         .group-tree { display:flex; flex-direction:column; gap:2px; }
         .gt-row { display:flex; align-items:center; gap:6px; padding:6px 7px; border-radius:9px;
-            border:1px solid transparent; background:transparent; }
+            border:1px solid transparent; background:transparent; cursor:grab; }
         .gt-row:hover, .gt-row:focus-within { background:var(--accent-soft); }
         .gt-row.is-drop { border-color:var(--accent); border-style:dashed; background:var(--accent-soft); }
+        .gt-row.is-group-dragging { opacity:.45; }
         .gt-row.is-renaming { background:var(--card); border-color:var(--accent-line); }
         .gt-twisty { width:22px; height:22px; padding:0; border:0; background:none; color:var(--text-muted);
             display:inline-flex; align-items:center; justify-content:center; cursor:pointer; flex-shrink:0; border-radius:6px; }
@@ -2884,9 +2885,19 @@ HTML_TEMPLATE = """
         .assign-new { display:flex; gap:8px; margin-top:10px; }
         .assign-new input { margin:0; flex:1; min-width:0; }
         .assign-new .btn { flex-shrink:0; }
+        .group-parent-list { display:flex; flex-direction:column; gap:6px; max-height:44vh; overflow-y:auto; }
 
         .selected-row { display:flex; align-items:center; gap:10px; padding:10px 11px; border-radius:10px; background:var(--field); border:1px solid var(--border); }
         .selected-row.is-dragging { opacity:.5; }
+        .selected-row-check { width:19px; height:19px; margin:0; flex-shrink:0; accent-color:var(--accent); cursor:pointer; }
+        .bulk-assign-bar { position:sticky; top:0; z-index:2; display:flex; align-items:center; gap:8px;
+            flex-wrap:wrap; padding:8px 10px; border:1px solid var(--accent-line); border-radius:10px;
+            background:var(--card); box-shadow:0 3px 10px rgba(0,0,0,.15); }
+        .bulk-select-all { display:flex; align-items:center; gap:7px; flex:1; min-width:130px;
+            color:var(--text); font-size:calc(11.5px * var(--font-scale)); cursor:pointer; }
+        .bulk-select-all input { width:17px; height:17px; margin:0; accent-color:var(--accent); }
+        .bulk-count { color:var(--text-muted); font-size:calc(10.5px * var(--font-scale)); }
+        .bulk-assign-bar .btn { min-height:34px; }
         .selected-row-main { min-width:0; flex:1; display:flex; flex-direction:column; gap:4px; }
         .selected-row-top { display:flex; align-items:center; gap:8px; min-width:0; }
         .selected-row-name { font-size:calc(13px * var(--font-scale)); font-weight:500; color:var(--text); }
@@ -3270,7 +3281,7 @@ HTML_TEMPLATE = """
                 <div id="groupStatusHint" class="check-hint" style="display:none; margin:0;"></div>
                 <div id="smartPreview" class="smart-preview" style="display:none;"></div>
                 <div id="groupTree" class="group-tree"></div>
-                <div id="groupEmptyHint" class="group-empty-hint">لا توجد مجلدات. أنشئ مجلداً ثم اسحب إليه العناصر.</div>
+                <div id="groupEmptyHint" class="group-empty-hint">لا توجد مجلدات. أنشئ مجلداً رئيسياً أو فرعياً، ثم اسحب العناصر إليه أو حدّدها وأسندها معاً.</div>
             </div>
         </div>
 
@@ -3278,8 +3289,8 @@ HTML_TEMPLATE = """
     </div>
 </div>
 
-<!-- Folder assignment: the touch-friendly twin of drag & drop. It is opened by
-     the folder chip on any selected file. -->
+<!-- Folder assignment: the touch-friendly twin of drag & drop. It can handle
+     one item or a multi-selection from the selected-items list. -->
 <div class="modal" id="assignGroupModal" onclick="closeAssignGroup(event)">
     <div class="modal-content" style="max-width:420px;" onclick="event.stopPropagation()">
         <h3 style="margin-top:0; font-size:calc(16px * var(--font-scale)); border-bottom:1px solid var(--border); padding-bottom:14px;">مجلد النسخ</h3>
@@ -3292,6 +3303,19 @@ HTML_TEMPLATE = """
         <div id="assignError" class="settings-save-state err"></div>
         <div class="modal-footer">
             <button type="button" class="btn btn-outline" style="flex:1;" onclick="closeAssignGroup()">إغلاق</button>
+        </div>
+    </div>
+</div>
+
+<!-- Choose a parent folder when nesting an existing copy folder. -->
+<div class="modal" id="groupParentModal" onclick="closeGroupParentPicker(event)">
+    <div class="modal-content" style="max-width:420px;" onclick="event.stopPropagation()">
+        <h3 style="margin-top:0; font-size:calc(16px * var(--font-scale)); border-bottom:1px solid var(--border); padding-bottom:14px;">نقل المجلد إلى</h3>
+        <div id="groupParentSummary" class="settings-note" style="margin-bottom:10px;"></div>
+        <div id="groupParentList" class="group-parent-list"></div>
+        <div id="groupParentError" class="settings-save-state err"></div>
+        <div class="modal-footer">
+            <button type="button" class="btn btn-outline" style="flex:1;" onclick="closeGroupParentPicker()">إغلاق</button>
         </div>
     </div>
 </div>
@@ -3652,9 +3676,11 @@ HTML_TEMPLATE = """
     </div>
 </div>
 
+<script src="/static/sdmp3_group_ops.js"></script>
 <script>
     let selectedPaths = new Map();
     let excludedPaths = new Set();
+    let bulkSelectedPaths = new Set();
     // Copy groups: [{id, name, paths: []}]. A selected path belongs to at most
     // one group, and each group becomes one folder inside the destination when
     // the copy starts - the source tree is never modified.
@@ -3740,6 +3766,7 @@ HTML_TEMPLATE = """
         if (selectedPaths.size === 0) {
             // A group only means something for the current selection.
             copyGroups = [];
+            bulkSelectedPaths.clear();
             selectedSizes = {};
             // The bar must not keep the previous selection's size or ETA.
             selectionSizeSig = '';
@@ -3796,6 +3823,9 @@ HTML_TEMPLATE = """
     function syncGroupsWithSelection() {
         copyGroups.forEach(function(g) {
             g.paths = g.paths.filter(function(p) { return selectedPaths.has(p); });
+        });
+        bulkSelectedPaths.forEach(function(path) {
+            if (!selectedPaths.has(path)) bulkSelectedPaths.delete(path);
         });
     }
 
@@ -3898,14 +3928,17 @@ HTML_TEMPLATE = """
         renderGroupTree();
     }
 
-    // Folders are flat and sorted by their last segment. A legacy name that
-    // still contains "/" is shown as a breadcrumb, but every new folder is one
-    // segment: nesting is no longer created from the UI.
+    // Folder paths are rendered parent-first so nested groups read as a tree.
     function groupRows() {
         return copyGroups.slice().sort(function(a, b) {
-            let al = groupPathParts(a.name).slice(-1)[0] || a.name;
-            let bl = groupPathParts(b.name).slice(-1)[0] || b.name;
-            return al.localeCompare(bl, 'ar');
+            let ap = groupPathParts(a.name);
+            let bp = groupPathParts(b.name);
+            if (ap.length !== bp.length) return ap.length - bp.length;
+            for (let i = 0; i < Math.min(ap.length, bp.length); i++) {
+                let order = ap[i].localeCompare(bp[i], 'ar');
+                if (order) return order;
+            }
+            return 0;
         });
     }
 
@@ -3925,7 +3958,11 @@ HTML_TEMPLATE = """
                 '<button type="button" class="gt-btn danger" data-act="rename-cancel" title="إلغاء (Esc)">' +
                     spriteIcon('ico-close') + '</button>';
         }
-        return '<button type="button" class="gt-btn" data-act="rename" title="إعادة التسمية">' +
+        return '<button type="button" class="gt-btn" data-act="child" title="إنشاء مجلد فرعي داخل هذا المجلد" aria-label="إنشاء مجلد فرعي">' +
+                spriteIcon('ico-plus') + '</button>' +
+            '<button type="button" class="gt-btn" data-act="move" title="اختيار المجلد الأب" aria-label="اختيار المجلد الأب">' +
+                spriteIcon('ico-folder') + '</button>' +
+            '<button type="button" class="gt-btn" data-act="rename" title="إعادة التسمية">' +
                 spriteIcon('ico-pencil') + '</button>' +
             '<button type="button" class="gt-btn danger" data-act="delete" title="حذف المجلد">' +
                 '<svg class="icon" viewBox="0 0 24 24"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"></path></svg></button>';
@@ -3950,11 +3987,14 @@ HTML_TEMPLATE = """
         let key = groupPathKey(g.name);
         let open = isNodeOpen(key);
         let renaming = !!(groupRename && groupRename.gid === gid);
-        let label = groupPathParts(g.name).length > 1
-            ? groupBreadcrumbHtml(g.name) : esc(g.name);
-        return '<div class="gt-node" data-key="' + esc(key) + '">' +
+        let parts = groupPathParts(g.name);
+        let depth = Math.max(0, parts.length - 1);
+        let leaf = parts.slice(-1)[0] || g.name;
+        let label = esc(leaf);
+        return '<div class="gt-node" data-key="' + esc(key) + '" data-depth="' + depth + '">' +
             '<div class="gt-row' + (renaming ? ' is-renaming' : '') + '" data-gid="' + gid +
-                '" data-key="' + esc(key) + '" data-drop="1">' +
+                '" data-key="' + esc(key) + '" data-drop="1" draggable="true" style="margin-inline-start:' +
+                (depth * 14) + 'px">' +
                 '<button type="button" class="gt-twisty' + (open ? ' open' : '') +
                     '" data-act="toggle" data-key="' + esc(key) + '" aria-label="' + (open ? 'طي المجلد' : 'فتح المجلد') + '">' +
                     spriteIcon('ico-chevron-right') +
@@ -3962,7 +4002,7 @@ HTML_TEMPLATE = """
                 '<svg class="gt-folder icon" viewBox="0 0 24 24"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>' +
                 (renaming ? renameInputHtml(g)
                           : '<span class="gt-name" data-act="toggle" data-key="' + esc(key) +
-                            '" title="' + esc(g.name) + '">' + label + '</span>') +
+                            '" title="' + esc(g.name) + '" aria-label="' + esc(g.name) + '">' + label + '</span>') +
                 '<span class="gt-count">' + g.paths.length + '</span>' +
                 '<div class="gt-actions">' + groupRowActionsHtml(g) + '</div>' +
             '</div>' +
@@ -3976,7 +4016,18 @@ HTML_TEMPLATE = """
         let empty = document.getElementById('groupEmptyHint');
         if (empty) empty.style.display = copyGroups.length ? 'none' : 'block';
         if (!copyGroups.length && !smartPreview) { el.innerHTML = ''; return; }
-        el.innerHTML = groupRows().map(groupRowHtml).join('');
+        let visible = groupRows().filter(function(group) {
+            let parts = groupPathParts(group.name);
+            for (let i = 1; i < parts.length; i++) {
+                let parentName = parts.slice(0, i).join('/');
+                let parent = copyGroups.find(function(candidate) {
+                    return groupPathKey(candidate.name) === groupPathKey(parentName);
+                });
+                if (parent && !isNodeOpen(parent.name)) return false;
+            }
+            return true;
+        });
+        el.innerHTML = visible.map(groupRowHtml).join('');
         bindGroupRenameInput();
     }
 
@@ -4070,23 +4121,31 @@ HTML_TEMPLATE = """
         setGroupStatus('تم تغيير الاسم.');
     }
 
-    function uniqueGroupName(base) {
+    function uniqueGroupName(base, parentName) {
         let n = 1;
         while (n < 500) {
-            let name = base + ' ' + n;
+            let leaf = base + ' ' + n;
+            let name = parentName ? parentName + '/' + leaf : leaf;
             if (groupNameError(name, null) === '') return name;
             n++;
         }
-        return base + ' ' + Date.now();
+        let leaf = base + ' ' + Date.now();
+        return parentName ? parentName + '/' + leaf : leaf;
     }
 
-    // A new folder is created empty under a placeholder name and opened for
-    // renaming. Nothing is checked first: files are dragged into it afterwards,
-    // or assigned from their folder chip.
-    function startNewGroup() {
-        let name = uniqueGroupName('مجلد');
+    // Selecting the plus button on a group creates a child directly inside it.
+    // The inline rename edits only the new folder's last path segment.
+    function startNewGroup(parentGid) {
+        let parent = parentGid ? findGroup(parentGid) : null;
+        if (parentGid && !parent) return;
+        if (parent && groupPathParts(parent.name).length >= GROUP_MAX_DEPTH) {
+            setGroupStatus('أقصى تداخل ' + GROUP_MAX_DEPTH + ' مستويات.');
+            return;
+        }
+        let name = uniqueGroupName('مجلد', parent ? parent.name : '');
         let g = {id: nextGroupId++, name: name, paths: []};
         copyGroups.push(g);
+        if (parent) delete groupNodeClosed[groupPathKey(parent.name)];
         groupRename = {gid: g.id, value: name};
         renderGroupUI();
         setGroupStatus('اكتب اسماً ثم Enter.');
@@ -4107,20 +4166,99 @@ HTML_TEMPLATE = """
         setGroupStatus('حُذف المجلد.');
     }
 
-    function movePathToGroup(path, gid) {
-        if (!selectedPaths.has(path)) return;   // only real selections move
-        copyGroups.forEach(function(g) {
-            g.paths = g.paths.filter(function(p) { return p !== path; });
+    function movePathsToGroup(paths, gid) {
+        let wanted = Array.from(new Set(paths || [])).filter(function(path) {
+            return selectedPaths.has(path);
         });
+        if (!wanted.length) return;
+        let result = window.SDMP3GroupOps.assignPaths(
+            copyGroups, wanted, gid, Array.from(selectedPaths.keys()));
+        if (result.error) { setGroupStatus(result.error); return; }
+        copyGroups = result.groups;
         if (gid) {
             let target = findGroup(gid);
             if (!target) return;
-            if (target.paths.indexOf(path) === -1) target.paths.push(path);
-            setGroupStatus('نُقل إلى «' + groupPathParts(target.name).join(' › ') + '».');
+            setGroupStatus('تم إسناد ' + result.moved + ' عنصر إلى «' +
+                groupPathParts(target.name).join(' › ') + '».');
         } else {
-            setGroupStatus('أُخرج من المجلد — سيُنسخ في الوجهة.');
+            setGroupStatus('تم إخراج ' + result.moved + ' عنصر من المجلد.');
         }
         renderGroupUI();
+    }
+
+    function movePathToGroup(path, gid) {
+        movePathsToGroup([path], gid);
+    }
+
+    function moveGroupToParent(sourceId, parentId) {
+        let result = window.SDMP3GroupOps.moveGroup(copyGroups, sourceId, parentId);
+        if (result.error) { setGroupStatus(result.error); return false; }
+        if (!result.moved) {
+            setGroupStatus('المجلد موجود بالفعل في هذا المستوى.');
+            return false;
+        }
+        copyGroups = result.groups;
+        renderGroupUI();
+        let moved = findGroup(sourceId);
+        let parent = parentId ? findGroup(parentId) : null;
+        setGroupStatus(parent
+            ? 'نُقل المجلد إلى «' + groupPathParts(parent.name).join(' › ') + '».'
+            : 'نُقل المجلد إلى المستوى الرئيسي.');
+        return !!moved;
+    }
+
+    let groupParentSourceId = 0;
+
+    function closeGroupParentPicker(event) {
+        if (event && event.target && event.target.id !== 'groupParentModal') return;
+        let modal = document.getElementById('groupParentModal');
+        if (modal) modal.style.display = 'none';
+        groupParentSourceId = 0;
+    }
+
+    function openGroupParentPicker(gid) {
+        let source = findGroup(gid);
+        if (!source) return;
+        groupParentSourceId = gid;
+        let summary = document.getElementById('groupParentSummary');
+        if (summary) summary.textContent = 'اختَر المجلد الأب لـ «' +
+            groupPathParts(source.name).join(' › ') + '».';
+        let error = document.getElementById('groupParentError');
+        if (error) error.textContent = '';
+        renderGroupParentList();
+        let modal = document.getElementById('groupParentModal');
+        if (modal) modal.style.display = 'flex';
+    }
+
+    function renderGroupParentList() {
+        let list = document.getElementById('groupParentList');
+        let source = findGroup(groupParentSourceId);
+        if (!list || !source) return;
+        let sourceKey = groupPathKey(source.name);
+        let sourceParent = groupPathParts(source.name).slice(0, -1).join('/');
+        let rows = ['<button type="button" class="assign-row' +
+            (!sourceParent ? ' is-active' : '') + '" data-parent-id="0">' +
+            spriteIcon('ico-folder') + '<span>المجلدات الرئيسية</span></button>'];
+        groupRows().forEach(function(candidate) {
+            let candidateKey = groupPathKey(candidate.name);
+            if (candidate.id === source.id || candidateKey.indexOf(sourceKey + '/') === 0) return;
+            let active = candidateKey === groupPathKey(sourceParent);
+            rows.push('<button type="button" class="assign-row' + (active ? ' is-active' : '') +
+                '" data-parent-id="' + candidate.id + '">' + spriteIcon('ico-folder') +
+                '<span class="truncate-text">' + groupBreadcrumbHtml(candidate.name) + '</span>' +
+                '<span class="assign-count">' + candidate.paths.length + '</span></button>');
+        });
+        list.innerHTML = rows.join('');
+    }
+
+    function chooseGroupParent(parentId) {
+        if (!groupParentSourceId) return;
+        if (moveGroupToParent(groupParentSourceId, parentId)) closeGroupParentPicker();
+        else {
+            let error = document.getElementById('groupStatusHint');
+            let box = document.getElementById('groupParentError');
+            if (box && error) box.textContent = error.textContent;
+        }
     }
 
     // Dropping one row on a folder row moves it.
@@ -4308,20 +4446,27 @@ HTML_TEMPLATE = """
     // ---- folder assignment sheet ------------------------------------------
     // The folder chip on a selected file opens this list. It is the
     // touch-friendly way to do what drag & drop does on a desktop.
-    let assignPath = '';
+    let assignPaths = [];
 
     function closeAssignGroup(event) {
         if (event && event.target && event.target.id !== 'assignGroupModal') return;
         let modal = document.getElementById('assignGroupModal');
         if (modal) modal.style.display = 'none';
-        assignPath = '';
+        assignPaths = [];
     }
 
-    function openAssignGroup(path) {
-        if (!selectedPaths.has(path)) return;
-        assignPath = path;
+    function openAssignGroup(paths) {
+        let requested = Array.isArray(paths) ? paths : [paths];
+        assignPaths = Array.from(new Set(requested)).filter(function(path) {
+            return selectedPaths.has(path);
+        });
+        if (!assignPaths.length) return;
         let label = document.getElementById('assignPathName');
-        if (label) { label.textContent = path; label.title = path; }
+        if (label) {
+            label.textContent = assignPaths.length === 1
+                ? assignPaths[0] : 'تعيين ' + assignPaths.length + ' عناصر معاً';
+            label.title = assignPaths.length === 1 ? assignPaths[0] : assignPaths.join('\\n');
+        }
         let err = document.getElementById('assignError');
         if (err) err.textContent = '';
         let input = document.getElementById('assignNewName');
@@ -4334,8 +4479,13 @@ HTML_TEMPLATE = """
     function renderAssignGroupList() {
         let list = document.getElementById('assignGroupList');
         if (!list) return;
-        let current = groupNameForPath(assignPath);
-        let rows = ['<button type="button" class="assign-row' + (current ? '' : ' is-active') + '" data-gid="0">' +
+        let currentNames = assignPaths.map(groupNameForPath);
+        let current = currentNames.length && currentNames.every(function(name) {
+            return groupPathKey(name) === groupPathKey(currentNames[0]);
+        }) ? currentNames[0] : '';
+        let rows = ['<button type="button" class="assign-row' +
+            (currentNames.length && currentNames.every(function(name) { return !name; }) ? ' is-active' : '') +
+            '" data-gid="0">' +
             spriteIcon('ico-close') + '<span>بدون مجلد</span><span class="assign-count">في الوجهة</span></button>'];
         groupRows().forEach(function(g) {
             let active = current && groupPathKey(current) === groupPathKey(g.name);
@@ -4347,14 +4497,14 @@ HTML_TEMPLATE = """
         list.innerHTML = rows.join('');
     }
 
-    function assignPathToGroup(gid) {
-        if (!assignPath) return;
-        movePathToGroup(assignPath, gid);
+    function assignPathsToGroup(gid) {
+        if (!assignPaths.length) return;
+        movePathsToGroup(assignPaths, gid);
         closeAssignGroup();
     }
 
     function createAssignGroup() {
-        if (!assignPath) return;
+        if (!assignPaths.length) return;
         let input = document.getElementById('assignNewName');
         let name = ((input && input.value) || '').trim();
         let err = groupSegmentError(name);
@@ -4370,7 +4520,7 @@ HTML_TEMPLATE = """
         }
         let g = {id: nextGroupId++, name: name, paths: []};
         copyGroups.push(g);
-        movePathToGroup(assignPath, g.id);
+        movePathsToGroup(assignPaths, g.id);
         closeAssignGroup();
     }
 
@@ -4385,7 +4535,9 @@ HTML_TEMPLATE = """
             if (act === 'toggle') { toggleGroupNode(hit.getAttribute('data-key') || ''); return; }
             let row = hit.closest('.gt-row');
             let gid = row ? Number(row.getAttribute('data-gid')) : 0;
-            if (act === 'rename') startRenameGroup(gid);
+            if (act === 'child') startNewGroup(gid);
+            else if (act === 'move') openGroupParentPicker(gid);
+            else if (act === 'rename') startRenameGroup(gid);
             else if (act === 'delete') deleteGroup(gid);
             else if (act === 'rename-save') commitGroupRename();
             else if (act === 'rename-cancel') cancelGroupRename();
@@ -4411,21 +4563,38 @@ HTML_TEMPLATE = """
             if (!row) return;
             e.preventDefault();
             clearGroupDropTargets();
+            let draggedGroup = e.dataTransfer
+                ? e.dataTransfer.getData('text/x-sdmp3-group') : '';
+            if (draggedGroup) {
+                moveGroupToParent(Number(draggedGroup), Number(row.getAttribute('data-gid')) || 0);
+                return;
+            }
             let path = e.dataTransfer ? e.dataTransfer.getData('text/x-sdmp3-path') : '';
             if (path) movePathToGroup(path, Number(row.getAttribute('data-gid')) || 0);
         });
-        // Items inside the tree are draggable too, so moving one between two
-        // folders never requires going back to the list.
+        // Items can be moved between folders; folder rows can also be nested by
+        // dragging them onto their new parent.
         groupTreeEl.addEventListener('dragstart', function(e) {
-            let row = e.target.closest ? e.target.closest('.gt-path[data-path]') : null;
-            if (!row || !e.dataTransfer) return;
-            e.dataTransfer.setData('text/x-sdmp3-path', row.getAttribute('data-path'));
+            if (!e.target.closest || !e.dataTransfer) return;
+            let pathRow = e.target.closest('.gt-path[data-path]');
+            if (pathRow) {
+                e.dataTransfer.setData('text/x-sdmp3-path', pathRow.getAttribute('data-path'));
+                e.dataTransfer.effectAllowed = 'move';
+                pathRow.classList.add('is-dragging');
+                return;
+            }
+            if (e.target.closest('button, input')) return;
+            let groupRow = e.target.closest('.gt-row[data-gid]');
+            if (!groupRow) return;
+            e.dataTransfer.setData('text/x-sdmp3-group', groupRow.getAttribute('data-gid'));
             e.dataTransfer.effectAllowed = 'move';
-            row.classList.add('is-dragging');
+            groupRow.classList.add('is-group-dragging');
         });
         groupTreeEl.addEventListener('dragend', function(e) {
-            let row = e.target.closest ? e.target.closest('.gt-path') : null;
-            if (row) row.classList.remove('is-dragging');
+            let pathRow = e.target.closest ? e.target.closest('.gt-path') : null;
+            let groupRow = e.target.closest ? e.target.closest('.gt-row') : null;
+            if (pathRow) pathRow.classList.remove('is-dragging');
+            if (groupRow) groupRow.classList.remove('is-group-dragging');
             clearGroupDropTargets();
         });
     }
@@ -4449,10 +4618,37 @@ HTML_TEMPLATE = """
     let selectedListEl = document.getElementById('selectedList');
     if (selectedListEl) {
         selectedListEl.addEventListener('click', function(e) {
+            let action = e.target.closest ? e.target.closest('[data-bulk-act]') : null;
+            if (action) {
+                let paths = Array.from(selectedPaths.keys()).filter(function(path) {
+                    return bulkSelectedPaths.has(path);
+                });
+                if (action.getAttribute('data-bulk-act') === 'assign') openAssignGroup(paths);
+                else if (action.getAttribute('data-bulk-act') === 'clear') movePathsToGroup(paths, 0);
+                return;
+            }
             let chip = e.target.closest ? e.target.closest('.group-chip[data-path]') : null;
             if (!chip) return;
             e.stopPropagation();
             openAssignGroup(chip.getAttribute('data-path'));
+        });
+        selectedListEl.addEventListener('change', function(e) {
+            let input = e.target;
+            if (input.classList && input.classList.contains('bulk-item-check')) {
+                let path = input.getAttribute('data-path');
+                if (input.checked) bulkSelectedPaths.add(path);
+                else bulkSelectedPaths.delete(path);
+                updateBulkSelectionControls();
+            } else if (input.id === 'bulkSelectAll') {
+                selectedPaths.forEach(function(_isDir, path) {
+                    if (input.checked) bulkSelectedPaths.add(path);
+                    else bulkSelectedPaths.delete(path);
+                });
+                selectedListEl.querySelectorAll('.bulk-item-check').forEach(function(box) {
+                    box.checked = input.checked;
+                });
+                updateBulkSelectionControls();
+            }
         });
     }
 
@@ -4461,13 +4657,21 @@ HTML_TEMPLATE = """
         assignListEl.addEventListener('click', function(e) {
             let btn = e.target.closest ? e.target.closest('button[data-gid]') : null;
             if (!btn) return;
-            assignPathToGroup(Number(btn.getAttribute('data-gid')));
+            assignPathsToGroup(Number(btn.getAttribute('data-gid')));
         });
     }
     let assignNewEl = document.getElementById('assignNewName');
     if (assignNewEl) {
         assignNewEl.addEventListener('keydown', function(e) {
             if (e.key === 'Enter') { e.preventDefault(); createAssignGroup(); }
+        });
+    }
+    let groupParentListEl = document.getElementById('groupParentList');
+    if (groupParentListEl) {
+        groupParentListEl.addEventListener('click', function(e) {
+            let btn = e.target.closest ? e.target.closest('button[data-parent-id]') : null;
+            if (!btn) return;
+            chooseGroupParent(Number(btn.getAttribute('data-parent-id')) || 0);
         });
     }
 
@@ -4556,8 +4760,21 @@ HTML_TEMPLATE = """
                 if (!name || groupNameError(name, null)) return;
                 let paths = (Array.isArray(saved.paths) ? saved.paths : [])
                     .filter(function(p) { return selectedPaths.has(p); });
-                if (!paths.length) return;
                 copyGroups.push({id: nextGroupId++, name: name, paths: paths});
+            });
+            // A nested group may have been restored without an explicit parent
+            // record (older saved state or a smart proposal). Keep its parent
+            // available for expansion, choosing, and adding sibling folders.
+            copyGroups.slice().forEach(function(group) {
+                let parts = groupPathParts(group.name);
+                for (let i = 1; i < parts.length; i++) {
+                    let parentName = parts.slice(0, i).join('/');
+                    if (!copyGroups.some(function(candidate) {
+                        return groupPathKey(candidate.name) === groupPathKey(parentName);
+                    })) {
+                        copyGroups.push({id: nextGroupId++, name: parentName, paths: []});
+                    }
+                }
             });
         }
         if (typeof state.source === 'string' && state.source) updateSourceRoot(state.source);
@@ -5830,6 +6047,25 @@ HTML_TEMPLATE = """
         updateSizeDisplay(totalBytes);
     }
 
+    function updateBulkSelectionControls() {
+        let list = document.getElementById('selectedList');
+        if (!list) return;
+        let total = selectedPaths.size;
+        let count = Array.from(bulkSelectedPaths).filter(function(path) {
+            return selectedPaths.has(path);
+        }).length;
+        let countEl = list.querySelector('.bulk-count');
+        let all = document.getElementById('bulkSelectAll');
+        if (countEl) countEl.textContent = count + ' محدد';
+        if (all) {
+            all.checked = total > 0 && count === total;
+            all.indeterminate = count > 0 && count < total;
+        }
+        list.querySelectorAll('[data-bulk-act]').forEach(function(button) {
+            button.disabled = count === 0;
+        });
+    }
+
     // Rows are rebuilt with DOM nodes: a track named `01 "live".mp3` must not be
     // able to break out of an attribute or inject markup.
     function renderSelectedRows() {
@@ -5839,9 +6075,41 @@ HTML_TEMPLATE = """
         let keepScroll = list.scrollTop;
         list.innerHTML = '';
         if (!pathsArray.length) {
+            bulkSelectedPaths.clear();
             list.innerHTML = '<div style="text-align:center; padding:40px; color:var(--text-muted);">لا يوجد عناصر محددة</div>';
             return;
         }
+
+        let bulkBar = document.createElement('div');
+        bulkBar.className = 'bulk-assign-bar';
+        let allLabel = document.createElement('label');
+        allLabel.className = 'bulk-select-all';
+        let allCheck = document.createElement('input');
+        allCheck.type = 'checkbox';
+        allCheck.id = 'bulkSelectAll';
+        allCheck.setAttribute('aria-label', 'تحديد كل الملفات والمجلدات');
+        let allText = document.createElement('span');
+        allText.textContent = 'تحديد الكل';
+        let count = document.createElement('span');
+        count.className = 'bulk-count';
+        count.textContent = '0 محدد';
+        allLabel.appendChild(allCheck);
+        allLabel.appendChild(allText);
+        allLabel.appendChild(count);
+        let assignButton = document.createElement('button');
+        assignButton.type = 'button';
+        assignButton.className = 'btn btn-primary btn-sm';
+        assignButton.setAttribute('data-bulk-act', 'assign');
+        assignButton.textContent = 'إسناد لمجلد';
+        let clearButton = document.createElement('button');
+        clearButton.type = 'button';
+        clearButton.className = 'btn btn-outline btn-sm';
+        clearButton.setAttribute('data-bulk-act', 'clear');
+        clearButton.textContent = 'إخراج من المجلد';
+        bulkBar.appendChild(allLabel);
+        bulkBar.appendChild(assignButton);
+        bulkBar.appendChild(clearButton);
+        list.appendChild(bulkBar);
 
         pathsArray.forEach(function(path) {
             let isDir = selectedPaths.get(path);
@@ -5860,6 +6128,14 @@ HTML_TEMPLATE = """
                 row.classList.remove('is-dragging');
                 clearGroupDropTargets();
             });
+
+            let selectCheck = document.createElement('input');
+            selectCheck.type = 'checkbox';
+            selectCheck.className = 'selected-row-check bulk-item-check';
+            selectCheck.setAttribute('data-path', path);
+            selectCheck.setAttribute('aria-label', 'تحديد ' + itemName);
+            selectCheck.checked = bulkSelectedPaths.has(path);
+            row.appendChild(selectCheck);
 
             let main = document.createElement('div');
             main.className = 'selected-row-main';
@@ -5935,6 +6211,7 @@ HTML_TEMPLATE = """
                 list.appendChild(row);
             });
         }
+        updateBulkSelectionControls();
         list.scrollTop = keepScroll;
     }
 
@@ -7216,6 +7493,7 @@ HTML_TEMPLATE = """
         // These two own transient state: closing them must also drop the state,
         // not just hide the box (a draft must never survive its dialog).
         if (front.id === 'assignGroupModal') { closeAssignGroup(); return; }
+        if (front.id === 'groupParentModal') { closeGroupParentPicker(); return; }
         if (front.id === 'settingsModal') { closeSettingsModal(); return; }
         front.style.display = 'none';
     });
