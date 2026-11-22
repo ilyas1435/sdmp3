@@ -18,6 +18,11 @@
         return parts(path).join('/').toLowerCase();
     }
 
+    function leafName(path) {
+        const segments = parts(path);
+        return segments.length ? segments[segments.length - 1] : '';
+    }
+
     function clampSegments(input, maxDepth) {
         const depthLimit = Number.isInteger(maxDepth) && maxDepth > 0
             ? Math.min(maxDepth, MAX_DEPTH) : MAX_DEPTH;
@@ -145,5 +150,10 @@
         return {groups: next, error: '', moved: true};
     }
 
-    return {assignPaths: assignPaths, moveGroup: moveGroup, clampSegments: clampSegments};
+    return {
+        assignPaths: assignPaths,
+        moveGroup: moveGroup,
+        clampSegments: clampSegments,
+        leafName: leafName
+    };
 });

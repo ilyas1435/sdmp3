@@ -2841,6 +2841,23 @@ HTML_TEMPLATE = """
         .selected-operation-actions .btn { min-height:34px; padding:6px 9px; }
         .saved-operation-active { color:var(--accent-text); font-size:calc(11px * var(--font-scale)); overflow-wrap:anywhere; }
         .selected-list { flex:1 1 auto; min-height:0; overflow-y:auto; padding:10px 2px 4px; display:flex; flex-direction:column; gap:8px; }
+        .selected-browse-toggle { width:27px; height:27px; flex:0 0 27px; padding:0; border:1px solid var(--border);
+            border-radius:7px; background:var(--field); color:var(--text-muted); display:inline-flex;
+            align-items:center; justify-content:center; cursor:pointer; }
+        .selected-browse-toggle:hover, .selected-browse-toggle.open { color:var(--accent-text); border-color:var(--accent-line); }
+        .selected-browse-toggle .icon { width:13px; height:13px; transition:transform .15s ease; }
+        .selected-browse-toggle.open .icon { transform:rotate(90deg); }
+        .selected-browse-tree { display:flex; flex-direction:column; gap:4px; padding:7px 8px;
+            border-inline-start:2px solid var(--accent-line); border-radius:8px; background:var(--field);
+            color:var(--text-muted); font-size:calc(11.5px * var(--font-scale)); }
+        .selected-browse-tree.is-empty { font-style:italic; }
+        .selected-browse-row { min-width:0; display:flex; align-items:center; gap:7px; padding:5px 6px;
+            border:1px solid var(--border); border-radius:8px; background:var(--card); }
+        .selected-browse-checkbox { width:16px; height:16px; flex:0 0 16px; margin:0; }
+        .selected-browse-icon { width:17px; height:17px; flex:0 0 17px; display:inline-flex; align-items:center; }
+        .selected-browse-icon .icon { width:16px; height:16px; }
+        .selected-browse-name { min-width:0; flex:1; color:var(--text); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+        .selected-browse-message.error { color:var(--danger-ink); }
         .modal-content.modal-saved-operations { height:auto; max-height:min(84vh, 700px); max-height:min(84dvh, 700px); min-height:0; }
         .saved-operations-list { display:flex; flex-direction:column; gap:7px; min-height:0; max-height:55vh; max-height:55dvh;
             overflow-y:auto; overscroll-behavior:contain; padding:2px 1px; }
@@ -3777,6 +3794,10 @@ HTML_TEMPLATE = """
     let copyGroups = [];
     let nextGroupId = 1;
     let selectedSizes = {};      // path -> {bytes, formatted, owner}
+    let selectedBrowseExpanded = new Set();
+    let selectedBrowseCache = new Map();
+    let selectedBrowseLoading = new Set();
+    let selectedBrowseErrors = new Map();
     let selectionSizeTimer = null;   // debounce for the action bar's size
     let selectionSizeSig = '';       // selection the cached sizes belong to
     let currentDestFreeBytes = 0; 
@@ -3853,6 +3874,7 @@ HTML_TEMPLATE = """
     function refreshCheckboxStates() {
         document.querySelectorAll('.checkbox').forEach(cb => { if(cb.value && cb.value.startsWith('/')) cb.checked = isPathSelected(cb.value); });
         document.getElementById('selectedCount').textContent = String(selectedPaths.size);
+        pruneSelectedBrowseState();
         if (selectedPaths.size === 0) {
             // A group only means something for the current selection.
             copyGroups = [];
@@ -4243,7 +4265,10 @@ HTML_TEMPLATE = """
         let g = {id: nextGroupId++, name: name, paths: []};
         copyGroups.push(g);
         if (parent) delete groupNodeClosed[groupPathKey(parent.name)];
-        groupRename = {gid: g.id, value: name};
+        // Rename validation accepts one folder segment, not the full breadcrumb.
+        // Passing "A/مجلد 1" here made every new child fail unless the user
+        // manually erased its parent path before saving.
+        groupRename = {gid: g.id, value: window.SDMP3GroupOps.leafName(name)};
         renderGroupUI();
         setGroupStatus('اكتب اسماً ثم Enter.');
     }
@@ -4267,20 +4292,26 @@ HTML_TEMPLATE = """
         let wanted = Array.from(new Set(paths || [])).filter(function(path) {
             return selectedPaths.has(path);
         });
-        if (!wanted.length) return;
+        if (!wanted.length) return false;
         let result = window.SDMP3GroupOps.assignPaths(
             copyGroups, wanted, gid, Array.from(selectedPaths.keys()));
-        if (result.error) { setGroupStatus(result.error); return; }
+        if (result.error) { setGroupStatus(result.error); return false; }
         copyGroups = result.groups;
+        // These checkboxes are only the temporary bulk-action selection. Keep
+        // the source paths selected for copying, but clear the assignment batch
+        // so the next operation starts with an intentional selection.
+        bulkSelectedPaths.clear();
         if (gid) {
             let target = findGroup(gid);
-            if (!target) return;
+            if (!target) return false;
             setGroupStatus('تم إسناد ' + result.moved + ' عنصر إلى «' +
                 groupPathParts(target.name).join(' › ') + '».');
         } else {
             setGroupStatus('تم إخراج ' + result.moved + ' عنصر من المجلد.');
         }
         renderGroupUI();
+        updateBulkSelectionControls();
+        return true;
     }
 
     function movePathToGroup(path, gid) {
@@ -4335,7 +4366,9 @@ HTML_TEMPLATE = """
         let sourceParent = groupPathParts(source.name).slice(0, -1).join('/');
         let rows = ['<button type="button" class="assign-row' +
             (!sourceParent ? ' is-active' : '') + '" data-parent-id="0">' +
-            spriteIcon('ico-folder') + '<span>المجلدات الرئيسية</span></button>'];
+            spriteIcon('ico-folder') + '<span>' +
+            (sourceParent ? 'إخراج إلى المستوى الرئيسي' : 'المستوى الرئيسي') +
+            '</span></button>'];
         groupRows().forEach(function(candidate) {
             let candidateKey = groupPathKey(candidate.name);
             if (candidate.id === source.id || candidateKey.indexOf(sourceKey + '/') === 0) return;
@@ -4583,8 +4616,7 @@ HTML_TEMPLATE = """
 
     function assignPathsToGroup(gid) {
         if (!assignPaths.length) return;
-        movePathsToGroup(assignPaths, gid);
-        closeAssignGroup();
+        if (movePathsToGroup(assignPaths, gid)) closeAssignGroup();
     }
 
     function createAssignGroup() {
@@ -4604,8 +4636,11 @@ HTML_TEMPLATE = """
         }
         let g = {id: nextGroupId++, name: name, paths: []};
         copyGroups.push(g);
-        movePathsToGroup(assignPaths, g.id);
-        closeAssignGroup();
+        if (movePathsToGroup(assignPaths, g.id)) closeAssignGroup();
+        else {
+            copyGroups = copyGroups.filter(function(group) { return group.id !== g.id; });
+            renderGroupUI();
+        }
     }
 
     // One delegated listener for the tree: no group name or path is ever
@@ -6257,6 +6292,19 @@ HTML_TEMPLATE = """
             nameEl.textContent = itemName;
             nameEl.title = path;
             top.appendChild(nameEl);
+            if (isDir) {
+                let expanded = selectedBrowseExpanded.has(path);
+                let browseToggle = document.createElement('button');
+                browseToggle.type = 'button';
+                browseToggle.className = 'selected-browse-toggle root' + (expanded ? ' open' : '');
+                browseToggle.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+                browseToggle.setAttribute('aria-label',
+                    (expanded ? 'طي' : 'فتح') + ' محتويات ' + itemName);
+                browseToggle.title = expanded ? 'طي محتويات المجلد' : 'فتح محتويات المجلد لاستثناء عناصر';
+                browseToggle.innerHTML = spriteIcon('ico-chevron-right');
+                browseToggle.onclick = function() { toggleSelectedBrowse(path); };
+                top.appendChild(browseToggle);
+            }
             main.appendChild(top);
 
             // The folder chip is the touch-friendly assignment control; drag &
@@ -6294,6 +6342,9 @@ HTML_TEMPLATE = """
             row.appendChild(main);
             row.appendChild(right);
             list.appendChild(row);
+            if (isDir && selectedBrowseExpanded.has(path)) {
+                list.appendChild(renderSelectedBrowseBranch(path, 1));
+            }
         });
 
         if (excludedPaths.size > 0) {
@@ -6340,6 +6391,157 @@ HTML_TEMPLATE = """
         includePath(path, isDir);
         refreshCheckboxStates();
         updateSelectedTotal(Array.from(selectedPaths.keys()));
+    }
+
+    function selectedBrowsePathIsCovered(path) {
+        return Array.from(selectedPaths.keys()).some(function(root) {
+            return path === root || (root === '/'
+                ? path.indexOf('/') === 0
+                : path.indexOf(root + '/') === 0);
+        });
+    }
+
+    function pruneSelectedBrowseState() {
+        let candidates = new Set([
+            ...selectedBrowseExpanded,
+            ...selectedBrowseCache.keys(),
+            ...selectedBrowseLoading,
+            ...selectedBrowseErrors.keys()
+        ]);
+        candidates.forEach(function(path) {
+            if (selectedBrowsePathIsCovered(path)) return;
+            selectedBrowseExpanded.delete(path);
+            selectedBrowseCache.delete(path);
+            selectedBrowseLoading.delete(path);
+            selectedBrowseErrors.delete(path);
+        });
+    }
+
+    function toggleSelectedBrowse(path) {
+        if (selectedBrowseExpanded.has(path)) {
+            selectedBrowseExpanded.delete(path);
+            renderSelectedRows();
+            return;
+        }
+        if (!selectedBrowsePathIsCovered(path)) return;
+        selectedBrowseExpanded.add(path);
+        selectedBrowseErrors.delete(path);
+        if (!selectedBrowseCache.has(path) && !selectedBrowseLoading.has(path)) {
+            loadSelectedBrowseItems(path);
+        } else {
+            renderSelectedRows();
+        }
+    }
+
+    function loadSelectedBrowseItems(path) {
+        selectedBrowseLoading.add(path);
+        renderSelectedRows();
+        fetch('/api/items?path=' + encodeURIComponent(path) +
+              '&sort=' + encodeURIComponent(currentSort))
+            .then(function(response) {
+                if (!response.ok) throw new Error('تعذر قراءة محتويات المجلد');
+                return response.json();
+            })
+            .then(function(data) {
+                if (data.error) throw new Error(data.error);
+                if (selectedBrowseExpanded.has(path) && selectedBrowsePathIsCovered(path)) {
+                    selectedBrowseCache.set(path, Array.isArray(data.items) ? data.items : []);
+                }
+            })
+            .catch(function(error) {
+                if (selectedBrowseExpanded.has(path) && selectedBrowsePathIsCovered(path)) {
+                    selectedBrowseErrors.set(path, error.message || 'تعذر قراءة المجلد');
+                }
+            })
+            .finally(function() {
+                selectedBrowseLoading.delete(path);
+                renderSelectedRows();
+            });
+    }
+
+    function renderSelectedBrowseBranch(path, depth) {
+        let branch = document.createElement('div');
+        branch.className = 'selected-browse-tree';
+        branch.setAttribute('data-browse-parent', path);
+        if (selectedBrowseLoading.has(path)) {
+            branch.textContent = 'جارٍ قراءة محتويات المجلد...';
+            return branch;
+        }
+        if (selectedBrowseErrors.has(path)) {
+            let message = document.createElement('span');
+            message.className = 'selected-browse-message error';
+            message.textContent = selectedBrowseErrors.get(path);
+            let retry = document.createElement('button');
+            retry.type = 'button';
+            retry.className = 'btn btn-outline btn-sm';
+            retry.textContent = 'إعادة المحاولة';
+            retry.onclick = function() { loadSelectedBrowseItems(path); };
+            branch.appendChild(message);
+            branch.appendChild(retry);
+            return branch;
+        }
+        let items = selectedBrowseCache.get(path);
+        if (!items) {
+            branch.textContent = 'جارٍ قراءة محتويات المجلد...';
+            return branch;
+        }
+        if (!items.length) {
+            branch.textContent = 'المجلد فارغ';
+            branch.classList.add('is-empty');
+            return branch;
+        }
+
+        items.forEach(function(item) {
+            let row = document.createElement('div');
+            row.className = 'selected-browse-row';
+            row.style.marginInlineStart = Math.min(depth, 8) * 10 + 'px';
+
+            let checkbox = document.createElement('input');
+            checkbox.type = 'checkbox';
+            checkbox.className = 'checkbox selected-browse-checkbox';
+            checkbox.value = item.path;
+            checkbox.checked = isPathSelected(item.path);
+            checkbox.setAttribute('aria-label',
+                (checkbox.checked ? 'استثناء ' : 'إرجاع ') + item.name);
+            checkbox.onchange = function() { toggleSelect(checkbox, !!item.is_dir); };
+            row.appendChild(checkbox);
+
+            let icon = document.createElement('span');
+            icon.className = 'selected-browse-icon';
+            icon.innerHTML = item.is_dir ? iconDir : iconFile;
+            row.appendChild(icon);
+
+            let name = document.createElement('span');
+            name.className = 'selected-browse-name';
+            name.textContent = item.name;
+            name.title = item.path;
+            row.appendChild(name);
+
+            if (excludedPaths.has(item.path)) {
+                let excluded = document.createElement('span');
+                excluded.className = 'excluded-badge';
+                excluded.textContent = 'مستثنى';
+                row.appendChild(excluded);
+            }
+
+            if (item.is_dir) {
+                let expanded = selectedBrowseExpanded.has(item.path);
+                let toggle = document.createElement('button');
+                toggle.type = 'button';
+                toggle.className = 'selected-browse-toggle' + (expanded ? ' open' : '');
+                toggle.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+                toggle.setAttribute('aria-label',
+                    (expanded ? 'طي' : 'فتح') + ' المجلد ' + item.name);
+                toggle.innerHTML = spriteIcon('ico-chevron-right');
+                toggle.onclick = function() { toggleSelectedBrowse(item.path); };
+                row.appendChild(toggle);
+            }
+            branch.appendChild(row);
+            if (item.is_dir && selectedBrowseExpanded.has(item.path)) {
+                branch.appendChild(renderSelectedBrowseBranch(item.path, depth + 1));
+            }
+        });
+        return branch;
     }
 
     function updateSavedOperationControls() {

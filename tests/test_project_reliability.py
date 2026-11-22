@@ -552,9 +552,38 @@ class TransferRouteTests(unittest.TestCase):
         self.assertIn('groupParentModal', html)
         self.assertIn('data-bulk-act', html)
         self.assertIn('bulk-item-check', html)
+        self.assertIn('window.SDMP3GroupOps.leafName(name)', html)
+        self.assertIn('إخراج إلى المستوى الرئيسي', html)
+        self.assertIn('selectedBrowseExpanded', html)
+        self.assertIn('renderSelectedBrowseBranch', html)
+        move_function = html.split('function movePathsToGroup(paths, gid) {', 1)[1].split(
+            'function movePathToGroup', 1)[0]
+        self.assertIn('bulkSelectedPaths.clear()', move_function)
+        self.assertNotIn('selectedPaths.clear()', move_function)
         helper = client.get('/static/sdmp3_group_ops.js')
         self.assertEqual(helper.status_code, 200)
         helper.close()
+
+    def test_selected_folder_browse_api_returns_children_for_exclusions(self):
+        with tempfile.TemporaryDirectory() as tempdir:
+            folder = os.path.join(tempdir, 'selected')
+            child_folder = os.path.join(folder, 'album')
+            os.makedirs(child_folder)
+            with open(os.path.join(folder, 'track.mp3'), 'wb') as output:
+                output.write(b'audio')
+            with open(os.path.join(child_folder, 'inside.mp3'), 'wb') as output:
+                output.write(b'audio')
+
+            response = project.app.test_client().get(
+                '/api/items', query_string={'path': folder, 'sort': 'name'})
+
+        self.assertEqual(response.status_code, 200)
+        items = response.get_json()['items']
+        self.assertEqual({item['name'] for item in items}, {'album', 'track.mp3'})
+        self.assertEqual(
+            {item['name']: item['is_dir'] for item in items},
+            {'album': True, 'track.mp3': False},
+        )
 
     def test_transfer_route_preserves_nested_copy_group_paths(self):
         with tempfile.TemporaryDirectory() as tempdir:
