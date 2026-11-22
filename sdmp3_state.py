@@ -36,6 +36,7 @@ HISTORY_QUERY_LIMIT = 25
 SAVED_OPERATIONS_LIMIT = 50
 SAVED_OPERATION_PATH_LIMIT = 3000
 SAVED_OPERATION_GROUP_LIMIT = 500
+CUSTOM_THEME_COLOR_KEYS = ('bg', 'card_2', 'accent', 'kind_sdcard', 'text')
 
 # Default JOC / index settings. Kept in one place so the server and the page
 # agree on the shape. Nothing here raises: unknown or missing keys fall back to
@@ -64,6 +65,20 @@ def state_file(name):
 
 def _ensure_dir():
     os.makedirs(STATE_DIR, exist_ok=True)
+
+
+def _clean_custom_theme_colors(value):
+    """Keep only a complete, strictly hex-coded user palette."""
+    if not isinstance(value, dict) or set(value) != set(CUSTOM_THEME_COLOR_KEYS):
+        return None
+    clean = {}
+    for key in CUSTOM_THEME_COLOR_KEYS:
+        color = value.get(key)
+        if (not isinstance(color, str) or len(color) != 7 or color[0] != '#'
+                or any(char not in '0123456789abcdefABCDEF' for char in color[1:])):
+            return None
+        clean[key] = color.upper()
+    return clean
 
 
 def _quarantine(path):
@@ -156,7 +171,8 @@ def load_settings(valid_theme_ids, default_theme,
         smart_depth = 1
     settings = {'version': SETTINGS_VERSION, 'theme': theme,
                 'font': font, 'font_size': font_size,
-                'auto_spoof': auto_spoof, 'smart_depth': smart_depth}
+                'auto_spoof': auto_spoof, 'smart_depth': smart_depth,
+                'custom_colors': _clean_custom_theme_colors(raw.get('custom_colors'))}
     raw_version = raw.get('version')
     if isinstance(raw_version, int) and raw_version > SETTINGS_VERSION:
         # A newer app wrote this file. Keep what we understand, but do not
@@ -173,6 +189,7 @@ def save_settings(settings):
         'font_size': settings.get('font_size'),
         'auto_spoof': bool(settings.get('auto_spoof')),
         'smart_depth': settings.get('smart_depth') or 1,
+        'custom_colors': _clean_custom_theme_colors(settings.get('custom_colors')),
         'updated': int(time.time()),
     }
     return save_json(state_file(SETTINGS_FILE), payload)
@@ -403,7 +420,7 @@ if __name__ == '__main__':  # pragma: no cover - manual report
         assert load_settings(['a', 'b'], 'a') == {
             'version': SETTINGS_VERSION, 'theme': 'a',
             'font': 'system', 'font_size': 'normal', 'auto_spoof': False,
-            'smart_depth': 1}
+            'smart_depth': 1, 'custom_colors': None}
         assert save_settings({'theme': 'b', 'font': 'f1', 'font_size': 'big',
                               'auto_spoof': True}) is True
         saved = load_settings(['a', 'b'], 'a', ['f1', 'f2'], 'system', ['big', 'small'], 'normal')
@@ -411,6 +428,10 @@ if __name__ == '__main__':  # pragma: no cover - manual report
         assert saved['auto_spoof'] is True, saved
         assert save_settings({'theme': 'b', 'smart_depth': 3}) is True
         assert load_settings(['a', 'b'], 'a')['smart_depth'] == 3
+        colors = {'bg': '#192133', 'card_2': '#222B40', 'accent': '#3D8E9C',
+                  'kind_sdcard': '#2EB9CB', 'text': '#E9E2D1'}
+        assert save_settings({'theme': 'b', 'custom_colors': colors}) is True
+        assert load_settings(['a', 'b'], 'a')['custom_colors'] == colors
         # save writes what it is given; load is the validator
         assert save_settings({'theme': 'b', 'smart_depth': 9}) is True
         assert load_settings(['a', 'b'], 'a')['smart_depth'] == 1, 'load must clamp 9'

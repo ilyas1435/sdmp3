@@ -14,6 +14,8 @@ Adding a theme
 That is the whole contract. Nothing in project.py needs to change.
 """
 
+import re
+
 
 # --------------------------------------------------------------------------
 # colour maths
@@ -941,6 +943,166 @@ def theme_color(theme_id):
 def catalog():
     """Everything the settings page and the JS need, in one list."""
     return [THEMES[i] for i in THEMES]
+
+
+# These are the five colours shown in the settings preview. Keep their order in
+# sync with `swatches` so the editor, API and preview share one small contract.
+CUSTOM_COLOR_KEYS = ('bg', 'card_2', 'accent', 'kind_sdcard', 'text')
+CUSTOM_COLOR_LABELS = {
+    'bg': 'الخلفية',
+    'card_2': 'السطح',
+    'accent': 'لون التمييز',
+    'kind_sdcard': 'لون بطاقة SD',
+    'text': 'النص',
+}
+_CUSTOM_HEX_RE = re.compile(r'^#[0-9a-fA-F]{6}$')
+
+
+def custom_color_values(theme_id):
+    """Return the five editable preview colours for a built-in theme."""
+    definition = next((item for item in _THEME_DEFS
+                       if item['id'] == theme_id), None)
+    if definition is None:
+        raise ValueError('سمة غير معروفة')
+    return {key: definition[key] for key in CUSTOM_COLOR_KEYS}
+
+
+def normalize_custom_colors(colors):
+    """Validate and normalize exactly the five hex colours accepted by the UI."""
+    if not isinstance(colors, dict) or set(colors) != set(CUSTOM_COLOR_KEYS):
+        raise ValueError('أدخل الألوان الخمسة المطلوبة')
+    normalized = {}
+    for key in CUSTOM_COLOR_KEYS:
+        value = colors.get(key)
+        if not isinstance(value, str) or not _CUSTOM_HEX_RE.fullmatch(value.strip()):
+            raise ValueError('قيمة «{}» يجب أن تكون بالصيغة #RRGGBB'.format(
+                CUSTOM_COLOR_LABELS[key]))
+        normalized[key] = value.strip().upper()
+    return normalized
+
+
+def _mix_hex(first, second, amount):
+    """Blend two hex colours in RGB, where amount is the share of `second`."""
+    left = _parse_hex(first)
+    right = _parse_hex(second)
+    channels = [round(a + (b - a) * amount) for a, b in zip(left, right)]
+    return '#{:02X}{:02X}{:02X}'.format(*channels)
+
+
+def _ensure_ink_contrast(foreground, target, backgrounds, floor):
+    """Move an ink colour minimally toward the readable text colour if needed."""
+    def readable(color):
+        return all(contrast_ratio(color, background) + 0.005 >= floor
+                   for background in backgrounds)
+
+    if readable(foreground):
+        return foreground
+    if not readable(target):
+        return target
+    # Find the first safe blend. This preserves the original hue as much as
+    # possible while adapting semantic text to the user's new surface colour.
+    for step in range(1, 101):
+        candidate = _mix_hex(foreground, target, step / 100.0)
+        if readable(candidate):
+            return candidate
+    return target
+
+
+def build_custom_theme(theme_id, raw_colors):
+    """Overlay the five user colours on a preset and keep every UI token safe.
+
+    The built-in preset remains untouched. Custom colours are a validated
+    overlay; related surfaces, accent shades and readable status inks are
+    derived from it for the active page only.
+    """
+    if theme_id not in THEMES:
+        raise ValueError('سمة غير معروفة')
+    colors = normalize_custom_colors(raw_colors)
+    definition = dict(next(item for item in _THEME_DEFS
+                           if item['id'] == theme_id))
+
+    surface = colors['card_2']
+    definition.update({
+        'bg': colors['bg'],
+        # Treat the user-selected surface as the common card/input surface, so
+        # all the app's cards use the colour the user actually entered.
+        'card': surface,
+        'card_2': surface,
+        'field': _mix_hex(colors['bg'], surface, 0.48),
+        'text': colors['text'],
+        'accent': colors['accent'],
+        'kind_sdcard': colors['kind_sdcard'],
+    })
+    definition['border'] = _mix_hex(surface, colors['text'], 0.16)
+    surfaces = [definition['bg'], definition['card'], definition['field']]
+    definition['text_muted'] = _ensure_ink_contrast(
+        definition['text_muted'], colors['text'], surfaces, 4.5)
+
+    # Keep all accent states in the user's chosen hue and choose legible button
+    # text automatically for both light and dark accent colours.
+    fill_ink = max(
+        ('#000000', '#FFFFFF'),
+        key=lambda candidate: contrast_ratio(candidate, colors['accent']))
+    definition['accent_fill'] = colors['accent']
+    definition['accent_fill_hover'] = _mix_hex(
+        colors['accent'], '#FFFFFF' if fill_ink == '#000000' else '#000000', 0.12)
+    definition['accent_hover'] = definition['accent_fill_hover']
+    definition['accent_ink'] = fill_ink
+    definition['on_accent'] = fill_ink
+    definition['accent_text'] = _ensure_ink_contrast(
+        colors['accent'], colors['text'], surfaces, 4.5)
+
+    # Semantic/status text keeps its original hue whenever it already meets
+    # contrast; otherwise it is shifted toward the chosen text colour.
+    for key in ('warning', 'success', 'danger_ink',
+                'kind_internal_ink', 'kind_usb_ink', 'kind_card_ink'):
+        definition[key] = _ensure_ink_contrast(
+            definition[key], colors['text'], surfaces, 4.5)
+    definition['kind_sdcard_ink'] = _ensure_ink_contrast(
+        colors['kind_sdcard'], colors['text'], surfaces, 4.5)
+
+    contrast_failures = check_contrast(definition)
+    if contrast_failures:
+        labels = {
+            'text on card': 'النص على السطح',
+            'text on page': 'النص على الخلفية',
+            'muted on card': 'النص الثانوي على السطح',
+            'muted on field': 'النص الثانوي على الحقول',
+            'accent text on card': 'لون التمييز على السطح',
+            'warning on card': 'التحذير على السطح',
+            'success on card': 'النجاح على السطح',
+            'danger text on card': 'الخطأ على السطح',
+            'label on primary': 'نص الأزرار الرئيسية',
+            'label on success': 'نص أزرار النجاح',
+            'label on danger': 'نص أزرار الخطأ',
+            'label on sand': 'نص الأزرار الثانوية',
+            'internal ink on card': 'لون التخزين الداخلي',
+            'sd ink on card': 'لون بطاقة SD',
+            'usb ink on card': 'لون USB',
+            'card ink on card': 'لون بطاقة الذاكرة',
+        }
+        details = '، '.join(labels.get(label, label) for label, _ratio, _floor in contrast_failures)
+        raise ValueError('التباين غير كافٍ في: ' + details)
+
+    hue_failures = check_kind_hues(definition)
+    if hue_failures:
+        labels = {
+            'internal vs sd card': 'لون بطاقة SD قريب جداً من التخزين الداخلي',
+            'sd card vs memory card': 'لون بطاقة SD قريب جداً من بطاقة الذاكرة',
+        }
+        raise ValueError('اختر لوناً أوضح لبطاقة SD: ' + '، '.join(
+            labels.get(label, label) for label, _gap, _floor in hue_failures))
+
+    tokens = build_tokens(definition)
+    return {
+        'id': theme_id,
+        'name': 'ألوان مخصصة',
+        'desc': 'ألوان يحددها المستخدم',
+        'dark': relative_luminance(colors['bg']) < 0.5,
+        'swatches': [colors[key] for key in CUSTOM_COLOR_KEYS],
+        'tokens': tokens,
+        'colors': colors,
+    }
 
 
 if __name__ == '__main__':  # pragma: no cover - manual report

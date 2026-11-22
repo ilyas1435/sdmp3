@@ -27,7 +27,9 @@ from flask import Flask, render_template_string, request, jsonify, send_file
 #   sdmp3_state.py   atomic settings.json / search_history.json
 #   sdmp3_groups.py  copy-group paths (groups, including nested ones)
 from sdmp3_themes import (THEMES, DEFAULT_THEME, theme_ids, get_theme,
-                          theme_css_pairs, theme_color, theme_tokens, catalog)
+                          theme_css_pairs, theme_color, theme_tokens, catalog,
+                          CUSTOM_COLOR_KEYS, CUSTOM_COLOR_LABELS,
+                          custom_color_values, build_custom_theme)
 from sdmp3_state import (state_file, load_settings, save_settings,
                          load_search_history, save_search_history,
                          load_index_settings, save_index_settings,
@@ -2742,6 +2744,23 @@ HTML_TEMPLATE = """
         .theme-preview-chip { display:block; width:25px; height:19px; flex:0 0 auto;
             border:1px solid var(--border); border-radius:6px; box-shadow:inset 0 0 0 1px rgba(0,0,0,.08); }
         #themePreviewName { min-width:0; text-align:end; overflow-wrap:anywhere; }
+        .custom-theme-editor { display:flex; flex-direction:column; gap:8px; padding:10px 11px;
+            border:1px solid var(--border); border-radius:12px; background:var(--field); }
+        .custom-theme-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; }
+        .custom-theme-field { display:flex; flex-direction:column; gap:4px; min-width:0; }
+        .custom-theme-field label { color:var(--text); font-size:calc(11.5px * var(--font-scale)); font-weight:600; }
+        .custom-theme-input-wrap { display:flex; align-items:center; gap:6px; min-width:0; }
+        .custom-theme-swatch { width:20px; height:20px; flex:0 0 20px; border:1px solid var(--border); border-radius:6px; }
+        .custom-theme-field input { width:100%; min-width:0; min-height:38px; margin:0; padding:7px 9px;
+            border:1px solid var(--border); border-radius:8px; background:var(--card); color:var(--text);
+            direction:ltr; text-align:left; font-family:var(--num-font); font-size:calc(12px * var(--font-scale)); }
+        .custom-theme-field input:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+        .custom-theme-actions { display:flex; gap:7px; flex-wrap:wrap; }
+        .custom-theme-actions .btn { flex:1 1 145px; min-height:38px; }
+        #customThemeState { min-height:16px; }
+        @media (max-width: 380px) {
+            .custom-theme-grid { grid-template-columns:1fr; }
+        }
         #fontPreview { font-size:calc(17px * var(--font-scale)); color:var(--text); }
         .settings-note { font-size:calc(10.5px * var(--font-scale)); color:var(--text-muted); line-height:1.6; }
         .settings-save-state { font-size:calc(11.5px * var(--font-scale)); min-height:16px; color:var(--text-muted); }
@@ -3510,6 +3529,36 @@ HTML_TEMPLATE = """
                                 {% endfor %}
                             </div>
                             <span id="themePreviewName" class="field-hint">{{ active_theme.name }}</span>
+                        </div>
+                    </div>
+                    <div class="custom-theme-editor">
+                        <div class="settings-group-title">
+                            <svg class="icon" aria-hidden="true"><use href="#ico-palette"></use></svg>
+                            تخصيص الألوان
+                        </div>
+                        <div id="customThemeHint" class="field-hint">
+                            أدخل أكواد HEX للألوان الخمسة. تُعاين التعديلات مباشرة ولا تُحفظ إلا عند الضغط على زر الحفظ.
+                        </div>
+                        <div class="custom-theme-grid">
+                            {% for key, label in custom_color_fields %}
+                            <div class="custom-theme-field">
+                                <label for="customTheme-{{ key }}">{{ label }}</label>
+                                <div class="custom-theme-input-wrap">
+                                    <span class="custom-theme-swatch" id="customThemeSwatch-{{ key }}"
+                                          style="background-color:{{ active_custom_colors[key] }};" aria-hidden="true"></span>
+                                    <input type="text" id="customTheme-{{ key }}" value="{{ active_custom_colors[key] }}"
+                                           maxlength="7" placeholder="#RRGGBB" autocomplete="off" spellcheck="false"
+                                           dir="ltr" aria-describedby="customThemeHint customThemeState">
+                                </div>
+                            </div>
+                            {% endfor %}
+                        </div>
+                        <div id="customThemeState" class="settings-save-state" role="status" aria-live="polite">
+                            {% if has_custom_colors %}ألوان مخصصة محفوظة{% else %}ألوان الثيم الحالي{% endif %}
+                        </div>
+                        <div class="custom-theme-actions">
+                            <button type="button" class="btn btn-primary" onclick="saveCustomTheme()">حفظ الألوان</button>
+                            <button type="button" class="btn btn-outline" onclick="resetCustomTheme()">استعادة ألوان الثيم</button>
                         </div>
                     </div>
                 </div>
@@ -6063,7 +6112,7 @@ HTML_TEMPLATE = """
 
     // Applying a theme is only token assignment: the whole palette is a set of
     // CSS custom properties, so nothing is re-rendered and nothing flickers.
-    function applyTheme(tokens, bg, id) {
+    function applyTheme(tokens, bg, id, swatches, previewName) {
         if (tokens) {
             Object.keys(tokens).forEach(function(name) {
                 document.documentElement.style.setProperty(name, tokens[name]);
@@ -6078,7 +6127,8 @@ HTML_TEMPLATE = """
             document.documentElement.setAttribute('data-theme', id);
             let select = document.getElementById('themeSelect');
             if (select) select.value = id;
-            updateThemePreview(id);
+            if (Array.isArray(swatches)) renderThemePreview(swatches, previewName || 'ألوان مخصصة');
+            else updateThemePreview(id);
         }
     }
 
@@ -6089,14 +6139,11 @@ HTML_TEMPLATE = """
         el.textContent = text || '';
     }
 
-    function updateThemePreview(id) {
-        let select = document.getElementById('themeSelect');
+    function renderThemePreview(colors, label) {
         let preview = document.getElementById('themeColorPreview');
         let name = document.getElementById('themePreviewName');
-        if (!select || !preview || !name) return;
-        let option = Array.from(select.options).find(function(item) { return item.value === id; });
-        if (!option) return;
-        let colors = (option.getAttribute('data-swatches') || '').split(',').filter(function(color) {
+        if (!preview || !name) return;
+        colors = (colors || []).filter(function(color) {
             return /^#[0-9a-f]{6}$/i.test(color);
         }).slice(0, 5);
         let labels = ['الخلفية', 'السطح', 'التأكيد', 'بطاقة الذاكرة', 'النص'];
@@ -6108,8 +6155,156 @@ HTML_TEMPLATE = """
             chip.style.backgroundColor = color;
             preview.appendChild(chip);
         });
-        name.textContent = option.textContent.trim();
-        preview.setAttribute('aria-label', 'معاينة ألوان سمة ' + option.textContent.trim());
+        name.textContent = label || 'السمة';
+        preview.setAttribute('aria-label', 'معاينة ألوان ' + (label || 'السمة'));
+    }
+
+    function updateThemePreview(id) {
+        let select = document.getElementById('themeSelect');
+        if (!select) return;
+        let option = Array.from(select.options).find(function(item) { return item.value === id; });
+        if (!option) return;
+        let colors = (option.getAttribute('data-swatches') || '').split(',');
+        renderThemePreview(colors, option.textContent.trim());
+    }
+
+    const CUSTOM_THEME_INPUTS = [
+        ['bg', 'customTheme-bg'],
+        ['card_2', 'customTheme-card_2'],
+        ['accent', 'customTheme-accent'],
+        ['kind_sdcard', 'customTheme-kind_sdcard'],
+        ['text', 'customTheme-text']
+    ];
+    let savedCustomThemeColors = {{ active_custom_colors|tojson }};
+    let customThemePreviewTimer = null;
+    let customThemePreviewSequence = 0;
+
+    function readCustomThemeColors() {
+        let colors = {};
+        CUSTOM_THEME_INPUTS.forEach(function(item) {
+            let input = document.getElementById(item[1]);
+            colors[item[0]] = input ? input.value.trim() : '';
+        });
+        return colors;
+    }
+
+    function setCustomThemeInputs(colors) {
+        let source = colors || {};
+        CUSTOM_THEME_INPUTS.forEach(function(item, index) {
+            let input = document.getElementById(item[1]);
+            let swatch = document.getElementById('customThemeSwatch-' + item[0]);
+            let value = source[item[0]];
+            if (!value && Array.isArray(source.swatches)) value = source.swatches[index];
+            if (input && value) input.value = value;
+            if (swatch && value && /^#[0-9a-f]{6}$/i.test(value)) {
+                swatch.style.backgroundColor = value;
+            }
+        });
+    }
+
+    function setCustomThemeState(text, kind) {
+        let state = document.getElementById('customThemeState');
+        if (!state) return;
+        state.className = 'settings-save-state' + (kind ? ' ' + kind : '');
+        state.textContent = text || '';
+    }
+
+    function cancelCustomThemePreview() {
+        if (customThemePreviewTimer) clearTimeout(customThemePreviewTimer);
+        customThemePreviewTimer = null;
+        customThemePreviewSequence++;
+    }
+
+    function queueCustomThemePreview() {
+        if (customThemePreviewTimer) clearTimeout(customThemePreviewTimer);
+        customThemePreviewTimer = null;
+        customThemePreviewSequence++;
+        let colors = readCustomThemeColors();
+        CUSTOM_THEME_INPUTS.forEach(function(item) {
+            let swatch = document.getElementById('customThemeSwatch-' + item[0]);
+            let color = colors[item[0]];
+            if (swatch && /^#[0-9a-f]{6}$/i.test(color)) swatch.style.backgroundColor = color;
+        });
+        if (!CUSTOM_THEME_INPUTS.every(function(item) {
+            return /^#[0-9a-f]{6}$/i.test(colors[item[0]]);
+        })) {
+            setCustomThemeState('استخدم رمزاً كاملاً مثل #2F8E9C لكل لون.', 'err');
+            return;
+        }
+        setCustomThemeState('جارٍ فحص الألوان...', '');
+        customThemePreviewTimer = setTimeout(previewCustomTheme, 180);
+    }
+
+    function previewCustomTheme() {
+        customThemePreviewTimer = null;
+        let colors = readCustomThemeColors();
+        let sequence = ++customThemePreviewSequence;
+        fetch('/api/settings/theme-preview', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({theme: activeThemeId, custom_colors: colors})
+        }).then(function(r) {
+            return r.json().then(function(d) { return {ok: r.ok, data: d}; });
+        }).then(function(res) {
+            if (sequence !== customThemePreviewSequence) return;
+            if (!res.ok) {
+                setCustomThemeState(res.data.error || 'تركيبة الألوان غير مناسبة.', 'err');
+                return;
+            }
+            applyTheme(res.data.tokens, res.data.theme_bg, activeThemeId,
+                res.data.swatches, 'معاينة مخصصة');
+            setCustomThemeState('معاينة مباشرة — اضغط «حفظ الألوان» للاحتفاظ بها.', '');
+        }).catch(function() {
+            if (sequence === customThemePreviewSequence) {
+                setCustomThemeState('تعذر فحص الألوان الآن.', 'err');
+            }
+        });
+    }
+
+    function saveCustomTheme() {
+        cancelCustomThemePreview();
+        let colors = readCustomThemeColors();
+        setCustomThemeState('جارٍ التحقق والحفظ...', '');
+        fetch('/api/settings', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({theme: activeThemeId, custom_colors: colors})
+        }).then(function(r) {
+            return r.json().then(function(d) { return {ok: r.ok, data: d}; });
+        }).then(function(res) {
+            if (!res.ok) {
+                setCustomThemeState(res.data.error || 'تعذر حفظ الألوان.', 'err');
+                return;
+            }
+            savedCustomThemeColors = res.data.settings.custom_colors;
+            setCustomThemeInputs(savedCustomThemeColors);
+            applyTheme(res.data.tokens, res.data.theme_bg, activeThemeId,
+                res.data.swatches, 'ألوان مخصصة');
+            setCustomThemeState('تم حفظ الألوان المخصصة على هذا الجهاز.', 'ok');
+        }).catch(function() {
+            setCustomThemeState('تعذر الاتصال لحفظ الألوان.', 'err');
+        });
+    }
+
+    function resetCustomTheme() {
+        cancelCustomThemePreview();
+        setCustomThemeState('جارٍ استعادة ألوان الثيم...', '');
+        fetch('/api/settings', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({theme: activeThemeId, custom_colors: null})
+        }).then(function(r) {
+            return r.json().then(function(d) { return {ok: r.ok, data: d}; });
+        }).then(function(res) {
+            if (!res.ok) {
+                setCustomThemeState(res.data.error || 'تعذر استعادة الألوان.', 'err');
+                return;
+            }
+            savedCustomThemeColors = null;
+            setCustomThemeInputs({swatches: res.data.swatches});
+            applyTheme(res.data.tokens, res.data.theme_bg, activeThemeId,
+                res.data.swatches, res.data.theme_name);
+            setCustomThemeState('تمت استعادة ألوان الثيم الجاهز.', 'ok');
+        }).catch(function() {
+            setCustomThemeState('تعذر الاتصال لاستعادة الألوان.', 'err');
+        });
     }
 
     // Typography is two CSS variables: `--app-font` (a font stack) and
@@ -6165,6 +6360,7 @@ HTML_TEMPLATE = """
 
     function pickTheme(id) {
         if (!id || id === activeThemeId) return;
+        cancelCustomThemePreview();
         updateThemePreview(id);
         setSettingsState('جارٍ الحفظ...', '');
         fetch('/api/settings', { method: 'POST', headers: {'Content-Type': 'application/json'},
@@ -6174,21 +6370,41 @@ HTML_TEMPLATE = """
                 if (!res.ok) {
                     let select = document.getElementById('themeSelect');
                     if (select) select.value = activeThemeId;
-                    updateThemePreview(activeThemeId);
+                    if (savedCustomThemeColors) {
+                        renderThemePreview(CUSTOM_THEME_INPUTS.map(function(item) {
+                            return savedCustomThemeColors[item[0]];
+                        }), 'ألوان مخصصة');
+                    } else updateThemePreview(activeThemeId);
                     setSettingsState(res.data.error || 'تعذر حفظ السمة', 'err');
                     return;
                 }
-                applyTheme(res.data.tokens, res.data.theme_bg, id);
+                savedCustomThemeColors = res.data.settings.custom_colors || null;
+                setCustomThemeInputs(savedCustomThemeColors || {swatches: res.data.swatches});
+                applyTheme(res.data.tokens, res.data.theme_bg, id,
+                    res.data.swatches, res.data.theme_name);
+                setCustomThemeState('ألوان الثيم الحالي', '');
                 setSettingsState('تم الحفظ — السمة مطبقة.', 'ok');
                 setTimeout(function() { setSettingsState('', ''); }, 2500);
             })
             .catch(function() {
                 let select = document.getElementById('themeSelect');
                 if (select) select.value = activeThemeId;
-                updateThemePreview(activeThemeId);
+                if (savedCustomThemeColors) {
+                    renderThemePreview(CUSTOM_THEME_INPUTS.map(function(item) {
+                        return savedCustomThemeColors[item[0]];
+                    }), 'ألوان مخصصة');
+                } else updateThemePreview(activeThemeId);
                 setSettingsState('تعذر الاتصال بالخادم', 'err');
             });
     }
+
+    document.querySelectorAll('.custom-theme-field input').forEach(function(input) {
+        input.addEventListener('input', queueCustomThemePreview);
+        input.addEventListener('change', function() {
+            if (customThemePreviewTimer) clearTimeout(customThemePreviewTimer);
+            previewCustomTheme();
+        });
+    });
 
     // ---- selection tracking for the «السجل» panel ------------------
     // Called when a search-result checkbox is checked: the selected folder is
@@ -8274,14 +8490,32 @@ def index():
     font_id = APP_SETTINGS.get('font') or DEFAULT_FONT
     size_id = APP_SETTINGS.get('font_size') or DEFAULT_FONT_SIZE
     active = get_theme(theme_id)
+    stored_custom_colors = APP_SETTINGS.get('custom_colors')
+    active_custom_colors = custom_color_values(theme_id)
+    has_custom_colors = False
+    if stored_custom_colors:
+        try:
+            active = build_custom_theme(theme_id, stored_custom_colors)
+            active_custom_colors = active['colors']
+            has_custom_colors = True
+        except ValueError:
+            # Startup normally clears invalid saved palettes. Keep this route
+            # safe as well if settings are edited while the server is running.
+            pass
+    base_theme_css = theme_css_pairs(theme_id)
+    active_theme_css = ([(name, active['tokens'][name]) for name, _value in base_theme_css]
+                        if has_custom_colors else base_theme_css)
     return render_template_string(
         HTML_TEMPLATE,
         storages=get_available_storages(),
         app_version=get_app_version(),
         active_theme=active,
-        theme_css=theme_css_pairs(active['id']),
-        theme_bg=theme_color(active['id']),
+        theme_css=active_theme_css,
+        theme_bg=active['tokens']['--bg'] if has_custom_colors else theme_color(theme_id),
         themes=catalog(),
+        custom_color_fields=[(key, CUSTOM_COLOR_LABELS[key]) for key in CUSTOM_COLOR_KEYS],
+        active_custom_colors=active_custom_colors,
+        has_custom_colors=has_custom_colors,
         # Typography: the @font-face rules are inert until a family is used, so
         # the default `system` choice still paints with zero font requests.
         font_css=font_face_css(get_app_version()),
@@ -8423,7 +8657,8 @@ SMART_DEPTH_DEFAULT = 1
 APP_SETTINGS = {'version': 2, 'theme': DEFAULT_THEME,
                 'font': DEFAULT_FONT, 'font_size': DEFAULT_FONT_SIZE,
                 'auto_spoof': False,
-                'smart_depth': SMART_DEPTH_DEFAULT}
+                'smart_depth': SMART_DEPTH_DEFAULT,
+                'custom_colors': None}
 APP_INDEX_SETTINGS = dict(DEFAULT_INDEX_SETTINGS)
 SEARCH_HISTORY = {'version': 1, 'items': [], 'queries': []}
 _settings_lock = threading.RLock()
@@ -8770,7 +9005,7 @@ def _coerce_bool(value, default=False):
 def api_settings():
     """Read or update the appearance + typography settings.
 
-    POST accepts any subset of `theme`, `font`, `font_size` and `auto_spoof`:
+    POST accepts any subset of appearance, custom-colour, and `auto_spoof` fields:
     each id is checked against its registry (sdmp3_themes.py / sdmp3_fonts.py)
     and an unknown id is refused with a 400, so settings.json can never hold a
     value the page cannot render. A bad boolean is dropped, not written. Only
@@ -8808,21 +9043,64 @@ def api_settings():
         return jsonify({'error': 'خط غير معروف'}), 400
     if size_id not in font_size_ids():
         return jsonify({'error': 'حجم خط غير معروف'}), 400
+    custom_colors = APP_SETTINGS.get('custom_colors')
+    if 'custom_colors' in body:
+        if body.get('custom_colors') is None:
+            custom_colors = None
+        else:
+            try:
+                custom_colors = build_custom_theme(
+                    theme_id, body.get('custom_colors'))['colors']
+            except ValueError as exc:
+                return jsonify({'error': str(exc)}), 400
+    elif theme_id != (APP_SETTINGS.get('theme') or DEFAULT_THEME):
+        # Choosing a ready-made preset explicitly restores that preset's own
+        # colors; it must never leave a hidden custom overlay active.
+        custom_colors = None
+
+    custom_palette = None
+    if custom_colors:
+        try:
+            custom_palette = build_custom_theme(theme_id, custom_colors)
+        except ValueError as exc:
+            return jsonify({'error': str(exc)}), 400
+    selected_theme = custom_palette or get_theme(theme_id)
+    settings = {'version': SETTINGS_VERSION, 'theme': theme_id,
+                'font': font_id, 'font_size': size_id,
+                'auto_spoof': auto_spoof, 'smart_depth': smart_depth,
+                'custom_colors': custom_colors}
     with _settings_lock:
-        APP_SETTINGS = {'version': SETTINGS_VERSION, 'theme': theme_id,
-                        'font': font_id, 'font_size': size_id,
-                        'auto_spoof': auto_spoof,
-                        'smart_depth': smart_depth}
-        settings = dict(APP_SETTINGS)
-    if not save_settings(settings):
-        return jsonify({'error': 'تعذر حفظ الإعدادات على الجهاز'}), 500
+        if not save_settings(settings):
+            return jsonify({'error': 'تعذر حفظ الإعدادات على الجهاز'}), 500
+        APP_SETTINGS = settings
     return jsonify({
         'ok': True,
         'settings': settings,
-        'theme_bg': theme_color(theme_id),
-        'tokens': theme_tokens(theme_id),
+        'theme_bg': selected_theme['tokens']['--bg'],
+        'tokens': selected_theme['tokens'],
+        'swatches': selected_theme['swatches'],
+        'theme_name': selected_theme['name'],
         'app_font': font_stack(font_id),
         'font_scale': font_scale(size_id),
+    })
+
+
+@app.route('/api/settings/theme-preview', methods=['POST'])
+def api_theme_preview():
+    """Validate and preview a custom palette without changing saved settings."""
+    body = request.get_json(silent=True)
+    if not isinstance(body, dict):
+        return jsonify({'error': 'بيانات الألوان غير صالحة'}), 400
+    theme_id = body.get('theme', APP_SETTINGS.get('theme') or DEFAULT_THEME)
+    try:
+        preview = build_custom_theme(theme_id, body.get('custom_colors'))
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
+    return jsonify({
+        'ok': True,
+        'theme_bg': preview['tokens']['--bg'],
+        'tokens': preview['tokens'],
+        'swatches': preview['swatches'],
     })
 
 
@@ -9923,6 +10201,15 @@ def main(argv=None):
         APP_SETTINGS = load_settings(theme_ids(), DEFAULT_THEME,
                                      font_ids(), DEFAULT_FONT,
                                      font_size_ids(), DEFAULT_FONT_SIZE)
+        if APP_SETTINGS.get('custom_colors'):
+            try:
+                build_custom_theme(APP_SETTINGS.get('theme') or DEFAULT_THEME,
+                                   APP_SETTINGS['custom_colors'])
+            except ValueError as exc:
+                print('  settings: ignoring invalid custom palette ({})'.format(exc),
+                      flush=True)
+                APP_SETTINGS['custom_colors'] = None
+                save_settings(APP_SETTINGS)
         SEARCH_HISTORY = load_search_history()
         APP_INDEX_SETTINGS = load_index_settings()
         # A pulled-out card leaves stale results behind. Prune them once at

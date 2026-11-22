@@ -29,6 +29,17 @@ class ThemePaletteTests(unittest.TestCase):
                 self.assertEqual(sdmp3_themes.check_contrast(definition), [])
                 self.assertEqual(sdmp3_themes.check_kind_hues(definition), [])
 
+    def test_every_preset_can_seed_a_valid_custom_palette(self):
+        for theme_id in sdmp3_themes.theme_ids():
+            with self.subTest(theme=theme_id):
+                custom = sdmp3_themes.build_custom_theme(
+                    theme_id, sdmp3_themes.custom_color_values(theme_id))
+                self.assertEqual(custom['id'], theme_id)
+                self.assertEqual(custom['swatches'], [
+                    sdmp3_themes.normalize_custom_colors(
+                        sdmp3_themes.custom_color_values(theme_id))[key]
+                    for key in sdmp3_themes.CUSTOM_COLOR_KEYS])
+
     def test_theme_setting_round_trips_and_returns_matching_swatches(self):
         original = dict(project.APP_SETTINGS)
         client = project.app.test_client()
@@ -63,6 +74,99 @@ class ThemePaletteTests(unittest.TestCase):
             page = client.get('/').get_data(as_text=True)
             self.assertIn('value="slate-sand" data-theme-id="slate-sand"', page)
 
+    def test_custom_theme_colors_preview_and_persist(self):
+        original = dict(project.APP_SETTINGS)
+        colors = sdmp3_themes.normalize_custom_colors(
+            sdmp3_themes.custom_color_values('slate-sand'))
+        colors.update({
+            'bg': '#172333',
+            'card_2': '#314052',
+            'accent': '#75B5E2',
+        })
+        client = project.app.test_client()
+        with tempfile.TemporaryDirectory() as state_dir, \
+                mock.patch.object(sdmp3_state, 'STATE_DIR', state_dir), \
+                mock.patch.object(project, 'APP_SETTINGS', original.copy()):
+            preview = client.post('/api/settings/theme-preview', json={
+                'theme': 'slate-sand', 'custom_colors': colors,
+            })
+            self.assertEqual(preview.status_code, 200)
+            preview_data = preview.get_json()
+            self.assertEqual(preview_data['tokens']['--bg'], colors['bg'])
+            self.assertEqual(preview_data['tokens']['--card'], colors['card_2'])
+            self.assertEqual(preview_data['swatches'], [colors[key]
+                             for key in sdmp3_themes.CUSTOM_COLOR_KEYS])
+            self.assertIsNone(project.APP_SETTINGS.get('custom_colors'),
+                              'preview must never write settings')
+
+            response = client.post('/api/settings', json={
+                'theme': 'slate-sand', 'custom_colors': colors,
+            })
+            self.assertEqual(response.status_code, 200, response.get_json())
+            saved = response.get_json()
+            self.assertEqual(saved['settings']['custom_colors'], colors)
+            self.assertEqual(saved['tokens']['--accent'], colors['accent'])
+
+            restored = sdmp3_state.load_settings(
+                sdmp3_themes.theme_ids(), sdmp3_themes.DEFAULT_THEME,
+                project.font_ids(), project.DEFAULT_FONT,
+                project.font_size_ids(), project.DEFAULT_FONT_SIZE)
+            self.assertEqual(restored['custom_colors'], colors)
+
+            page = client.get('/').get_data(as_text=True)
+            self.assertIn('id="customTheme-bg" value="{}"'.format(colors['bg']), page)
+            self.assertIn('id="themePreviewName" class="field-hint">ألوان مخصصة', page)
+            self.assertIn('--bg: {}'.format(colors['bg']), page)
+
+            reset = client.post('/api/settings', json={
+                'theme': 'slate-sand', 'custom_colors': None,
+            })
+            self.assertEqual(reset.status_code, 200)
+            self.assertIsNone(reset.get_json()['settings']['custom_colors'])
+            self.assertEqual(reset.get_json()['tokens'],
+                             sdmp3_themes.theme_tokens('slate-sand'))
+
+            # Choosing a preset explicitly removes the custom overlay.
+            preset = client.post('/api/settings', json={'theme': 'coffee-blues'})
+            self.assertEqual(preset.status_code, 200)
+            self.assertIsNone(preset.get_json()['settings']['custom_colors'])
+            self.assertEqual(preset.get_json()['tokens'],
+                             sdmp3_themes.theme_tokens('coffee-blues'))
+
+    def test_custom_theme_rejects_bad_hex_and_low_contrast_without_saving(self):
+        original = dict(project.APP_SETTINGS)
+        colors = sdmp3_themes.custom_color_values('coffee-blues')
+        client = project.app.test_client()
+        with tempfile.TemporaryDirectory() as state_dir, \
+                mock.patch.object(sdmp3_state, 'STATE_DIR', state_dir), \
+                mock.patch.object(project, 'APP_SETTINGS', original.copy()):
+            invalid_hex = dict(colors)
+            invalid_hex['accent'] = '#12GG00'
+            response = client.post('/api/settings', json={
+                'theme': 'coffee-blues', 'custom_colors': invalid_hex,
+            })
+            self.assertEqual(response.status_code, 400)
+            self.assertIn('#RRGGBB', response.get_json()['error'])
+
+            low_contrast = dict(colors)
+            low_contrast['text'] = low_contrast['bg']
+            response = client.post('/api/settings/theme-preview', json={
+                'theme': 'coffee-blues', 'custom_colors': low_contrast,
+            })
+            self.assertEqual(response.status_code, 400)
+            self.assertIn('التباين غير كافٍ', response.get_json()['error'])
+            self.assertIsNone(project.APP_SETTINGS.get('custom_colors'))
+            self.assertEqual(sdmp3_state.load_settings(
+                sdmp3_themes.theme_ids(), sdmp3_themes.DEFAULT_THEME,
+                project.font_ids(), project.DEFAULT_FONT,
+                project.font_size_ids(), project.DEFAULT_FONT_SIZE)['custom_colors'], None)
+
+    def test_custom_sd_color_keeps_storage_categories_distinguishable(self):
+        colors = sdmp3_themes.custom_color_values('coffee-blues')
+        colors['kind_sdcard'] = '#D0B49F'
+        with self.assertRaisesRegex(ValueError, 'أوضح لبطاقة SD'):
+            sdmp3_themes.build_custom_theme('coffee-blues', colors)
+
     def test_settings_page_renders_selected_theme_preview_and_palette_data(self):
         with mock.patch.object(project, 'APP_SETTINGS', dict(project.APP_SETTINGS)):
             page = project.app.test_client().get('/')
@@ -85,7 +189,9 @@ class ThemePaletteTests(unittest.TestCase):
         page = project.app.test_client().get('/').get_data(as_text=True)
         for control_id in ('themeSelect', 'fontSelect', 'sizeSeg', 'jocStart',
                            'jocLimit', 'jocMode', 'jocTemplate', 'jocMp3Index',
-                           'ttsVoice', 'ttsRate'):
+                           'ttsVoice', 'ttsRate', 'customTheme-bg',
+                           'customTheme-card_2', 'customTheme-accent',
+                           'customTheme-kind_sdcard', 'customTheme-text'):
             with self.subTest(control=control_id):
                 self.assertIn('id="{}"'.format(control_id), page)
         self.assertIn('href="#ico-palette"', page)
