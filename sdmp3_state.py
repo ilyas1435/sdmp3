@@ -23,14 +23,19 @@ STATE_DIR = os.path.join(os.path.expanduser('~'), '.local', 'state', 'sdmp3')
 SETTINGS_FILE = 'settings.json'
 SEARCH_HISTORY_FILE = 'search_history.json'
 INDEX_SETTINGS_FILE = 'index_settings.json'
+SAVED_OPERATIONS_FILE = 'saved_operations.json'
 
 SETTINGS_VERSION = 2
 HISTORY_VERSION = 1
 INDEX_SETTINGS_VERSION = 2
+SAVED_OPERATIONS_VERSION = 1
 
 # "the last 25" is the product decision; keep it in one place.
 HISTORY_ITEM_LIMIT = 25
 HISTORY_QUERY_LIMIT = 25
+SAVED_OPERATIONS_LIMIT = 50
+SAVED_OPERATION_PATH_LIMIT = 3000
+SAVED_OPERATION_GROUP_LIMIT = 500
 
 # Default JOC / index settings. Kept in one place so the server and the page
 # agree on the shape. Nothing here raises: unknown or missing keys fall back to
@@ -228,6 +233,117 @@ def save_index_settings(settings):
         if key in settings:
             payload[key] = settings[key]
     return save_json(state_file(INDEX_SETTINGS_FILE), payload)
+
+
+def _saved_operation_record(raw):
+    """Return a safe persisted operation shape, or None for a broken record."""
+    if not isinstance(raw, dict):
+        return None
+    operation_id = raw.get('id')
+    name = raw.get('name')
+    paths = raw.get('paths')
+    excludes = raw.get('excludes')
+    groups = raw.get('groups')
+    if (not isinstance(operation_id, str) or not operation_id
+            or len(operation_id) > 64
+            or not all(ch.isalnum() or ch in '-_' for ch in operation_id)):
+        return None
+    if not isinstance(name, str) or not name.strip() or len(name.strip()) > 80:
+        return None
+    if not isinstance(paths, list) or len(paths) > SAVED_OPERATION_PATH_LIMIT:
+        return None
+    if not isinstance(excludes, list) or len(excludes) > SAVED_OPERATION_PATH_LIMIT:
+        return None
+    if not isinstance(groups, list) or len(groups) > SAVED_OPERATION_GROUP_LIMIT:
+        return None
+
+    clean_paths = []
+    seen_paths = set()
+    for item in paths:
+        if not isinstance(item, dict):
+            return None
+        path = item.get('path')
+        is_dir = item.get('is_dir')
+        if (not isinstance(path, str) or not path.startswith('/')
+                or len(path) > 4096 or '\x00' in path
+                or not isinstance(is_dir, bool) or path in seen_paths):
+            return None
+        seen_paths.add(path)
+        clean_paths.append({'path': path, 'is_dir': is_dir})
+
+    clean_excludes = []
+    seen_excludes = set()
+    for path in excludes:
+        if (not isinstance(path, str) or not path.startswith('/')
+                or len(path) > 4096 or '\x00' in path or path in seen_excludes):
+            return None
+        seen_excludes.add(path)
+        clean_excludes.append(path)
+
+    clean_groups = []
+    for group in groups:
+        if not isinstance(group, dict):
+            return None
+        group_name = group.get('name')
+        group_paths = group.get('paths')
+        if (not isinstance(group_name, str) or not group_name
+                or len(group_name) > 180 or not isinstance(group_paths, list)
+                or len(group_paths) > SAVED_OPERATION_PATH_LIMIT):
+            return None
+        if any(not isinstance(path, str) or path not in seen_paths for path in group_paths):
+            return None
+        clean_groups.append({'name': group_name, 'paths': list(group_paths)})
+
+    created = raw.get('created', 0)
+    updated = raw.get('updated', created)
+    if (not isinstance(created, int) or isinstance(created, bool)
+            or not isinstance(updated, int) or isinstance(updated, bool)):
+        return None
+    return {
+        'id': operation_id,
+        'name': name.strip(),
+        'paths': clean_paths,
+        'excludes': clean_excludes,
+        'groups': clean_groups,
+        'created': created,
+        'updated': updated,
+    }
+
+
+def load_saved_operations():
+    """Load saved copy operations, dropping only malformed individual records."""
+    raw = load_json(state_file(SAVED_OPERATIONS_FILE), {})
+    operations = raw.get('operations')
+    if not isinstance(operations, list):
+        return []
+    result = []
+    seen_ids = set()
+    for item in operations[:SAVED_OPERATIONS_LIMIT]:
+        clean = _saved_operation_record(item)
+        if clean is None or clean['id'] in seen_ids:
+            continue
+        seen_ids.add(clean['id'])
+        result.append(clean)
+    return result
+
+
+def save_saved_operations(operations):
+    """Atomically persist validated saved operations; return False on bad data."""
+    if not isinstance(operations, list) or len(operations) > SAVED_OPERATIONS_LIMIT:
+        return False
+    clean = []
+    seen_ids = set()
+    for item in operations:
+        record = _saved_operation_record(item)
+        if record is None or record['id'] in seen_ids:
+            return False
+        seen_ids.add(record['id'])
+        clean.append(record)
+    return save_json(state_file(SAVED_OPERATIONS_FILE), {
+        'version': SAVED_OPERATIONS_VERSION,
+        'operations': clean,
+        'updated': int(time.time()),
+    })
 
 
 def upsert_recent(entries, entry, key, limit):

@@ -16,6 +16,7 @@ import errno
 import hashlib
 import heapq
 import stat
+import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import deque
 from werkzeug.exceptions import HTTPException
@@ -30,6 +31,9 @@ from sdmp3_themes import (THEMES, DEFAULT_THEME, theme_ids, get_theme,
 from sdmp3_state import (state_file, load_settings, save_settings,
                          load_search_history, save_search_history,
                          load_index_settings, save_index_settings,
+                         load_saved_operations, save_saved_operations,
+                         SAVED_OPERATIONS_LIMIT, SAVED_OPERATION_PATH_LIMIT,
+                         SAVED_OPERATION_GROUP_LIMIT,
                          DEFAULT_INDEX_SETTINGS, SETTINGS_VERSION,
                          upsert_recent, prune_history_to_roots,
                          HISTORY_ITEM_LIMIT, HISTORY_QUERY_LIMIT)
@@ -2642,6 +2646,7 @@ HTML_TEMPLATE = """
         }
 
         .modal { display: none; position: fixed; inset: 0; width: 100%; height: 100%; background: var(--scrim); z-index: 1000; justify-content: center; align-items: safe center; padding: 16px; overflow: auto; -webkit-overflow-scrolling: touch; }
+        #confirmModal { z-index: 1100; }
         /* The modal opened last must sit on top of any other open modal (e.g.
            rename/input opening over the selected-items window). */
         .modal-front { z-index: 1001; }
@@ -2831,7 +2836,28 @@ HTML_TEMPLATE = """
            finger. */
         .modal-content.modal-selected { height: min(84vh, 760px); max-height: 84vh; position: relative; overflow: hidden; }
         .selected-head { display:flex; flex-direction:column; gap:9px; flex-shrink:0; padding-bottom:10px; border-bottom:1px solid var(--border); }
+        .selected-title-row { display:flex; align-items:center; justify-content:space-between; gap:8px; flex-wrap:wrap; }
+        .selected-operation-actions { display:flex; align-items:center; gap:4px; flex-wrap:wrap; }
+        .selected-operation-actions .btn { min-height:34px; padding:6px 9px; }
+        .saved-operation-active { color:var(--accent-text); font-size:calc(11px * var(--font-scale)); overflow-wrap:anywhere; }
         .selected-list { flex:1 1 auto; min-height:0; overflow-y:auto; padding:10px 2px 4px; display:flex; flex-direction:column; gap:8px; }
+        .modal-content.modal-saved-operations { height:auto; max-height:min(84vh, 700px); max-height:min(84dvh, 700px); min-height:0; }
+        .saved-operations-list { display:flex; flex-direction:column; gap:7px; min-height:0; max-height:55vh; max-height:55dvh;
+            overflow-y:auto; overscroll-behavior:contain; padding:2px 1px; }
+        .saved-operation-row { display:flex; align-items:center; gap:8px; flex-wrap:wrap; padding:9px 10px;
+            border:1px solid var(--border); border-radius:10px; background:var(--field); }
+        .saved-operation-row-main { min-width:0; flex:1 1 130px; display:flex; flex-direction:column; gap:3px; }
+        .saved-operation-row-name { color:var(--text); font-size:calc(13px * var(--font-scale)); font-weight:600; overflow-wrap:anywhere; }
+        .saved-operation-row-detail { color:var(--text-muted); font-size:calc(10.5px * var(--font-scale)); line-height:1.4; }
+        .saved-operation-row-actions { display:flex; gap:4px; flex-wrap:wrap; }
+        .saved-operation-row-actions .btn { min-height:34px; padding:6px 8px; }
+        .modal-content.modal-save-operation-name { max-width:420px; }
+        @media (max-width: 380px) {
+            .selected-operation-actions { gap:3px; }
+            .selected-operation-actions .btn { padding:6px 7px; }
+            .saved-operation-row-actions { width:100%; }
+            .saved-operation-row-actions .btn { flex:1 1 auto; }
+        }
 
         .group-section { display:flex; flex-direction:column; gap:8px; padding:10px 11px; border-radius:12px;
             background:var(--field); border:1px solid var(--border); max-height:34vh; overflow-y:auto; }
@@ -3272,12 +3298,22 @@ HTML_TEMPLATE = """
 <div class="modal" id="selectedModal" onclick="closeSelectedModal(event)">
     <div class="modal-content modal-selected" onclick="event.stopPropagation()">
         <div class="selected-head">
-            <div style="display:flex; justify-content:space-between; align-items:center;">
+            <div class="selected-title-row">
                 <h3 style="margin:0; font-size: calc(16px * var(--font-scale));">الملفات المحددة</h3>
-                <button class="btn btn-outline" style="padding: 6px 10px; border:none; box-shadow: none;" aria-label="إغلاق" onclick="document.getElementById('selectedModal').style.display='none'">
+                <div class="selected-operation-actions">
+                    <button type="button" id="saveOperationBtn" class="btn btn-outline btn-sm"
+                            title="حفظ التحديد والتنظيم" onclick="openSaveOperationDialog('create')">حفظ</button>
+                    <button type="button" class="btn btn-outline btn-sm" title="العمليات المحفوظة"
+                            onclick="openSavedOperationsModal()">المحفوظة</button>
+                    <button type="button" id="updateSavedOperationBtn" class="btn btn-outline btn-sm"
+                            style="display:none;" title="تحديث العملية المحفوظة من التحديد الحالي"
+                            onclick="updateActiveSavedOperation()">تحديث</button>
+                    <button class="btn btn-outline" style="padding: 6px 10px; border:none; box-shadow: none;" aria-label="إغلاق" onclick="document.getElementById('selectedModal').style.display='none'">
                     <svg class="icon" viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
-                </button>
+                    </button>
+                </div>
             </div>
+            <div id="savedOperationActiveLabel" class="saved-operation-active" style="display:none;"></div>
             <div id="totalSizeSelected" style="font-size:calc(13px * var(--font-scale)); font-weight:500; background:var(--field); padding:12px; border-radius:10px; border: 1px solid var(--border);">جاري حساب المساحة...</div>
 
             <div class="group-section">
@@ -3299,6 +3335,33 @@ HTML_TEMPLATE = """
         </div>
 
         <div id="selectedList" class="selected-list"></div>
+    </div>
+</div>
+
+<div class="modal" id="savedOperationsModal" onclick="closeSavedOperationsModal(event)">
+    <div class="modal-content modal-saved-operations" onclick="event.stopPropagation()">
+        <h3 style="margin-top:0; font-size:calc(16px * var(--font-scale));">العمليات المحفوظة</h3>
+        <div class="settings-note">تُحفظ العناصر والاستثناءات ومجلدات النسخ فقط. اختر الوجهة عند بدء كل نسخة.</div>
+        <div id="savedOperationsStatus" class="settings-save-state" role="status"></div>
+        <div id="savedOperationsList" class="saved-operations-list"></div>
+        <div class="modal-footer">
+            <button type="button" class="btn btn-outline" style="flex:1;" onclick="closeSavedOperationsModal()">إغلاق</button>
+        </div>
+    </div>
+</div>
+
+<div class="modal" id="saveOperationNameModal" onclick="closeSaveOperationDialog(event)">
+    <div class="modal-content modal-save-operation-name" onclick="event.stopPropagation()">
+        <h3 id="saveOperationNameTitle" style="margin-top:0; font-size:calc(16px * var(--font-scale));">حفظ عملية</h3>
+        <label for="saveOperationNameInput">اسم يميز العملية</label>
+        <input type="text" id="saveOperationNameInput" maxlength="80" autocomplete="off"
+               placeholder="مثال: ألبوم العائلة" onkeydown="if(event.key==='Enter') submitSaveOperationName()">
+        <div id="saveOperationNameError" class="settings-save-state err" role="alert"></div>
+        <div class="modal-footer">
+            <button type="button" class="btn btn-outline" style="flex:1;" onclick="closeSaveOperationDialog()">إلغاء</button>
+            <button type="button" class="btn btn-primary" style="flex:1;" id="saveOperationNameSubmit"
+                    onclick="submitSaveOperationName()">حفظ</button>
+        </div>
     </div>
 </div>
 
@@ -3704,6 +3767,10 @@ HTML_TEMPLATE = """
     let selectedPaths = new Map();
     let excludedPaths = new Set();
     let bulkSelectedPaths = new Set();
+    let activeSavedOperationId = '';
+    let activeSavedOperationName = '';
+    let saveOperationDialogMode = 'create';
+    let saveOperationDialogId = '';
     // Copy groups: [{id, name, paths: []}]. A selected path belongs to at most
     // one group, and each group becomes one folder inside the destination when
     // the copy starts - the source tree is never modified.
@@ -3801,6 +3868,7 @@ HTML_TEMPLATE = """
             scheduleSelectionSize();
         }
         renderGroupUI();
+        updateSavedOperationControls();
     }
 
     // ---- selection size behind the action bar -------------------------
@@ -6274,6 +6342,327 @@ HTML_TEMPLATE = """
         updateSelectedTotal(Array.from(selectedPaths.keys()));
     }
 
+    function updateSavedOperationControls() {
+        let saveButton = document.getElementById('saveOperationBtn');
+        let updateButton = document.getElementById('updateSavedOperationBtn');
+        let activeLabel = document.getElementById('savedOperationActiveLabel');
+        if (saveButton) saveButton.disabled = selectedPaths.size === 0;
+        if (updateButton) {
+            updateButton.style.display = activeSavedOperationId && selectedPaths.size ? '' : 'none';
+            updateButton.disabled = selectedPaths.size === 0;
+        }
+        if (activeLabel) {
+            activeLabel.textContent = activeSavedOperationId
+                ? 'العملية الحالية: ' + activeSavedOperationName
+                : '';
+            activeLabel.style.display = activeSavedOperationId ? 'block' : 'none';
+        }
+    }
+
+    function currentSavedOperationPayload(name) {
+        return {
+            name: name || '',
+            paths: Array.from(selectedPaths.entries()).map(function(entry) {
+                return {path: entry[0], is_dir: !!entry[1]};
+            }),
+            excludes: Array.from(excludedPaths),
+            groups: copyGroups.map(function(group) {
+                return {name: group.name, paths: group.paths.slice()};
+            })
+        };
+    }
+
+    function savedOperationConfigKey(payload) {
+        return JSON.stringify({
+            paths: (payload.paths || []).map(function(item) {
+                return {path: item.path, is_dir: !!item.is_dir};
+            }).sort(function(a, b) { return a.path.localeCompare(b.path); }),
+            excludes: (payload.excludes || []).slice().sort(),
+            groups: (payload.groups || []).map(function(group) {
+                return {name: group.name, paths: (group.paths || []).slice().sort()};
+            }).sort(function(a, b) { return a.name.localeCompare(b.name); })
+        });
+    }
+
+    async function savedOperationsRequest(url, options) {
+        let response = await fetch(url, options || {});
+        let data = await response.json().catch(function() { return {}; });
+        if (!response.ok) throw new Error(data.error || 'تعذر تنفيذ الطلب');
+        return data;
+    }
+
+    function setSavedOperationsStatus(text, kind) {
+        let el = document.getElementById('savedOperationsStatus');
+        if (!el) return;
+        el.textContent = text || '';
+        el.className = 'settings-save-state' + (kind ? ' ' + kind : '');
+    }
+
+    function openSavedOperationsModal() {
+        document.getElementById('savedOperationsModal').style.display = 'flex';
+        setSavedOperationsStatus('جارٍ تحميل العمليات المحفوظة...', '');
+        loadSavedOperationsList();
+    }
+
+    function closeSavedOperationsModal(event) {
+        if (event && event.target.id !== 'savedOperationsModal') return;
+        document.getElementById('savedOperationsModal').style.display = 'none';
+    }
+
+    async function loadSavedOperationsList() {
+        try {
+            let data = await savedOperationsRequest('/api/saved_operations');
+            let operations = Array.isArray(data.operations) ? data.operations : [];
+            let list = document.getElementById('savedOperationsList');
+            list.innerHTML = '';
+            if (!operations.length) {
+                let empty = document.createElement('div');
+                empty.className = 'settings-note';
+                empty.textContent = 'لا توجد عمليات محفوظة بعد. افتح نافذة الملفات المحددة واضغط «حفظ».';
+                list.appendChild(empty);
+                setSavedOperationsStatus('', '');
+                return;
+            }
+            setSavedOperationsStatus('عدد العمليات: ' + operations.length, '');
+            operations.forEach(function(operation) {
+                let row = document.createElement('div');
+                row.className = 'saved-operation-row';
+                let main = document.createElement('div');
+                main.className = 'saved-operation-row-main';
+                let name = document.createElement('div');
+                name.className = 'saved-operation-row-name';
+                name.textContent = operation.name;
+                let details = document.createElement('div');
+                details.className = 'saved-operation-row-detail';
+                details.textContent = (operation.item_count || 0) + ' عنصر · ' +
+                    (operation.group_count || 0) + ' مجلد تنظيم · ' +
+                    (operation.excluded_count || 0) + ' مستثنى';
+                main.appendChild(name);
+                main.appendChild(details);
+                let actions = document.createElement('div');
+                actions.className = 'saved-operation-row-actions';
+                [
+                    ['load', 'تحميل'],
+                    ['rename', 'إعادة تسمية'],
+                    ['delete', 'حذف']
+                ].forEach(function(action) {
+                    let button = document.createElement('button');
+                    button.type = 'button';
+                    button.className = action[0] === 'load'
+                        ? 'btn btn-primary btn-sm' : 'btn btn-outline btn-sm';
+                    button.textContent = action[1];
+                    button.onclick = function() {
+                        if (action[0] === 'load') loadSavedOperation(operation.id);
+                        else if (action[0] === 'rename') {
+                            openSaveOperationDialog('rename', operation.id, operation.name);
+                        } else deleteSavedOperation(operation.id, operation.name);
+                    };
+                    actions.appendChild(button);
+                });
+                row.appendChild(main);
+                row.appendChild(actions);
+                list.appendChild(row);
+            });
+        } catch (error) {
+            setSavedOperationsStatus(error.message || 'تعذر تحميل العمليات المحفوظة', 'err');
+        }
+    }
+
+    function openSaveOperationDialog(mode, operationId, name) {
+        saveOperationDialogMode = mode || 'create';
+        saveOperationDialogId = operationId || '';
+        let title = document.getElementById('saveOperationNameTitle');
+        let input = document.getElementById('saveOperationNameInput');
+        let submit = document.getElementById('saveOperationNameSubmit');
+        document.getElementById('saveOperationNameError').textContent = '';
+        title.textContent = saveOperationDialogMode === 'rename'
+            ? 'إعادة تسمية العملية' : 'حفظ عملية جديدة';
+        submit.textContent = saveOperationDialogMode === 'rename' ? 'حفظ الاسم' : 'حفظ';
+        input.value = name || '';
+        document.getElementById('saveOperationNameModal').style.display = 'flex';
+        setTimeout(function() { input.focus(); input.select(); }, 0);
+    }
+
+    function closeSaveOperationDialog(event) {
+        if (event && event.target.id !== 'saveOperationNameModal') return;
+        document.getElementById('saveOperationNameModal').style.display = 'none';
+    }
+
+    async function submitSaveOperationName() {
+        let input = document.getElementById('saveOperationNameInput');
+        let errorEl = document.getElementById('saveOperationNameError');
+        let submit = document.getElementById('saveOperationNameSubmit');
+        let name = input.value.trim();
+        errorEl.textContent = '';
+        if (!name) { errorEl.textContent = 'اكتب اسماً للعملية.'; input.focus(); return; }
+        submit.disabled = true;
+        try {
+            let url = '/api/saved_operations';
+            let method = 'POST';
+            let payload;
+            if (saveOperationDialogMode === 'rename') {
+                url += '/' + encodeURIComponent(saveOperationDialogId);
+                method = 'PUT';
+                payload = {name: name};
+            } else {
+                payload = currentSavedOperationPayload(name);
+            }
+            let data = await savedOperationsRequest(url, {
+                method: method,
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(payload)
+            });
+            document.getElementById('saveOperationNameModal').style.display = 'none';
+            if (saveOperationDialogMode === 'rename') {
+                if (activeSavedOperationId === saveOperationDialogId) {
+                    activeSavedOperationName = data.operation.name;
+                }
+            } else {
+                activeSavedOperationId = data.operation.id;
+                activeSavedOperationName = data.operation.name;
+                setGroupStatus('تم حفظ العملية. اختر الوجهة يدوياً عند النسخ.');
+            }
+            updateSavedOperationControls();
+            if (document.getElementById('savedOperationsModal').style.display === 'flex') {
+                await loadSavedOperationsList();
+            }
+        } catch (error) {
+            errorEl.textContent = error.message || 'تعذر حفظ العملية';
+        } finally {
+            submit.disabled = false;
+        }
+    }
+
+    async function updateActiveSavedOperation() {
+        if (!activeSavedOperationId || !selectedPaths.size) return;
+        let button = document.getElementById('updateSavedOperationBtn');
+        button.disabled = true;
+        try {
+            let payload = currentSavedOperationPayload(activeSavedOperationName);
+            let data = await savedOperationsRequest(
+                '/api/saved_operations/' + encodeURIComponent(activeSavedOperationId),
+                {method: 'PUT', headers: {'Content-Type': 'application/json'},
+                 body: JSON.stringify(payload)}
+            );
+            activeSavedOperationName = data.operation.name;
+            setGroupStatus('تم تحديث العملية «' + activeSavedOperationName + '».');
+            updateSavedOperationControls();
+        } catch (error) {
+            setGroupStatus(error.message || 'تعذر تحديث العملية المحفوظة');
+        } finally {
+            button.disabled = false;
+        }
+    }
+
+    function deleteSavedOperation(operationId, name) {
+        showConfirmModal('حذف العملية المحفوظة «' + name + '»؟ لن تُحذف أي ملفات من المصدر أو الوجهة.', async function() {
+            try {
+                await savedOperationsRequest('/api/saved_operations/' + encodeURIComponent(operationId),
+                    {method: 'DELETE'});
+                if (activeSavedOperationId === operationId) {
+                    activeSavedOperationId = '';
+                    activeSavedOperationName = '';
+                    updateSavedOperationControls();
+                }
+                await loadSavedOperationsList();
+            } catch (error) {
+                setSavedOperationsStatus(error.message || 'تعذر حذف العملية', 'err');
+            }
+        });
+    }
+
+    async function loadSavedOperation(operationId) {
+        setSavedOperationsStatus('جارٍ فحص العناصر المحفوظة...', '');
+        try {
+            let data = await savedOperationsRequest(
+                '/api/saved_operations/' + encodeURIComponent(operationId)
+            );
+            let operation = data.operation;
+            let pathList = operation.paths.map(function(item) { return item.path; });
+            let sizeData = await savedOperationsRequest('/api/sizes', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    paths: pathList, excludes: operation.excludes || [], include_types: true
+                })
+            });
+            let unavailable = new Set(Array.isArray(sizeData.missing) ? sizeData.missing : []);
+            let types = sizeData.types || {};
+            operation.paths.forEach(function(item) {
+                let type = types[item.path];
+                if (type && type !== (item.is_dir ? 'directory' : 'file')) {
+                    unavailable.add(item.path);
+                }
+            });
+            let unavailablePaths = Array.from(unavailable);
+            setSavedOperationsStatus('', '');
+            let different = selectedPaths.size > 0 &&
+                savedOperationConfigKey(currentSavedOperationPayload()) !==
+                savedOperationConfigKey(operation);
+            let proceed = function() {
+                applySavedOperation(operation, sizeData, unavailablePaths);
+            };
+            if (unavailablePaths.length || different) {
+                let message = 'سيتم استبدال التحديد الحالي دون بدء النسخ.';
+                if (unavailablePaths.length) {
+                    message += ' تعذر العثور على ' + unavailablePaths.length +
+                        ' من العناصر أو تغيّر نوعها؛ سيتم تحميل العناصر المتاحة فقط.';
+                }
+                showConfirmModal(message, proceed);
+            } else {
+                proceed();
+            }
+        } catch (error) {
+            setSavedOperationsStatus(error.message || 'تعذر تحميل العملية المحفوظة', 'err');
+        }
+    }
+
+    function applySavedOperation(operation, sizeData, missing) {
+        let missingSet = new Set(missing || []);
+        let validPaths = operation.paths.filter(function(item) {
+            return !missingSet.has(item.path);
+        });
+        if (!validPaths.length) {
+            setSavedOperationsStatus('لم يتم تحميل العملية؛ عناصرها غير متاحة أو تغيّر نوعها.', 'err');
+            return;
+        }
+        selectedPaths = new Map(validPaths.map(function(item) {
+            return [item.path, !!item.is_dir];
+        }));
+        let validSet = new Set(validPaths.map(function(item) { return item.path; }));
+        excludedPaths = new Set((operation.excludes || []).filter(function(path) {
+            return validPaths.some(function(item) {
+                let root = item.path;
+                while (root.length > 1 && root.endsWith('/')) root = root.slice(0, -1);
+                return path.startsWith(root === '/' ? '/' : root + '/');
+            });
+        }));
+        copyGroups = (operation.groups || []).map(function(group) {
+            return {id: nextGroupId++, name: group.name,
+                paths: (group.paths || []).filter(function(path) { return validSet.has(path); })};
+        });
+        bulkSelectedPaths.clear();
+        selectedSizes = {};
+        let sizes = (sizeData && sizeData.sizes) || {};
+        validPaths.forEach(function(item) {
+            selectedSizes[item.path] = sizes[item.path] ||
+                {bytes: 0, formatted: '0 B', owner: item.path};
+        });
+        activeSavedOperationId = operation.id;
+        activeSavedOperationName = operation.name;
+        selectionSizeSig = selectionSignature();
+        refreshCheckboxStates();
+        renderSelectedRows();
+        updateSelectedTotal(Array.from(selectedPaths.keys()));
+        document.getElementById('selectedModal').style.display = 'flex';
+        closeSavedOperationsModal();
+        setGroupStatus(missing && missing.length
+            ? 'تم تجاهل ' + missing.length + ' عنصر غير موجود أو تغيّر نوعه من العملية المحفوظة.'
+            : 'تم تحميل العملية؛ راجع التحديد ثم اختر الوجهة وابدأ النسخ يدوياً.');
+        updateSavedOperationControls();
+        scheduleUiSave();
+    }
+
     function closeSelectedModal(e) {
         if (e.target.id !== 'selectedModal') return;
         e.target.style.display = 'none';
@@ -7734,6 +8123,7 @@ APP_INDEX_SETTINGS = dict(DEFAULT_INDEX_SETTINGS)
 SEARCH_HISTORY = {'version': 1, 'items': [], 'queries': []}
 _settings_lock = threading.RLock()
 _history_lock = threading.RLock()
+_saved_operations_lock = threading.RLock()
 
 
 def _save_folder_cache():
@@ -8131,6 +8521,186 @@ def api_settings():
     })
 
 
+def _saved_operation_payload(body):
+    """Validate the saved source selection and its copy-group assignment."""
+    if not isinstance(body, dict):
+        return None, 'بيانات العملية غير صالحة'
+    name = body.get('name')
+    if not isinstance(name, str) or not name.strip():
+        return None, 'اكتب اسماً للعملية'
+    name = name.strip()
+    if len(name) > 80:
+        return None, 'اسم العملية طويل جداً (الحد 80 حرفاً)'
+
+    raw_paths = body.get('paths')
+    if not isinstance(raw_paths, list) or not raw_paths:
+        return None, 'لا توجد ملفات أو مجلدات لحفظها'
+    if len(raw_paths) > SAVED_OPERATION_PATH_LIMIT:
+        return None, 'عدد العناصر يتجاوز الحد المسموح لحفظ عملية واحدة'
+    paths = []
+    seen_paths = set()
+    for item in raw_paths:
+        if not isinstance(item, dict):
+            return None, 'صيغة العناصر المحددة غير صالحة'
+        path = item.get('path')
+        is_dir = item.get('is_dir')
+        if (not isinstance(path, str) or not path.startswith('/')
+                or '\x00' in path or len(path) > 4096
+                or not isinstance(is_dir, bool)):
+            return None, 'مسار عنصر محدد غير صالح'
+        path = os.path.normpath(path)
+        if path in seen_paths:
+            return None, 'العنصر محدد أكثر من مرة'
+        for existing in seen_paths:
+            if (path.startswith(existing.rstrip('/') + '/')
+                    or existing.startswith(path.rstrip('/') + '/')):
+                return None, 'لا يمكن حفظ مجلد وعنصر بداخله كتحديدين منفصلين'
+        seen_paths.add(path)
+        paths.append({'path': path, 'is_dir': is_dir})
+
+    raw_excludes = body.get('excludes', [])
+    if not isinstance(raw_excludes, list) or len(raw_excludes) > SAVED_OPERATION_PATH_LIMIT:
+        return None, 'صيغة العناصر المستثناة غير صالحة'
+    excludes = []
+    seen_excludes = set()
+    for excluded in raw_excludes:
+        if (not isinstance(excluded, str) or not excluded.startswith('/')
+                or '\x00' in excluded or len(excluded) > 4096):
+            return None, 'مسار عنصر مستثنى غير صالح'
+        excluded = os.path.normpath(excluded)
+        if excluded in seen_excludes:
+            continue
+        if not any(excluded.startswith(path['path'].rstrip('/') + '/')
+                   for path in paths):
+            return None, 'العنصر المستثنى ليس داخل التحديد'
+        seen_excludes.add(excluded)
+        excludes.append(excluded)
+
+    raw_groups = body.get('groups', [])
+    if not isinstance(raw_groups, list) or len(raw_groups) > SAVED_OPERATION_GROUP_LIMIT:
+        return None, 'عدد مجلدات النسخ غير صالح'
+    selected = {item['path'] for item in paths}
+    groups = []
+    group_names = set()
+    assigned = set()
+    for raw_group in raw_groups:
+        if not isinstance(raw_group, dict):
+            return None, 'صيغة مجلد النسخ غير صالحة'
+        name_value, error = validate_group_path(raw_group.get('name') or '')
+        if error or not name_value:
+            return None, error or 'اسم مجلد النسخ مطلوب'
+        group_key = name_value.casefold()
+        if group_key in group_names:
+            return None, 'اسم مجلد النسخ مستخدم أكثر من مرة'
+        group_names.add(group_key)
+        group_paths = raw_group.get('paths', [])
+        if not isinstance(group_paths, list):
+            return None, 'قائمة العناصر داخل المجلد غير صالحة'
+        clean_group_paths = []
+        for path in group_paths:
+            if not isinstance(path, str) or not path.startswith('/') or '\x00' in path:
+                return None, 'مسار داخل مجلد النسخ غير صالح'
+            path = os.path.normpath(path)
+            if path not in selected:
+                return None, 'العنصر داخل مجلد النسخ غير موجود في التحديد'
+            if path in assigned:
+                return None, 'لا يمكن وضع العنصر في أكثر من مجلد نسخ'
+            assigned.add(path)
+            clean_group_paths.append(path)
+        groups.append({'name': name_value, 'paths': clean_group_paths})
+
+    return {
+        'name': name,
+        'paths': paths,
+        'excludes': excludes,
+        'groups': groups,
+    }, None
+
+
+def _saved_operation_summary(operation):
+    return {
+        'id': operation['id'],
+        'name': operation['name'],
+        'item_count': len(operation['paths']),
+        'excluded_count': len(operation['excludes']),
+        'group_count': len(operation['groups']),
+        'updated': operation['updated'],
+    }
+
+
+@app.route('/api/saved_operations', methods=['GET', 'POST'])
+def api_saved_operations():
+    """List or save reusable source selections and their copy organization."""
+    if request.method == 'GET':
+        with _saved_operations_lock:
+            operations = load_saved_operations()
+        return jsonify({'operations': [_saved_operation_summary(op) for op in operations]})
+
+    payload, error = _saved_operation_payload(request.get_json(silent=True))
+    if error:
+        return jsonify({'error': error}), 400
+    now = int(time.time())
+    with _saved_operations_lock:
+        operations = load_saved_operations()
+        if any(op['name'].casefold() == payload['name'].casefold() for op in operations):
+            return jsonify({'error': 'يوجد اسم محفوظ بهذا الوصف بالفعل'}), 409
+        if len(operations) >= SAVED_OPERATIONS_LIMIT:
+            return jsonify({'error': 'وصلت إلى الحد الأقصى للعمليات المحفوظة'}), 409
+        operation = dict(payload, id=uuid.uuid4().hex, created=now, updated=now)
+        operations.insert(0, operation)
+        if not save_saved_operations(operations):
+            return jsonify({'error': 'تعذر حفظ العملية على الجهاز'}), 500
+    return jsonify({'ok': True, 'operation': operation}), 201
+
+
+@app.route('/api/saved_operations/<operation_id>', methods=['GET', 'PUT', 'DELETE'])
+def api_saved_operation(operation_id):
+    """Read, rename/update, or delete one saved copy operation."""
+    with _saved_operations_lock:
+        operations = load_saved_operations()
+        index = next((i for i, op in enumerate(operations)
+                      if op['id'] == operation_id), None)
+        if index is None:
+            return jsonify({'error': 'العملية المحفوظة غير موجودة'}), 404
+        operation = operations[index]
+
+        if request.method == 'GET':
+            return jsonify({'operation': operation})
+
+        if request.method == 'DELETE':
+            operations.pop(index)
+            if not save_saved_operations(operations):
+                return jsonify({'error': 'تعذر حذف العملية من الجهاز'}), 500
+            return jsonify({'ok': True})
+
+        body = request.get_json(silent=True)
+        if not isinstance(body, dict):
+            return jsonify({'error': 'بيانات التعديل غير صالحة'}), 400
+        name = body.get('name', operation['name'])
+        if not isinstance(name, str) or not name.strip() or len(name.strip()) > 80:
+            return jsonify({'error': 'اكتب اسماً صالحاً للعملية (80 حرفاً كحد أقصى)'}), 400
+        name = name.strip()
+        if any(i != index and op['name'].casefold() == name.casefold()
+               for i, op in enumerate(operations)):
+            return jsonify({'error': 'يوجد اسم محفوظ بهذا الوصف بالفعل'}), 409
+
+        configuration_keys = ('paths', 'excludes', 'groups')
+        if any(key in body for key in configuration_keys):
+            if not all(key in body for key in configuration_keys):
+                return jsonify({'error': 'بيانات التحديد والتنظيم غير مكتملة'}), 400
+            payload, error = _saved_operation_payload(dict(body, name=name))
+            if error:
+                return jsonify({'error': error}), 400
+            operation.update(payload)
+        operation['name'] = name
+        operation['updated'] = int(time.time())
+        operations.pop(index)
+        operations.insert(0, operation)
+        if not save_saved_operations(operations):
+            return jsonify({'error': 'تعذر تحديث العملية على الجهاز'}), 500
+        return jsonify({'ok': True, 'operation': operation})
+
+
 def _coerce_index_settings(body):
     """Validate an index-settings payload into the canonical shape.
 
@@ -8309,6 +8879,7 @@ def get_items_sizes():
     body = request.json or {}
     paths = [p for p in body.get('paths', []) if p]
     excludes = set(p for p in body.get('excludes', []) if p)
+    include_types = body.get('include_types') is True
     # A child's bytes are already inside its parent: walk each tree once.
     roots = []
     for path in sorted(paths, key=len):
@@ -8316,21 +8887,42 @@ def get_items_sizes():
             roots.append(path)
     root_exists = {}
     root_bytes = {}
+    root_types = {}
     for root in roots:
-        # One existence test per root, the same os.path.exists the walk would do:
-        # `missing` is how the page drops a selection whose card was pulled out
-        # while the tab was closed, without a second stat per item.
-        root_exists[root] = os.path.exists(root)
+        # Saved operations request the root type as well, so a path that changed
+        # from a file to a folder is never restored with the wrong selection.
+        if include_types:
+            try:
+                root_stat = os.stat(root)
+                root_exists[root] = True
+                if stat.S_ISDIR(root_stat.st_mode):
+                    root_types[root] = 'directory'
+                elif stat.S_ISREG(root_stat.st_mode):
+                    root_types[root] = 'file'
+                else:
+                    root_types[root] = 'other'
+            except OSError:
+                root_exists[root] = False
+        else:
+            # One existence check per root; nested paths inherit the owner's
+            # result instead of issuing duplicate stats.
+            root_exists[root] = os.path.exists(root)
         root_bytes[root] = get_dir_size(root, excludes) if root_exists[root] else 0
     sizes = {}
     missing = []
+    types = {}
     for path in paths:
         owner = next(r for r in roots if path == r or path.startswith(r.rstrip('/') + '/'))
         total = root_bytes[owner]
         sizes[path] = {'bytes': total, 'formatted': format_size(total), 'owner': owner}
         if not root_exists[owner]:
             missing.append(path)
-    return jsonify({'sizes': sizes, 'missing': missing})
+        if include_types:
+            types[path] = root_types[owner]
+    result = {'sizes': sizes, 'missing': missing}
+    if include_types:
+        result['types'] = types
+    return jsonify(result)
 
 
 @app.route('/api/size', methods=['POST'])
