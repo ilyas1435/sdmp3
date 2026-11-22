@@ -2655,9 +2655,10 @@ HTML_TEMPLATE = """
         .modal-content.modal-picker #destTree { max-height: none; }
 
         /* ---- settings ------------------------------------------------- */
-        /* One fixed height for every tab: switching tabs must never move the
-           close button or resize the dialog under the finger. */
-        .modal-content.modal-settings { height: min(84vh, 760px); max-height: 84vh; }
+        /* Short settings tabs fit their content instead of leaving a large
+           blank panel; long tabs remain bounded and scroll inside the dialog. */
+        .modal-content.modal-settings { height:auto; max-height:min(84vh, 760px);
+            max-height:min(84dvh, 760px); min-height:0; }
         /* Transfer results can contain a long path list. Keep the whole dialog
            inside the viewport while allowing its contents to remain reachable. */
         #progressModal > .modal-content { max-height:min(92dvh, 820px); overflow-y:auto;
@@ -2677,15 +2678,16 @@ HTML_TEMPLATE = """
             cursor:pointer; font-family:inherit; transition: border-color .15s, color .15s, background .15s; }
         .settings-tab.active { color:var(--accent-text); border-color:var(--accent); background:var(--accent-soft); }
         .settings-tab:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
-        .settings-pane { display:flex; flex-direction:column; gap:12px; }
+        .settings-pane { display:flex; flex-direction:column; gap:10px; min-width:0; }
         /* Settings are grouped by a title and a hairline, not by a paragraph of
            explanation: the control says what it does. */
-        .settings-group { display:flex; flex-direction:column; gap:8px; }
-        .settings-group + .settings-group { border-top:1px solid var(--rule); padding-top:12px; }
+        .settings-group { display:flex; flex-direction:column; gap:6px; min-width:0; }
+        .settings-group + .settings-group { border-top:1px solid var(--rule); padding-top:10px; }
         .settings-group-title { font-size:calc(10.5px * var(--font-scale)); font-weight:700; color:var(--text-muted); }
-        .settings-check-row { display:flex; align-items:flex-start; gap:9px; cursor:pointer; color:var(--text);
+        .settings-check-row { display:flex; align-items:flex-start; gap:9px; margin:0; cursor:pointer; color:var(--text);
             font-size:calc(13px * var(--font-scale)); font-weight:500; }
         .settings-check-row .checkbox { width:17px; height:17px; margin:1px 0 0; flex-shrink:0; }
+        .settings-check-row > span { min-width:0; overflow-wrap:anywhere; }
         .settings-check-row small { display:block; margin-top:3px; }
         .size-seg { display:flex; gap:6px; }
         .size-seg .size-seg-btn { flex:1; min-height:38px; padding:6px 8px; border-radius:9px;
@@ -2696,20 +2698,25 @@ HTML_TEMPLATE = """
             background:var(--accent-soft); border:1px solid var(--accent-line); color:var(--accent-text);
             font-size:calc(11.5px * var(--font-scale)); font-weight:600; line-height:1.5; }
         .draft-banner .icon { width:15px; height:15px; flex-shrink:0; }
-        .index-group { display:flex; flex-direction:column; gap:8px; padding-top:12px; border-top:1px solid var(--rule); }
+        .index-group { display:flex; flex-direction:column; gap:6px; padding-top:10px; border-top:1px solid var(--rule); min-width:0; }
         .index-group:first-of-type { padding-top:0; border-top:0; }
         .index-group-title { display:flex; align-items:center; gap:6px; font-size:calc(11px * var(--font-scale));
             font-weight:700; color:var(--text-muted); }
         .index-group-title .icon { width:14px; height:14px; color:var(--accent); }
         /* One labelled dropdown per choice: a grid of 16 colour cards buried the
            save state and made the settings dialog scroll for a trivial change. */
-        .settings-field { display:flex; flex-direction:column; gap:6px; }
+        .settings-field { display:flex; flex-direction:column; gap:4px; min-width:0; }
         .settings-field > label { font-size:calc(12.5px * var(--font-scale)); font-weight:600; color:var(--text); }
         .settings-field select { width:100%; min-height:44px; padding:9px 12px; border-radius:10px;
             border:1px solid var(--border); background:var(--field); color:var(--text);
             font-family:inherit; font-size:calc(13px * var(--font-scale)); cursor:pointer; }
         .settings-field select:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
         .field-hint { font-size:calc(10.5px * var(--font-scale)); color:var(--text-muted); line-height:1.5; }
+        .theme-preview-row { display:flex; align-items:center; justify-content:space-between; gap:8px; min-width:0; }
+        .theme-preview { display:flex; align-items:center; gap:5px; min-width:0; direction:ltr; }
+        .theme-preview-chip { display:block; width:25px; height:19px; flex:0 0 auto;
+            border:1px solid var(--border); border-radius:6px; box-shadow:inset 0 0 0 1px rgba(0,0,0,.08); }
+        #themePreviewName { min-width:0; text-align:end; overflow-wrap:anywhere; }
         #fontPreview { font-size:calc(17px * var(--font-scale)); color:var(--text); }
         .settings-note { font-size:calc(10.5px * var(--font-scale)); color:var(--text-muted); line-height:1.6; }
         .settings-save-state { font-size:calc(11.5px * var(--font-scale)); min-height:16px; color:var(--text-muted); }
@@ -2728,10 +2735,14 @@ HTML_TEMPLATE = """
         .status-value.warn { color:var(--warning); }
         .status-value.bad { color:var(--danger-ink); }
 
-        /* The index pane is the old JOC form, so it keeps block flow: labels and
-           inputs already carry their own margins there. */
+        /* Keep the legacy index form compact by neutralizing its global control
+           margins here; labels stay visually attached to their fields. */
         .index-form { display:block; }
-        .index-form .grid-2 > div { min-width:0; }
+        .index-form, .index-form .grid-2, .index-form .grid-2 > div { min-width:0; }
+        .index-form label:not(.settings-check-row) { margin:0 0 3px; line-height:1.4; }
+        .index-form select, .index-form input[type="number"] { min-width:0; margin:0; }
+        .index-form > select { margin-bottom:2px; }
+        .index-form .grid-2 { row-gap:6px; }
         .joc-summary { background:var(--field); border:1px solid var(--border); border-radius:12px;
             padding:12px 14px; font-size:calc(12px * var(--font-scale)); color:var(--text-muted);
             line-height:1.9; }
@@ -2771,7 +2782,9 @@ HTML_TEMPLATE = """
             #progressModal .report-value { white-space:normal; min-width:0; text-align:end; }
             .modal-content.modal-picker { height: 92vh; max-height: 92vh; }
             .modal-content.modal-selected { height: 92vh; max-height: 92vh; }
-            .modal-content.modal-settings { height: 92vh; max-height: 92vh; }
+            .modal-content.modal-settings { height:auto; max-height:92vh; max-height:92dvh; }
+            .modal-content.modal-settings .modal-body { min-width:0; overflow-x:hidden; }
+            .settings-tabs { margin-bottom:10px; }
         }
 
         .progress-bar { width: 100%; height: 10px; background: var(--field); border-radius: 999px; overflow: hidden; margin: 15px 0; border: 1px solid var(--border);}
@@ -3340,9 +3353,19 @@ HTML_TEMPLATE = """
                         <label for="themeSelect">السمة</label>
                         <select id="themeSelect" onchange="pickTheme(this.value)">
                             {% for t in themes %}
-                            <option value="{{ t.id }}" data-theme-id="{{ t.id }}"{% if t.id == active_theme.id %} selected{% endif %}>{{ t.name }}</option>
+                            <option value="{{ t.id }}" data-theme-id="{{ t.id }}" data-swatches="{{ t.swatches|join(',') }}"{% if t.id == active_theme.id %} selected{% endif %}>{{ t.name }}</option>
                             {% endfor %}
                         </select>
+                        <div class="theme-preview-row">
+                            <div id="themeColorPreview" class="theme-preview" role="img"
+                                 aria-label="معاينة ألوان السمة {{ active_theme.name }}">
+                                {% for swatch in active_theme.swatches %}
+                                <span class="theme-preview-chip" title="{{ ['الخلفية', 'السطح', 'التأكيد', 'بطاقة الذاكرة', 'النص'][loop.index0] }}"
+                                      style="background-color:{{ swatch }};"></span>
+                                {% endfor %}
+                            </div>
+                            <span id="themePreviewName" class="field-hint">{{ active_theme.name }}</span>
+                        </div>
                     </div>
                 </div>
                 <div class="settings-group">
@@ -3420,7 +3443,7 @@ HTML_TEMPLATE = """
                     <svg class="icon" aria-hidden="true"><use href="#ico-alert"></use></svg>
                     <span>إعدادات هذه المرة فقط — لن تُحفظ.</span>
                 </div>
-                <div class="index-form" style="display:flex; flex-direction:column; gap:12px;">
+                <div class="index-form" style="display:flex; flex-direction:column; gap:10px;">
                     <div class="index-group">
                         <div class="index-group-title">
                             <svg class="icon" aria-hidden="true"><use href="#ico-index"></use></svg>
@@ -5849,6 +5872,7 @@ HTML_TEMPLATE = """
             document.documentElement.setAttribute('data-theme', id);
             let select = document.getElementById('themeSelect');
             if (select) select.value = id;
+            updateThemePreview(id);
         }
     }
 
@@ -5857,6 +5881,29 @@ HTML_TEMPLATE = """
         if (!el) return;
         el.className = 'settings-save-state' + (kind ? ' ' + kind : '');
         el.textContent = text || '';
+    }
+
+    function updateThemePreview(id) {
+        let select = document.getElementById('themeSelect');
+        let preview = document.getElementById('themeColorPreview');
+        let name = document.getElementById('themePreviewName');
+        if (!select || !preview || !name) return;
+        let option = Array.from(select.options).find(function(item) { return item.value === id; });
+        if (!option) return;
+        let colors = (option.getAttribute('data-swatches') || '').split(',').filter(function(color) {
+            return /^#[0-9a-f]{6}$/i.test(color);
+        }).slice(0, 5);
+        let labels = ['الخلفية', 'السطح', 'التأكيد', 'بطاقة الذاكرة', 'النص'];
+        while (preview.firstChild) preview.removeChild(preview.firstChild);
+        colors.forEach(function(color, index) {
+            let chip = document.createElement('span');
+            chip.className = 'theme-preview-chip';
+            chip.title = labels[index] || 'لون السمة';
+            chip.style.backgroundColor = color;
+            preview.appendChild(chip);
+        });
+        name.textContent = option.textContent.trim();
+        preview.setAttribute('aria-label', 'معاينة ألوان سمة ' + option.textContent.trim());
     }
 
     // Typography is two CSS variables: `--app-font` (a font stack) and
@@ -5912,17 +5959,29 @@ HTML_TEMPLATE = """
 
     function pickTheme(id) {
         if (!id || id === activeThemeId) return;
+        updateThemePreview(id);
         setSettingsState('جارٍ الحفظ...', '');
         fetch('/api/settings', { method: 'POST', headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({ theme: id }) })
             .then(function(r) { return r.json().then(function(d) { return { ok: r.ok, data: d }; }); })
             .then(function(res) {
-                if (!res.ok) { setSettingsState(res.data.error || 'تعذر حفظ السمة', 'err'); return; }
+                if (!res.ok) {
+                    let select = document.getElementById('themeSelect');
+                    if (select) select.value = activeThemeId;
+                    updateThemePreview(activeThemeId);
+                    setSettingsState(res.data.error || 'تعذر حفظ السمة', 'err');
+                    return;
+                }
                 applyTheme(res.data.tokens, res.data.theme_bg, id);
                 setSettingsState('تم الحفظ — السمة مطبقة.', 'ok');
                 setTimeout(function() { setSettingsState('', ''); }, 2500);
             })
-            .catch(function() { setSettingsState('تعذر الاتصال بالخادم', 'err'); });
+            .catch(function() {
+                let select = document.getElementById('themeSelect');
+                if (select) select.value = activeThemeId;
+                updateThemePreview(activeThemeId);
+                setSettingsState('تعذر الاتصال بالخادم', 'err');
+            });
     }
 
     // ---- selection tracking for the «السجل» panel ------------------
