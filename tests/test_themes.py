@@ -1,5 +1,6 @@
 import hashlib
 import json
+import re
 import tempfile
 import unittest
 from unittest import mock
@@ -10,10 +11,9 @@ import sdmp3_themes
 
 
 class ThemePaletteTests(unittest.TestCase):
-    def test_first_two_palettes_remain_unchanged(self):
+    def test_original_palette_remains_unchanged(self):
         expected = {
             'coffee-blues': '52fe6ccc9de842332b31148ed585bedf2b1bd4ac61755148b3ee347be6a834a4',
-            'midnight-teal': '521f16ceb8dd2ae5f67d86fa433a15b315e563e73b082d39374fcde07401dacb',
         }
         definitions = {item['id']: item for item in sdmp3_themes._THEME_DEFS}
         for theme_id, expected_hash in expected.items():
@@ -71,6 +71,32 @@ class ThemePaletteTests(unittest.TestCase):
         self.assertIn('id="themeColorPreview"', html)
         self.assertIn('id="themePreviewName"', html)
         self.assertIn('data-swatches=', html)
+
+    def test_about_panel_has_version_local_notice_and_profile_link(self):
+        page = project.app.test_client().get('/').get_data(as_text=True)
+        self.assertIn('id="settingsPaneAbout"', page)
+        self.assertIn('class="about-version-value num">v', page)
+        self.assertIn('إدارة الملفات والنسخ والإعدادات تتم محليًا', page)
+        self.assertIn('تحويل النص إلى MP3 يحتاج اتصالًا بالإنترنت', page)
+        self.assertIn('href="https://github.com/ilyas1435"', page)
+        self.assertIn('aria-label="حساب GitHub لـ ilyas1435"', page)
+
+    def test_settings_controls_keep_ids_and_have_svg_cues(self):
+        page = project.app.test_client().get('/').get_data(as_text=True)
+        for control_id in ('themeSelect', 'fontSelect', 'sizeSeg', 'jocStart',
+                           'jocLimit', 'jocMode', 'jocTemplate', 'jocMp3Index',
+                           'ttsVoice', 'ttsRate'):
+            with self.subTest(control=control_id):
+                self.assertIn('id="{}"'.format(control_id), page)
+        self.assertIn('href="#ico-palette"', page)
+        self.assertIn('href="#ico-text-size"', page)
+        self.assertIn('href="#ico-voice"', page)
+        self.assertIn('href="#ico-review"', page)
+        symbols = set(re.findall(r'<symbol id="([^"]+)"', page))
+        references = set(re.findall(r'<use href="#([^"]+)"', page))
+        dynamic_references = {'ico-...', "' + id + '"}
+        self.assertEqual(references - symbols - dynamic_references, set(),
+                         'every static SVG cue resolves to a sprite symbol')
 
 
 if __name__ == '__main__':

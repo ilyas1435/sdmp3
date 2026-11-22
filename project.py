@@ -2677,23 +2677,31 @@ HTML_TEMPLATE = """
         #progressModal .btn:active { transform:translateY(1px); }
         #progressModal .btn:focus-visible, #minimizeProgressBtn:focus-visible {
             outline:2px solid var(--accent); outline-offset:2px; }
-        .settings-tabs { display:flex; gap:6px; margin: 2px 0 14px; flex-shrink:0; }
-        .settings-tab { flex:1; padding:9px 10px; border-radius:10px; border:1px solid var(--border);
+        .settings-tabs { display:flex; gap:6px; margin:2px 0 10px; flex-shrink:0; }
+        .settings-tab { flex:1; min-width:0; min-height:40px; padding:7px 9px; border-radius:10px; border:1px solid var(--border);
             background:var(--field); color:var(--text-muted); font-size:calc(12.5px * var(--font-scale)); font-weight:600;
-            cursor:pointer; font-family:inherit; transition: border-color .15s, color .15s, background .15s; }
+            cursor:pointer; font-family:inherit; display:flex; align-items:center; justify-content:center; gap:6px;
+            transition:border-color .15s, color .15s, background .15s; }
+        .settings-tab .icon { width:14px; height:14px; flex:0 0 auto; }
         .settings-tab.active { color:var(--accent-text); border-color:var(--accent); background:var(--accent-soft); }
         .settings-tab:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
-        .settings-pane { display:flex; flex-direction:column; gap:10px; min-width:0; }
+        .settings-pane { display:flex; flex-direction:column; gap:8px; min-width:0; }
         /* Settings are grouped by a title and a hairline, not by a paragraph of
            explanation: the control says what it does. */
-        .settings-group { display:flex; flex-direction:column; gap:6px; min-width:0; }
-        .settings-group + .settings-group { border-top:1px solid var(--rule); padding-top:10px; }
-        .settings-group-title { font-size:calc(10.5px * var(--font-scale)); font-weight:700; color:var(--text-muted); }
+        .settings-group { display:flex; flex-direction:column; gap:7px; min-width:0; }
+        .settings-group + .settings-group { border-top:1px solid var(--rule); padding-top:8px; }
+        .settings-group-title { display:flex; align-items:center; gap:6px; font-size:calc(10.5px * var(--font-scale));
+            font-weight:700; color:var(--text-muted); }
+        .settings-group-title .icon { width:14px; height:14px; color:var(--accent); flex:0 0 auto; }
         .settings-check-row { display:flex; align-items:flex-start; gap:9px; margin:0; cursor:pointer; color:var(--text);
             font-size:calc(13px * var(--font-scale)); font-weight:500; }
         .settings-check-row .checkbox { width:17px; height:17px; margin:1px 0 0; flex-shrink:0; }
         .settings-check-row > span { min-width:0; overflow-wrap:anywhere; }
         .settings-check-row small { display:block; margin-top:3px; }
+        .settings-option-copy { display:flex; align-items:flex-start; gap:7px; min-width:0; }
+        .settings-option-icon { width:15px; height:15px; flex:0 0 15px; margin-top:2px; color:var(--accent-text); }
+        .settings-field > label { display:flex; align-items:center; gap:6px; }
+        .settings-field > label .icon { width:14px; height:14px; flex:0 0 auto; color:var(--accent); }
         .size-seg { display:flex; gap:6px; }
         .size-seg .size-seg-btn { flex:1; min-height:38px; padding:6px 8px; border-radius:9px;
             border:1px solid var(--border); background:var(--field); color:var(--text-muted);
@@ -2703,11 +2711,23 @@ HTML_TEMPLATE = """
             background:var(--accent-soft); border:1px solid var(--accent-line); color:var(--accent-text);
             font-size:calc(11.5px * var(--font-scale)); font-weight:600; line-height:1.5; }
         .draft-banner .icon { width:15px; height:15px; flex-shrink:0; }
-        .index-group { display:flex; flex-direction:column; gap:6px; padding-top:10px; border-top:1px solid var(--rule); min-width:0; }
-        .index-group:first-of-type { padding-top:0; border-top:0; }
+        .index-group { display:flex; flex-direction:column; gap:7px; padding:10px 11px;
+            border:1px solid var(--border); border-radius:12px; background:var(--card-2); min-width:0; }
         .index-group-title { display:flex; align-items:center; gap:6px; font-size:calc(11px * var(--font-scale));
             font-weight:700; color:var(--text-muted); }
         .index-group-title .icon { width:14px; height:14px; color:var(--accent); }
+        .index-fields-grid { display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); gap:8px 10px; min-width:0; }
+        .index-field-label { display:flex; align-items:center; gap:6px; }
+        .index-field-label .icon { width:13px; height:13px; flex:0 0 auto; color:var(--accent-text); }
+        .index-options-grid { display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); gap:6px; min-width:0; }
+        .index-check-row { min-height:40px; align-items:center; padding:7px 8px; border:1px solid var(--border);
+            border-radius:9px; background:var(--field); font-size:calc(11.5px * var(--font-scale)); }
+        .index-check-row .checkbox { margin-top:0; }
+        .index-check-row .settings-option-copy { gap:6px; }
+        .index-check-row .settings-option-icon { width:14px; height:14px; flex-basis:14px; margin-top:1px; }
+        .index-subtitle { display:flex; align-items:center; gap:6px; font-size:calc(11px * var(--font-scale));
+            font-weight:700; color:var(--text-muted); }
+        .index-subtitle .icon { width:14px; height:14px; color:var(--accent); }
         /* One labelled dropdown per choice: a grid of 16 colour cards buried the
            save state and made the settings dialog scroll for a trivial change. */
         .settings-field { display:flex; flex-direction:column; gap:4px; min-width:0; }
@@ -2742,12 +2762,34 @@ HTML_TEMPLATE = """
 
         /* Keep the legacy index form compact by neutralizing its global control
            margins here; labels stay visually attached to their fields. */
-        .index-form { display:block; }
+        .index-form { display:flex; flex-direction:column; gap:8px; }
         .index-form, .index-form .grid-2, .index-form .grid-2 > div { min-width:0; }
         .index-form label:not(.settings-check-row) { margin:0 0 3px; line-height:1.4; }
         .index-form select, .index-form input[type="number"] { min-width:0; margin:0; }
-        .index-form > select { margin-bottom:2px; }
-        .index-form .grid-2 { row-gap:6px; }
+        .index-form .grid-2 { gap:8px; }
+        .about-card { display:flex; flex-direction:column; gap:12px; padding:14px; border:1px solid var(--border);
+            border-radius:14px; background:var(--card-2); min-width:0; }
+        .about-brand { display:flex; align-items:center; gap:10px; min-width:0; }
+        .about-mark { width:42px; height:42px; flex:0 0 42px; display:flex; align-items:center; justify-content:center;
+            border-radius:12px; border:1px solid var(--accent-line); background:var(--accent-soft); color:var(--accent-text); }
+        .about-mark .icon { width:21px; height:21px; }
+        .about-brand-name { min-width:0; color:var(--text); font-size:calc(15px * var(--font-scale)); font-weight:700; }
+        .about-brand-caption { color:var(--text-muted); font-size:calc(11px * var(--font-scale)); }
+        .about-version { display:flex; align-items:center; justify-content:space-between; gap:10px; padding:9px 11px;
+            border:1px solid var(--border); border-radius:10px; background:var(--field); }
+        .about-version-label { display:flex; align-items:center; gap:7px; color:var(--text-muted); font-size:calc(12px * var(--font-scale)); }
+        .about-version-label .icon { width:15px; height:15px; color:var(--accent); }
+        .about-version-value { color:var(--text); font-weight:700; }
+        .about-local-note { display:flex; align-items:flex-start; gap:8px; color:var(--text); font-size:calc(11.5px * var(--font-scale)); line-height:1.6; }
+        .about-local-note .icon { width:16px; height:16px; flex:0 0 16px; margin-top:2px; color:var(--success); }
+        .about-online-note { padding-inline-start:24px; color:var(--text-muted); font-size:calc(10.5px * var(--font-scale)); line-height:1.5; }
+        .about-github-link { display:flex; align-items:center; gap:9px; min-height:44px; padding:9px 11px;
+            border:1px solid var(--accent-line); border-radius:10px; background:var(--accent-soft);
+            color:var(--accent-text); text-decoration:none; font-weight:700; }
+        .about-github-link:hover, .about-github-link:focus-visible { border-color:var(--accent); background:var(--accent-line); outline:none; }
+        .about-github-link .icon { width:18px; height:18px; }
+        .about-github-link .external-icon { width:14px; height:14px; margin-inline-start:auto; }
+        .about-state-path { color:var(--text-muted); font-size:calc(10.5px * var(--font-scale)); line-height:1.6; overflow-wrap:anywhere; }
         .joc-summary { background:var(--field); border:1px solid var(--border); border-radius:12px;
             padding:12px 14px; font-size:calc(12px * var(--font-scale)); color:var(--text-muted);
             line-height:1.9; }
@@ -2790,6 +2832,13 @@ HTML_TEMPLATE = """
             .modal-content.modal-settings { height:auto; max-height:92vh; max-height:92dvh; }
             .modal-content.modal-settings .modal-body { min-width:0; overflow-x:hidden; }
             .settings-tabs { margin-bottom:10px; }
+            .settings-tab { gap:4px; padding:7px 4px; font-size:calc(11px * var(--font-scale)); }
+            .settings-tab .icon { width:13px; height:13px; }
+            .index-options-grid { grid-template-columns:1fr; }
+            .index-group { padding:9px; }
+        }
+        @media (max-width: 330px) {
+            .index-fields-grid { grid-template-columns:1fr; }
         }
 
         .progress-bar { width: 100%; height: 10px; background: var(--field); border-radius: 999px; overflow: hidden; margin: 15px 0; border: 1px solid var(--border);}
@@ -3055,6 +3104,22 @@ HTML_TEMPLATE = """
     <symbol id="ico-bolt" viewBox="0 0 24 24"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></symbol>
     <symbol id="ico-shield" viewBox="0 0 24 24"><path d="M12 3l7 3v6c0 4-3 7.5-7 9-4-1.5-7-5-7-9V6z"></path><polyline points="9 12 11.2 14.2 15.2 10"></polyline></symbol>
     <symbol id="ico-music" viewBox="0 0 24 24"><path d="M9 18V6l10-2v12"></path><circle cx="6.5" cy="18" r="2.5"></circle><circle cx="16.5" cy="16" r="2.5"></circle></symbol>
+    <symbol id="ico-palette" viewBox="0 0 24 24"><path d="M12 3a9 9 0 1 0 0 18h1.2a2 2 0 0 0 1.5-3.3 1.8 1.8 0 0 1 1.4-3h1.1A3.8 3.8 0 0 0 21 10.9C21 6.5 17 3 12 3z"></path><circle cx="7.5" cy="11" r=".8"></circle><circle cx="10" cy="7.5" r=".8"></circle><circle cx="15" cy="7.5" r=".8"></circle></symbol>
+    <symbol id="ico-type" viewBox="0 0 24 24"><path d="M4 7V4h16v3"></path><path d="M9 20h6"></path><path d="M12 4v16"></path></symbol>
+    <symbol id="ico-text-size" viewBox="0 0 24 24"><path d="M4 8V5h12v3"></path><path d="M10 5v15"></path><path d="M7 20h6"></path><path d="M19 11v9M16.5 14h5"></path></symbol>
+    <symbol id="ico-general" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1-2.7 2.7-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5v.2h-3.8v-.2a1.7 1.7 0 0 0-1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1-2.7-2.7.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H2.5v-3.8h.2a1.7 1.7 0 0 0 1.5-1 1.7 1.7 0 0 0-.3-1.8l-.1-.1 2.7-2.7.1.1a1.7 1.7 0 0 0 1.8.3 1.7 1.7 0 0 0 1-1.5v-.2h3.8v.2a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1 2.7 2.7-.1.1a1.7 1.7 0 0 0-.3 1.8 1.7 1.7 0 0 0 1.5 1h.2v3.8h-.2a1.7 1.7 0 0 0-1.5 1z"></path></symbol>
+    <symbol id="ico-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"></circle><line x1="12" y1="11" x2="12" y2="16"></line><circle cx="12" cy="7.5" r=".6"></circle></symbol>
+    <symbol id="ico-text" viewBox="0 0 24 24"><path d="M4 5h16"></path><path d="M4 10h16"></path><path d="M4 15h10"></path><path d="M4 20h8"></path></symbol>
+    <symbol id="ico-template" viewBox="0 0 24 24"><rect x="4" y="3" width="16" height="18" rx="2"></rect><path d="M8 8h8M8 12h8M8 16h4"></path></symbol>
+    <symbol id="ico-clean" viewBox="0 0 24 24"><path d="m4 20 9-9"></path><path d="m13 11 4 4"></path><path d="m14 4 .6 1.8L16.5 6.5l-1.9.7L14 9l-.6-1.8-1.9-.7 1.9-.7z"></path><path d="m20 11 .4 1.1 1.1.4-1.1.4L20 14l-.4-1.1-1.1-.4 1.1-.4z"></path></symbol>
+    <symbol id="ico-download" viewBox="0 0 24 24"><path d="M12 3v12"></path><path d="m7 10 5 5 5-5"></path><path d="M4 19h16"></path></symbol>
+    <symbol id="ico-review" viewBox="0 0 24 24"><rect x="5" y="4" width="14" height="17" rx="2"></rect><path d="M9 4.5h6M8 11l2 2 4-4M8 17h8"></path></symbol>
+    <symbol id="ico-device" viewBox="0 0 24 24"><rect x="5" y="2" width="14" height="20" rx="2.5"></rect><path d="M10 18h4"></path></symbol>
+    <symbol id="ico-voice" viewBox="0 0 24 24"><path d="M3 10v4h4l5 4V6l-5 4z"></path><path d="M16 9a5 5 0 0 1 0 6M18.5 6.5a9 9 0 0 1 0 11"></path></symbol>
+    <symbol id="ico-speed" viewBox="0 0 24 24"><path d="M4.5 18a9 9 0 1 1 15 0"></path><path d="m12 13 4-4"></path><circle cx="12" cy="13" r="1.2"></circle><path d="M7 19h10"></path></symbol>
+    <symbol id="ico-mask" viewBox="0 0 24 24"><path d="M3 12s3.3-6 9-6 9 6 9 6-3.3 6-9 6-9-6-9-6z"></path><circle cx="12" cy="12" r="2.5"></circle><path d="m4 4 16 16"></path></symbol>
+    <symbol id="ico-github" viewBox="0 0 24 24"><path d="M8 19c-4 1.2-4-2-5.5-2.5M14 21v-3.1c0-.9.1-1.5-.4-2.1 3-.3 6.1-1.5 6.1-6.7 0-1.5-.5-2.7-1.4-3.7.1-.4.6-1.8-.1-3.6 0 0-1.2-.4-3.8 1.4a13 13 0 0 0-6.8 0C5 1.4 3.8 1.8 3.8 1.8 3.1 3.6 3.6 5 3.7 5.4a5.4 5.4 0 0 0-1.4 3.7c0 5.2 3.1 6.4 6.1 6.7-.4.5-.5 1.1-.5 2V21"></path></symbol>
+    <symbol id="ico-external" viewBox="0 0 24 24"><path d="M14 4h6v6"></path><path d="m20 4-9 9"></path><path d="M18 13v6a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h6"></path></symbol>
     <!-- Navigation / editing glyphs: text arrows vary by font and carry their
          own metrics, so generated rows use these instead. -->
     <symbol id="ico-up" viewBox="0 0 24 24"><line x1="12" y1="19" x2="12" y2="5"></line><polyline points="5 12 12 5 19 12"></polyline></symbol>
@@ -3421,16 +3486,16 @@ HTML_TEMPLATE = """
             الإعدادات
         </h3>
         <div class="settings-tabs">
-            <button type="button" class="settings-tab active" data-tab="appearance" onclick="showSettingsTab('appearance')">المظهر</button>
-            <button type="button" class="settings-tab" data-tab="general" onclick="showSettingsTab('general')">عام</button>
-            <button type="button" class="settings-tab" data-tab="index" onclick="showSettingsTab('index')">الفهرس</button>
-            <button type="button" class="settings-tab" data-tab="about" onclick="showSettingsTab('about')">حول</button>
+            <button type="button" class="settings-tab active" data-tab="appearance" onclick="showSettingsTab('appearance')"><svg class="icon" aria-hidden="true"><use href="#ico-palette"></use></svg>المظهر</button>
+            <button type="button" class="settings-tab" data-tab="general" onclick="showSettingsTab('general')"><svg class="icon" aria-hidden="true"><use href="#ico-general"></use></svg>عام</button>
+            <button type="button" class="settings-tab" data-tab="index" onclick="showSettingsTab('index')"><svg class="icon" aria-hidden="true"><use href="#ico-index"></use></svg>الفهرس</button>
+            <button type="button" class="settings-tab" data-tab="about" onclick="showSettingsTab('about')"><svg class="icon" aria-hidden="true"><use href="#ico-info"></use></svg>حول</button>
         </div>
         <div class="modal-body">
             <div class="settings-pane" id="settingsPaneAppearance">
                 <div class="settings-group">
                     <div class="settings-field">
-                        <label for="themeSelect">السمة</label>
+                        <label for="themeSelect"><svg class="icon" aria-hidden="true"><use href="#ico-palette"></use></svg>السمة</label>
                         <select id="themeSelect" onchange="pickTheme(this.value)">
                             {% for t in themes %}
                             <option value="{{ t.id }}" data-theme-id="{{ t.id }}" data-swatches="{{ t.swatches|join(',') }}"{% if t.id == active_theme.id %} selected{% endif %}>{{ t.name }}</option>
@@ -3450,7 +3515,7 @@ HTML_TEMPLATE = """
                 </div>
                 <div class="settings-group">
                     <div class="settings-field">
-                        <label for="fontSelect">الخط</label>
+                        <label for="fontSelect"><svg class="icon" aria-hidden="true"><use href="#ico-type"></use></svg>الخط</label>
                         <select id="fontSelect" onchange="pickFont(this.value)">
                             {% for f in fonts %}
                             <option value="{{ f.id }}" data-font-id="{{ f.id }}"{% if f.id == active_font %} selected{% endif %}>{{ f.name }}</option>
@@ -3459,7 +3524,7 @@ HTML_TEMPLATE = """
                         <div id="fontPreview" class="settings-note" style="font-family: {{ app_font }};">سورة البقرة ١٢٣</div>
                     </div>
                     <div class="settings-field">
-                        <label>حجم الخط</label>
+                        <label><svg class="icon" aria-hidden="true"><use href="#ico-text-size"></use></svg>حجم الخط</label>
                         <div class="size-seg" id="sizeSeg">
                             {% for s in font_sizes %}
                             <button type="button" class="size-seg-btn{% if s.id == active_font_size %} is-active{% endif %}" data-size-id="{{ s.id }}" onclick="pickFontSize('{{ s.id }}')">{{ s.name }}</button>
@@ -3474,23 +3539,32 @@ HTML_TEMPLATE = """
                  «المظهر» next to the theme it visually belongs with. -->
             <div class="settings-pane" id="settingsPaneGeneral" style="display:none;">
                 <div class="settings-group">
-                    <div class="settings-group-title">بعد النسخ</div>
+                    <div class="settings-group-title"><svg class="icon" aria-hidden="true"><use href="#ico-bolt"></use></svg>بعد النسخ</div>
                     <label class="settings-check-row" for="autoSpoofCheck">
                         <input type="checkbox" id="autoSpoofCheck" class="checkbox" {% if auto_spoof %}checked{% endif %} onchange="pickAutoSpoof(this.checked)">
-                        <span>تمويه تواريخ الوجهة تلقائياً
-                            <small class="settings-note">بعد التحقق، ويشمل الوجهة كاملة.</small>
+                        <span class="settings-option-copy">
+                            <svg class="icon settings-option-icon" aria-hidden="true"><use href="#ico-mask"></use></svg>
+                            <span>تمويه تواريخ الوجهة تلقائياً
+                                <small class="settings-note">بعد التحقق، ويشمل الوجهة كاملة.</small>
+                            </span>
                         </span>
                     </label>
                     <label class="settings-check-row" for="verifyAfterCopy">
                         <input type="checkbox" id="verifyAfterCopy" class="checkbox" onchange="localStorage.setItem('sdmp3_verify_after_copy', this.checked ? '1' : '0')">
-                        <span>التحقق السريع من الحجم بعد النسخ
-                            <small class="settings-note">يقارن حجم كل ملف دون إعادة قراءة محتواه.</small>
+                        <span class="settings-option-copy">
+                            <svg class="icon settings-option-icon" aria-hidden="true"><use href="#ico-check"></use></svg>
+                            <span>التحقق السريع من الحجم بعد النسخ
+                                <small class="settings-note">يقارن حجم كل ملف دون إعادة قراءة محتواه.</small>
+                            </span>
                         </span>
                     </label>
                     <label class="settings-check-row" for="verifyContentAfterCopy">
                         <input type="checkbox" id="verifyContentAfterCopy" class="checkbox" onchange="localStorage.setItem('sdmp3_verify_content_after_copy', this.checked ? '1' : '0')">
-                        <span>مقارنة محتوى الملفات (أبطأ)
-                            <small class="settings-note">يقرأ المصدر والنسخة ويقارن SHA-256 لاكتشاف اختلاف المحتوى.</small>
+                        <span class="settings-option-copy">
+                            <svg class="icon settings-option-icon" aria-hidden="true"><use href="#ico-shield"></use></svg>
+                            <span>مقارنة محتوى الملفات (أبطأ)
+                                <small class="settings-note">يقرأ المصدر والنسخة ويقارن SHA-256 لاكتشاف اختلاف المحتوى.</small>
+                            </span>
                         </span>
                     </label>
                     <div id="generalSaveState" class="settings-save-state"></div>
@@ -3500,13 +3574,15 @@ HTML_TEMPLATE = """
                      optional, and «الكارت» is only claimed after a real write
                      test. -->
                 <div class="settings-group">
-                    <div class="settings-group-title">الجهاز</div>
+                    <div class="settings-group-title"><svg class="icon" aria-hidden="true"><use href="#ico-device"></use></svg>الجهاز</div>
                     <div class="status-list">
                         <div class="status-row">
+                            <svg class="icon" style="width:15px;height:15px;color:var(--accent);" aria-hidden="true"><use href="#ico-shield"></use></svg>
                             <span class="status-label">Shizuku</span>
                             <span class="status-value" id="generalShizukuStatus">جاري الفحص…</span>
                         </div>
                         <div class="status-row">
+                            <svg class="icon" style="width:15px;height:15px;color:var(--kind-sdcard);" aria-hidden="true"><use href="#ico-sd"></use></svg>
                             <span class="status-label">الكارت</span>
                             <span class="status-value" id="generalCardStatus">لم يُفحص بعد</span>
                         </div>
@@ -3523,47 +3599,55 @@ HTML_TEMPLATE = """
                     <svg class="icon" aria-hidden="true"><use href="#ico-alert"></use></svg>
                     <span>إعدادات هذه المرة فقط — لن تُحفظ.</span>
                 </div>
-                <div class="index-form" style="display:flex; flex-direction:column; gap:10px;">
+                <div class="index-form" style="gap:8px;">
                     <div class="index-group">
                         <div class="index-group-title">
-                            <svg class="icon" aria-hidden="true"><use href="#ico-index"></use></svg>
+                            <svg class="icon" aria-hidden="true"><use href="#ico-text"></use></svg>
                             النص
                         </div>
-                        <div class="grid-2">
+                        <div class="index-fields-grid">
                             <div>
-                                <label for="jocStart">البداية</label>
+                                <label class="index-field-label" for="jocStart"><svg class="icon" aria-hidden="true"><use href="#ico-index"></use></svg>البداية</label>
                                 <input type="number" id="jocStart" value="1" min="1">
                             </div>
                             <div>
-                                <label for="jocLimit">أقصى عدد حروف</label>
+                                <label class="index-field-label" for="jocLimit"><svg class="icon" aria-hidden="true"><use href="#ico-text-size"></use></svg>أقصى عدد حروف</label>
                                 <input type="number" id="jocLimit" value="93" min="10">
                             </div>
                         </div>
-                        <label for="jocMode">الوضع</label>
-                        <select id="jocMode">
-                            <option value="1">مجلدات فقط</option>
-                            <option value="2">مجلدات وملفات</option>
-                            <option value="3">المجلد الحالي فقط</option>
-                        </select>
-                        <label for="jocTemplate">التنسيق</label>
-                        <select id="jocTemplate">
-                            <option value="4">الاسم : الرقم.</option>
-                            <option value="1">الرقم : الاسم .</option>
-                            <option value="2">الاسم من الرقم</option>
-                            <option value="3">الاسم من رقم الرقم .</option>
-                        </select>
-                        <label class="settings-check-row" for="jocStrip">
-                            <input type="checkbox" id="jocStrip" class="checkbox" checked>
-                            <span>حذف الحروف الإنجليزية والأرقام والرموز</span>
-                        </label>
-                        <label class="settings-check-row" for="jocDownloadTxt">
-                            <input type="checkbox" id="jocDownloadTxt" class="checkbox">
-                            <span>تحميل ملف النص (.txt)</span>
-                        </label>
-                        <label class="settings-check-row" for="jocReviewTxt">
-                            <input type="checkbox" id="jocReviewTxt" class="checkbox">
-                            <span>مراجعة النص قبل المتابعة</span>
-                        </label>
+                        <div class="index-fields-grid">
+                            <div class="settings-field">
+                                <label class="index-field-label" for="jocMode"><svg class="icon" aria-hidden="true"><use href="#ico-folder"></use></svg>الوضع</label>
+                                <select id="jocMode">
+                                    <option value="1">مجلدات فقط</option>
+                                    <option value="2">مجلدات وملفات</option>
+                                    <option value="3">المجلد الحالي فقط</option>
+                                </select>
+                            </div>
+                            <div class="settings-field">
+                                <label class="index-field-label" for="jocTemplate"><svg class="icon" aria-hidden="true"><use href="#ico-template"></use></svg>التنسيق</label>
+                                <select id="jocTemplate">
+                                    <option value="4">الاسم : الرقم.</option>
+                                    <option value="1">الرقم : الاسم .</option>
+                                    <option value="2">الاسم من الرقم</option>
+                                    <option value="3">الاسم من رقم الرقم .</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="index-options-grid">
+                            <label class="settings-check-row index-check-row" for="jocStrip">
+                                <input type="checkbox" id="jocStrip" class="checkbox" checked>
+                                <span class="settings-option-copy"><svg class="icon settings-option-icon" aria-hidden="true"><use href="#ico-clean"></use></svg><span>حذف الحروف الإنجليزية والأرقام والرموز</span></span>
+                            </label>
+                            <label class="settings-check-row index-check-row" for="jocDownloadTxt">
+                                <input type="checkbox" id="jocDownloadTxt" class="checkbox">
+                                <span class="settings-option-copy"><svg class="icon settings-option-icon" aria-hidden="true"><use href="#ico-download"></use></svg><span>تحميل ملف النص (.txt)</span></span>
+                            </label>
+                            <label class="settings-check-row index-check-row" for="jocReviewTxt">
+                                <input type="checkbox" id="jocReviewTxt" class="checkbox">
+                                <span class="settings-option-copy"><svg class="icon settings-option-icon" aria-hidden="true"><use href="#ico-review"></use></svg><span>مراجعة النص قبل المتابعة</span></span>
+                            </label>
+                        </div>
                     </div>
 
                     <div class="index-group">
@@ -3571,23 +3655,23 @@ HTML_TEMPLATE = """
                             <svg class="icon" aria-hidden="true"><use href="#ico-music"></use></svg>
                             الصوت
                         </div>
-                        <label class="settings-check-row" for="jocMp3Index">
+                        <label class="settings-check-row index-check-row" for="jocMp3Index">
                             <input type="checkbox" id="jocMp3Index" class="checkbox" onchange="toggleMp3Index()">
-                            <span>تحويل الفهرس إلى MP3</span>
+                            <span class="settings-option-copy"><svg class="icon settings-option-icon" aria-hidden="true"><use href="#ico-music"></use></svg><span>تحويل الفهرس إلى MP3</span></span>
                         </label>
                         <div id="ttsNotice"></div>
                         <div id="ttsOptions" style="display:none; gap:10px; flex-direction:column;">
-                            <label class="settings-check-row" for="jocMp3ToDest">
+                            <label class="settings-check-row index-check-row" for="jocMp3ToDest">
                                 <input type="checkbox" id="jocMp3ToDest" class="checkbox">
-                                <span>حفظ MP3 في الوجهة<small class="settings-note">بدل تنزيله على الجهاز.</small></span>
+                                <span class="settings-option-copy"><svg class="icon settings-option-icon" aria-hidden="true"><use href="#ico-sd"></use></svg><span>حفظ MP3 في الوجهة<small class="settings-note">بدل تنزيله على الجهاز.</small></span></span>
                             </label>
-                            <div class="grid-2">
+                            <div class="index-fields-grid">
                                 <div>
-                                    <label for="ttsVoice">الصوت</label>
+                                    <label class="index-field-label" for="ttsVoice"><svg class="icon" aria-hidden="true"><use href="#ico-voice"></use></svg>الصوت</label>
                                     <select id="ttsVoice"></select>
                                 </div>
                                 <div>
-                                    <label for="ttsRate">السرعة</label>
+                                    <label class="index-field-label" for="ttsRate"><svg class="icon" aria-hidden="true"><use href="#ico-speed"></use></svg>السرعة</label>
                                     <select id="ttsRate">
                                         <option value="+0%">عادية (+0%)</option>
                                         <option value="-10%">أبطأ (-10%)</option>
@@ -3599,7 +3683,7 @@ HTML_TEMPLATE = """
                             </div>
 
                             <div>
-                                <div class="index-group-title" style="margin-bottom:8px;">تمويه الصوت</div>
+                                <div class="index-subtitle"><svg class="icon" aria-hidden="true"><use href="#ico-mask"></use></svg>تمويه الصوت</div>
                                 <div style="display:flex; gap:6px; background:var(--field); border:1px solid var(--border); border-radius:10px; padding:4px;">
                                     <label class="seg option" data-mode="none" style="flex:1; text-align:center; padding:9px 6px; border-radius:7px; cursor:pointer; font-size:calc(12.5px * var(--font-scale)); color:var(--text-muted); display:flex; align-items:center; justify-content:center; gap:5px;">
                                         <svg class="icon" style="width:15px;height:15px;" viewBox="0 0 24 24"><path d="M11 5 6 9H2v6h4l5 4V5z"></path></svg>
@@ -3637,17 +3721,36 @@ HTML_TEMPLATE = """
             </div>
 
             <div class="settings-pane" id="settingsPaneAbout" style="display:none;">
-                <div class="status-list">
-                    <div class="status-row">
-                        <span class="status-label">الإصدار</span>
-                        <span class="status-value num">v{{ app_version }}</span>
+                <div class="about-card">
+                    <div class="about-brand">
+                        <div class="about-mark"><svg class="icon" aria-hidden="true"><use href="#ico-sd"></use></svg></div>
+                        <div>
+                            <div class="about-brand-name">SD Card Coffee</div>
+                            <div class="about-brand-caption">إدارة النسخ والفهارس من جهازك</div>
+                        </div>
                     </div>
-                    <div class="status-row">
-                        <span class="status-label">العمل</span>
-                        <span class="status-value">على الجهاز — بلا حساب أو سحابة</span>
+                    <div class="about-version">
+                        <span class="about-version-label"><svg class="icon" aria-hidden="true"><use href="#ico-info"></use></svg>الإصدار</span>
+                        <span class="about-version-value num">v{{ app_version }}</span>
+                    </div>
+                    <div>
+                        <div class="about-local-note">
+                            <svg class="icon" aria-hidden="true"><use href="#ico-device"></use></svg>
+                            <span>إدارة الملفات والنسخ والإعدادات تتم محليًا على الجهاز، دون حساب أو تخزين سحابي.</span>
+                        </div>
+                        <div class="about-online-note">تحويل النص إلى MP3 يحتاج اتصالًا بالإنترنت عند استخدامه.</div>
+                    </div>
+                    <a class="about-github-link" href="https://github.com/ilyas1435"
+                       target="_blank" rel="noopener noreferrer" aria-label="حساب GitHub لـ ilyas1435">
+                        <svg class="icon" aria-hidden="true"><use href="#ico-github"></use></svg>
+                        <span>ilyas1435</span>
+                        <svg class="icon external-icon" aria-hidden="true"><use href="#ico-external"></use></svg>
+                    </a>
+                    <div class="about-state-path">
+                        تحفظ ملفات الحالة على الجهاز في
+                        <span class="ltr-input" style="display:inline-block; padding:1px 6px;">~/.local/state/sdmp3/</span>
                     </div>
                 </div>
-                <div class="settings-note">ملفات الحالة في <span class="ltr-input" style="display:inline-block; padding:1px 6px;">~/.local/state/sdmp3/</span>.</div>
             </div>
         </div>
         <div style="display:flex; gap:10px; margin-top:14px; flex-shrink:0;">
