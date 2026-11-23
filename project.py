@@ -55,7 +55,7 @@ app = Flask(__name__)
 
 # Version is kept in the VERSION file next to this script so that the `sdmp3`
 # CLI can read it without importing the app.
-APP_VERSION_FALLBACK = "3.5"
+APP_VERSION_FALLBACK = "3.6"
 
 # Toggled by --no-wakelock (see main() at the bottom).
 WAKELOCK_ENABLED = True
@@ -7389,21 +7389,50 @@ HTML_TEMPLATE = """
         setSavedOperationsStatus('جارٍ تحميل العملية المحفوظة...', 'is-loading');
         try {
             let data = await savedOperationsRequest(
-                '/api/saved_operations/' + encodeURIComponent(operationId) + '/restore'
+                '/api/saved_operations/' + encodeURIComponent(operationId)
             );
             let operation = data.operation;
             setSavedOperationsStatus('جارٍ فحص الملفات والمجلدات المحفوظة...', 'is-loading');
-            // Availability is checked per saved item by the restore endpoint;
-            // a filesystem error for one path must never reject the whole load.
-            let unavailable = new Set(
-                Array.isArray(data.unavailable_paths) ? data.unavailable_paths : []
-            );
+            // Path inspection is best-effort. It can remove a bad source, but
+            // must never prevent the already-loaded saved operation from being
+            // applied.
+            let unavailable = new Set();
+            let sizeWarning = '';
+            try {
+                let restoreData = await savedOperationsRequest(
+                    '/api/saved_operations/' + encodeURIComponent(operationId) + '/restore'
+                );
+                if (restoreData.operation) operation = restoreData.operation;
+                unavailable = new Set(
+                    Array.isArray(restoreData.unavailable_paths)
+                        ? restoreData.unavailable_paths : []
+                );
+            } catch (restoreError) {
+                try {
+                    let pathStatus = await savedOperationsRequest('/api/path_status', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({paths: operation.paths})
+                    });
+                    unavailable = new Set(
+                        Array.isArray(pathStatus.missing) ? pathStatus.missing : []
+                    );
+                    let statusTypes = pathStatus.types || {};
+                    operation.paths.forEach(function(item) {
+                        let type = statusTypes[item.path];
+                        if (type && type !== (item.is_dir ? 'directory' : 'file')) {
+                            unavailable.add(item.path);
+                        }
+                    });
+                } catch (statusError) {
+                    sizeWarning = 'تعذر فحص بعض المسارات؛ تم تحميل العملية دون إيقافها.';
+                }
+            }
 
             // Keep size calculation from blocking restore. A saved selection is
             // still useful when a card/filesystem refuses a folder walk; missing
             // paths are checked separately above and never enter the selection.
             let sizeData = {sizes: {}};
-            let sizeWarning = '';
             let availableBeforeSizing = operation.paths.filter(function(item) {
                 return !unavailable.has(item.path);
             });
@@ -7429,7 +7458,8 @@ HTML_TEMPLATE = """
                         }
                     });
                 } catch (sizeError) {
-                    sizeWarning = 'تعذر حساب الأحجام الآن، لكن تم تحميل العناصر المتاحة؛ يمكنك متابعة النسخ.';
+                    sizeWarning += (sizeWarning ? '\\n' : '') +
+                        'تعذر حساب الأحجام الآن، لكن تم تحميل العناصر المتاحة؛ يمكنك متابعة النسخ.';
                 }
             }
             let unavailablePaths = Array.from(unavailable);
