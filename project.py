@@ -7148,9 +7148,14 @@ HTML_TEMPLATE = """
     }
 
     async function savedOperationsRequest(url, options) {
-        let response = await fetch(url, options || {});
+        let response = await fetch(url, Object.assign({cache: 'no-store'}, options || {}));
         let data = await response.json().catch(function() { return {}; });
-        if (!response.ok) throw new Error(data.error || 'تعذر تنفيذ الطلب');
+        if (!response.ok) {
+            let version = response.headers.get('X-SDMP3-Version') || '{{ app_version }}';
+            throw new Error((data.error || 'تعذر تنفيذ الطلب') +
+                ' [' + ((options && options.method) || 'GET') + ' ' + url +
+                '؛ الإصدار ' + version + ']');
+        }
         return data;
     }
 
@@ -7382,6 +7387,49 @@ HTML_TEMPLATE = """
             names.join('\\n');
     }
 
+    async function checkSavedOperationPaths(operation) {
+        let unavailable = new Set();
+        function inspectResult(items, result) {
+            let missing = new Set(result.missing || []);
+            let types = result.types || {};
+            items.forEach(function(item) {
+                if (missing.has(item.path) ||
+                    types[item.path] !== (item.is_dir ? 'directory' : 'file')) {
+                    unavailable.add(item.path);
+                }
+            });
+        }
+        async function check(items) {
+            return savedOperationsRequest('/api/path_status', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({paths: items})
+            });
+        }
+        try {
+            inspectResult(operation.paths, await check(operation.paths));
+        } catch (batchError) {
+            // A failed batch must not reject the operation. Check each item
+            // independently so an error naming one source cannot hide the rest.
+            // These workers only inspect metadata; copying remains sequential.
+            let cursor = 0;
+            async function worker() {
+                while (cursor < operation.paths.length) {
+                    let item = operation.paths[cursor++];
+                    try {
+                        inspectResult([item], await check([item]));
+                    } catch (itemError) {
+                        unavailable.add(item.path);
+                    }
+                }
+            }
+            await Promise.all(Array.from(
+                {length: Math.min(4, operation.paths.length)}, worker
+            ));
+        }
+        return Array.from(unavailable);
+    }
+
     async function loadSavedOperation(operationId, activeButton) {
         if (savedOperationLoadingId) return;
         savedOperationLoadingId = String(operationId);
@@ -7393,41 +7441,8 @@ HTML_TEMPLATE = """
             );
             let operation = data.operation;
             setSavedOperationsStatus('جارٍ فحص الملفات والمجلدات المحفوظة...', 'is-loading');
-            // Path inspection is best-effort. It can remove a bad source, but
-            // must never prevent the already-loaded saved operation from being
-            // applied.
-            let unavailable = new Set();
+            let unavailable = new Set(await checkSavedOperationPaths(operation));
             let sizeWarning = '';
-            try {
-                let restoreData = await savedOperationsRequest(
-                    '/api/saved_operations/' + encodeURIComponent(operationId) + '/restore'
-                );
-                if (restoreData.operation) operation = restoreData.operation;
-                unavailable = new Set(
-                    Array.isArray(restoreData.unavailable_paths)
-                        ? restoreData.unavailable_paths : []
-                );
-            } catch (restoreError) {
-                try {
-                    let pathStatus = await savedOperationsRequest('/api/path_status', {
-                        method: 'POST',
-                        headers: {'Content-Type': 'application/json'},
-                        body: JSON.stringify({paths: operation.paths})
-                    });
-                    unavailable = new Set(
-                        Array.isArray(pathStatus.missing) ? pathStatus.missing : []
-                    );
-                    let statusTypes = pathStatus.types || {};
-                    operation.paths.forEach(function(item) {
-                        let type = statusTypes[item.path];
-                        if (type && type !== (item.is_dir ? 'directory' : 'file')) {
-                            unavailable.add(item.path);
-                        }
-                    });
-                } catch (statusError) {
-                    sizeWarning = 'تعذر فحص بعض المسارات؛ تم تحميل العملية دون إيقافها.';
-                }
-            }
 
             // Keep size calculation from blocking restore. A saved selection is
             // still useful when a card/filesystem refuses a folder walk; missing
@@ -9776,9 +9791,14 @@ def get_paths_status():
             return jsonify({'error': 'يوجد مسار محفوظ غير صالح'}), 400
         try:
             path_stat = os.stat(path)
-        except Exception:
+        except (OSError, ValueError):
             # Access restrictions and removed/moved paths are both unavailable
             # to this copy. Report them as data instead of failing the request.
+            missing.append(path)
+            types[path] = 'missing'
+            continue
+        except Exception:
+            app.logger.exception('Source inspection failed for %r (v%s)', path, APP_VERSION)
             missing.append(path)
             types[path] = 'missing'
             continue
@@ -10515,7 +10535,19 @@ def reset_status():
 @app.errorhandler(Exception)
 def handle_any_exception(e):
     if isinstance(e, HTTPException): return e
+    app.logger.exception(
+        'Unhandled request error: %s %s (v%s)',
+        request.method, request.path, APP_VERSION,
+    )
     return jsonify({'error': f'خطأ داخلي: {e}'}), 500
+
+
+@app.after_request
+def identify_running_version(response):
+    response.headers['X-SDMP3-Version'] = APP_VERSION
+    if request.path == '/' or request.path.startswith('/api/saved_operations'):
+        response.headers['Cache-Control'] = 'no-store'
+    return response
 
 def _signal_exit(signum, frame):
     """On Ctrl+C / SIGTERM: clean the TTS cache, then exit cleanly."""

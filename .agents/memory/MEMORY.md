@@ -1,2 +1,3 @@
 - [Android flush restrictions](android-flush.md) — use syscall stage plus errno; Android may return ENOENT from syncfs on a valid SD-card directory.
 - [Version increments](version-increments.md) — after version 3.0, use major.minor only and increment the minor number per completed update.
+- [Saved-operation recovery](saved-operation-recovery.md) — skip unavailable sources without rejecting the preset; verify the real load button and selection state.
