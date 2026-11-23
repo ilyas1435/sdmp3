@@ -97,7 +97,7 @@ async function main() {
             if (test.expectedError) {
                 assert.deepEqual(result.paths, [], JSON.stringify(result));
                 assert(result.status.includes(test.expectedError), JSON.stringify(result));
-                assert(result.status.includes('3.8'), JSON.stringify(result));
+                assert.match(result.status, /الإصدار \d+\.\d+\]/, JSON.stringify(result));
                 assert.equal(result.closed, false, JSON.stringify(result));
                 results.push(result);
                 continue;
