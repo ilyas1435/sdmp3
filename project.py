@@ -55,7 +55,7 @@ app = Flask(__name__)
 
 # Version is kept in the VERSION file next to this script so that the `sdmp3`
 # CLI can read it without importing the app.
-APP_VERSION_FALLBACK = "3.4"
+APP_VERSION_FALLBACK = "3.5"
 
 # Toggled by --no-wakelock (see main() at the bottom).
 WAKELOCK_ENABLED = True
@@ -7389,23 +7389,15 @@ HTML_TEMPLATE = """
         setSavedOperationsStatus('جارٍ تحميل العملية المحفوظة...', 'is-loading');
         try {
             let data = await savedOperationsRequest(
-                '/api/saved_operations/' + encodeURIComponent(operationId)
+                '/api/saved_operations/' + encodeURIComponent(operationId) + '/restore'
             );
             let operation = data.operation;
             setSavedOperationsStatus('جارٍ فحص الملفات والمجلدات المحفوظة...', 'is-loading');
-            let pathStatus = await savedOperationsRequest('/api/path_status', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({paths: operation.paths})
-            });
-            let unavailable = new Set(Array.isArray(pathStatus.missing) ? pathStatus.missing : []);
-            let statusTypes = pathStatus.types || {};
-            operation.paths.forEach(function(item) {
-                let type = statusTypes[item.path];
-                if (type && type !== (item.is_dir ? 'directory' : 'file')) {
-                    unavailable.add(item.path);
-                }
-            });
+            // Availability is checked per saved item by the restore endpoint;
+            // a filesystem error for one path must never reject the whole load.
+            let unavailable = new Set(
+                Array.isArray(data.unavailable_paths) ? data.unavailable_paths : []
+            );
 
             // Keep size calculation from blocking restore. A saved selection is
             // still useful when a card/filesystem refuses a folder walk; missing
@@ -7438,26 +7430,6 @@ HTML_TEMPLATE = """
                     });
                 } catch (sizeError) {
                     sizeWarning = 'تعذر حساب الأحجام الآن، لكن تم تحميل العناصر المتاحة؛ يمكنك متابعة النسخ.';
-                    try {
-                        let latestStatus = await savedOperationsRequest('/api/path_status', {
-                            method: 'POST',
-                            headers: {'Content-Type': 'application/json'},
-                            body: JSON.stringify({paths: availableBeforeSizing})
-                        });
-                        (Array.isArray(latestStatus.missing) ? latestStatus.missing : []).forEach(function(path) {
-                            unavailable.add(path);
-                        });
-                        let latestTypes = latestStatus.types || {};
-                        availableBeforeSizing.forEach(function(item) {
-                            let type = latestTypes[item.path];
-                            if (type && type !== (item.is_dir ? 'directory' : 'file')) {
-                                unavailable.add(item.path);
-                            }
-                        });
-                    } catch (statusError) {
-                        // The first status check already established which paths
-                        // were available; keep those rather than losing the load.
-                    }
                 }
             }
             let unavailablePaths = Array.from(unavailable);
@@ -9774,7 +9746,7 @@ def get_paths_status():
             return jsonify({'error': 'يوجد مسار محفوظ غير صالح'}), 400
         try:
             path_stat = os.stat(path)
-        except OSError:
+        except Exception:
             # Access restrictions and removed/moved paths are both unavailable
             # to this copy. Report them as data instead of failing the request.
             missing.append(path)
@@ -9789,6 +9761,34 @@ def get_paths_status():
             types[path] = 'other'
 
     return jsonify({'missing': missing, 'types': types})
+
+
+@app.route('/api/saved_operations/<operation_id>/restore', methods=['GET'])
+def api_restore_saved_operation(operation_id):
+    """Load a saved operation and isolate filesystem failures per source path."""
+    with _saved_operations_lock:
+        operation = next(
+            (item for item in load_saved_operations() if item.get('id') == operation_id),
+            None,
+        )
+    if operation is None:
+        return jsonify({'error': 'العملية المحفوظة غير موجودة'}), 404
+
+    unavailable = []
+    for item in operation.get('paths') or []:
+        path = item.get('path')
+        try:
+            path_stat = os.stat(path)
+            if item.get('is_dir') and not stat.S_ISDIR(path_stat.st_mode):
+                unavailable.append(path)
+            elif not item.get('is_dir') and not stat.S_ISREG(path_stat.st_mode):
+                unavailable.append(path)
+        except Exception:
+            # A bad, removed, inaccessible, or otherwise failing path is skipped
+            # independently; other saved items remain available for restoration.
+            unavailable.append(path)
+
+    return jsonify({'operation': operation, 'unavailable_paths': unavailable})
 
 
 @app.route('/api/sizes', methods=['POST'])

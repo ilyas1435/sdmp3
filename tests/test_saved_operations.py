@@ -169,7 +169,7 @@ class SavedOperationApiTests(unittest.TestCase):
         self.assertIn('finally {', load_function)
         self.assertIn('setSavedOperationLoadState(false)', load_function)
         self.assertIn('showConfirmModal(message, proceed)', load_function)
-        self.assertIn("savedOperationsRequest('/api/path_status'", load_function)
+        self.assertIn("encodeURIComponent(operationId) + '/restore'", load_function)
         self.assertIn("savedOperationsRequest('/api/sizes'", load_function)
         self.assertIn('catch (sizeError)', load_function)
         self.assertIn('تعذر حساب الأحجام الآن، لكن تم تحميل العناصر المتاحة', load_function)
@@ -259,7 +259,7 @@ class SavedOperationApiTests(unittest.TestCase):
 
         def stat_with_missing_saved_file(path, *args, **kwargs):
             if os.fspath(path) == missing_file:
-                raise FileNotFoundError(2, 'No such file or directory', missing_file)
+                raise KeyError(missing_file)
             return real_stat(path, *args, **kwargs)
 
         with mock.patch.object(project.os, 'stat', side_effect=stat_with_missing_saved_file):
@@ -269,6 +269,45 @@ class SavedOperationApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.get_json()['missing'], [missing_file])
         self.assertEqual(response.get_json()['types'][missing_file], 'missing')
+
+    def test_restore_skips_one_path_exception_and_keeps_other_saved_paths(self):
+        with tempfile.TemporaryDirectory() as source:
+            good_file = os.path.join(source, 'good.mp3')
+            with open(good_file, 'wb') as output:
+                output.write(b'audio')
+            broken_file = '/sdcard/Download/intro8.mp3'
+            operation = {
+                'name': 'partial restore',
+                'paths': [
+                    {'path': broken_file, 'is_dir': False},
+                    {'path': good_file, 'is_dir': False},
+                ],
+                'excludes': [],
+                'groups': [],
+            }
+            created = self.client.post('/api/saved_operations', json=operation)
+            self.assertEqual(created.status_code, 201)
+            operation_id = created.get_json()['operation']['id']
+
+            real_stat = os.stat
+
+            def stat_with_one_key_error(path, *args, **kwargs):
+                if os.fspath(path) == broken_file:
+                    raise KeyError(broken_file)
+                return real_stat(path, *args, **kwargs)
+
+            with mock.patch.object(project.os, 'stat', side_effect=stat_with_one_key_error):
+                restored = self.client.get(
+                    '/api/saved_operations/' + operation_id + '/restore'
+                )
+
+        self.assertEqual(restored.status_code, 200)
+        data = restored.get_json()
+        self.assertEqual(data['unavailable_paths'], [broken_file])
+        self.assertEqual(
+            [item['path'] for item in data['operation']['paths']],
+            [broken_file, good_file],
+        )
 
     def test_size_lookup_reports_missing_saved_paths_instead_of_failing(self):
         with tempfile.TemporaryDirectory() as source:
