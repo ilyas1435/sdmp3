@@ -55,7 +55,7 @@ app = Flask(__name__)
 
 # Version is kept in the VERSION file next to this script so that the `sdmp3`
 # CLI can read it without importing the app.
-APP_VERSION_FALLBACK = "3.8"
+APP_VERSION_FALLBACK = "3.9"
 
 # Toggled by --no-wakelock (see main() at the bottom).
 WAKELOCK_ENABLED = True
@@ -4366,6 +4366,11 @@ HTML_TEMPLATE = """
         seg = (seg || '').trim();
         let err = groupSegmentError(seg);
         if (err) return err;
+        // Renaming a folder renames its descendants too. A leaf may contain '/'
+        // (the nesting separator), so check the resulting chain depth as well —
+        // otherwise the copy route would reject the group after the fact.
+        let depthErr = window.SDMP3GroupOps.renameDepthError(copyGroups, g, seg);
+        if (depthErr) return depthErr;
         let parts = groupPathParts(g.name);
         let parentParts = parts.slice(0, -1);
         let oldKey = groupPathKey(g.name);

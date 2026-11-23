@@ -125,9 +125,10 @@ def prepare_copy_groups(raw_groups, paths):
     for item in raw_groups:
         if not isinstance(item, dict):
             return [], 'صيغة المجموعات غير صالحة'
-        if not (item.get('name') or '').strip():
+        raw_name = item.get('name')
+        if not isinstance(raw_name, str) or not raw_name.strip():
             return [], 'اسم مجلد الضم مطلوب'
-        name, error = validate_group_path(item.get('name') or '')
+        name, error = validate_group_path(raw_name)
         if error:
             return [], error
         key = name.casefold()

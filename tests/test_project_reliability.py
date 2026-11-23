@@ -9,6 +9,7 @@ from unittest import mock
 
 import project
 import sdmp3_cli
+import sdmp3_groups
 from sdmp3_version import validate_version
 
 
@@ -720,6 +721,20 @@ class AppVersionTests(unittest.TestCase):
         running_version = project.get_app_version()
         with mock.patch('builtins.open', mock.mock_open(read_data='99.99')):
             self.assertEqual(project.get_app_version(), running_version)
+
+
+class CopyGroupValidationTests(unittest.TestCase):
+    def test_non_string_group_name_is_a_validation_error_not_an_exception(self):
+        groups, error = sdmp3_groups.prepare_copy_groups(
+            [{'name': 123, 'paths': ['/sdcard/a.mp3']}], ['/sdcard/a.mp3'])
+        self.assertEqual(groups, [])
+        self.assertTrue(error)
+
+    def test_valid_group_still_prepares(self):
+        groups, error = sdmp3_groups.prepare_copy_groups(
+            [{'name': 'دروس', 'paths': ['/sdcard/a.mp3']}], ['/sdcard/a.mp3'])
+        self.assertEqual(error, None)
+        self.assertEqual(groups, [('دروس', ['/sdcard/a.mp3'])])
 
 
 if __name__ == '__main__':

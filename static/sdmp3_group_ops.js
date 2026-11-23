@@ -7,6 +7,9 @@
     const MAX_PATH = 180;
     const MAX_SEGMENT = 80;
     const BAD_CHARS = /[\/\\:*?"<>|\u0000-\u001f]/;
+    // String.replace needs the global flag to clean every illegal character;
+    // keep the plain regex too because RegExp.test() is stateful with /g.
+    const BAD_CHARS_GLOBAL = /[\/\\:*?"<>|\u0000-\u001f]/g;
 
     function parts(path) {
         return String(path || '').split('/').map(function (part) {
@@ -28,7 +31,7 @@
             ? Math.min(maxDepth, MAX_DEPTH) : MAX_DEPTH;
         let segments = (input || []).map(function (segment) {
             return String(segment || '').trim()
-                .replace(BAD_CHARS, '-')
+                .replace(BAD_CHARS_GLOBAL, '-')
                 .replace(/[ .]+/g, ' ')
                 .trim()
                 .slice(0, MAX_SEGMENT)
@@ -150,10 +153,31 @@
         return {groups: next, error: '', moved: true};
     }
 
+    // Renaming a folder also renames every descendant. A leaf that contains
+    // '/' (allowed by groupSegmentError, it is the nesting separator) can push
+    // a grandchild past the server's depth limit, so check the whole chain.
+    function renameDepthError(groups, group, seg) {
+        const oldParts = parts(group && group.name);
+        if (!oldParts.length) return 'المجلد غير موجود';
+        const parentParts = oldParts.slice(0, -1);
+        const leafParts = parts(seg);
+        const oldKey = key(group.name);
+        for (const other of groups || []) {
+            const otherKey = key(other.name);
+            if (otherKey !== oldKey && otherKey.indexOf(oldKey + '/') !== 0) continue;
+            const suffix = parts(other.name).slice(oldParts.length);
+            if (parentParts.concat(leafParts, suffix).length > MAX_DEPTH) {
+                return 'أقصى تداخل 3 مستويات (مثال: العلماء/ابن باز)';
+            }
+        }
+        return '';
+    }
+
     return {
         assignPaths: assignPaths,
         moveGroup: moveGroup,
         clampSegments: clampSegments,
-        leafName: leafName
+        leafName: leafName,
+        renameDepthError: renameDepthError
     };
 });

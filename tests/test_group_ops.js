@@ -1,5 +1,5 @@
 const assert = require('node:assert/strict');
-const {assignPaths, moveGroup, clampSegments, leafName} = require('../static/sdmp3_group_ops.js');
+const {assignPaths, moveGroup, clampSegments, leafName, renameDepthError} = require('../static/sdmp3_group_ops.js');
 
 function group(id, name, paths = []) {
     return {id, name, paths};
@@ -9,6 +9,8 @@ assert.deepEqual(clampSegments(['قديم', 'الصف', 'المادة', 'الد�
     'الصف', 'المادة', 'الدرس'
 ], 'smart organization keeps nested source folders up to the supported limit');
 assert.deepEqual(clampSegments(['../outside', 'مسار:قديم']), ['-outside', 'مسار-قديم']);
+assert.deepEqual(clampSegments(['a:b?c*d']), ['a-b-c-d'],
+    'every illegal character is sanitized, not just the first one');
 assert.equal(leafName('مجموعة/مادة/درس'), 'درس',
     'inline child-folder renaming receives only the last path segment');
 
@@ -90,6 +92,16 @@ assert.equal(leafName('مجموعة/مادة/درس'), 'درس',
     const result = moveGroup(groups, 1, 2);
     assert.match(result.error, /نفس الاسم/);
     assert.deepEqual(groups.map(item => item.name), ['أ', 'ج', 'ج/أ']);
+}
+
+{
+    const groups = [group(1, 'أ'), group(2, 'أ/ب'), group(3, 'أ/ب/ج')];
+    assert.match(renameDepthError(groups, groups[0], 'ب/ج'),
+        /3 مستويات/, 'renaming a parent with a slash must not push a child to level 4');
+    assert.equal(renameDepthError(groups, groups[0], 'د'), '',
+        'a plain rename keeps the chain within the depth limit');
+    assert.equal(renameDepthError(groups, groups[1], 'ج'), '',
+        'renaming the middle folder keeps its existing child at level 3');
 }
 
 console.log('group operations: all checks passed');
