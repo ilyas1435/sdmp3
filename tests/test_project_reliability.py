@@ -9,6 +9,7 @@ from unittest import mock
 
 import project
 import sdmp3_cli
+from sdmp3_version import validate_version
 
 
 class PlanTransferTests(unittest.TestCase):
@@ -569,6 +570,7 @@ class TransferRouteTests(unittest.TestCase):
         self.assertEqual(helper.status_code, 200)
         helper.close()
 
+
     def test_selected_folder_browse_api_returns_children_for_exclusions(self):
         with tempfile.TemporaryDirectory() as tempdir:
             folder = os.path.join(tempdir, 'selected')
@@ -680,6 +682,39 @@ class CliProcessIdentityTests(unittest.TestCase):
                             instance = sdmp3_cli.read_instance()
 
         self.assertEqual(instance['pid'], 54321)
+
+
+class AppVersionTests(unittest.TestCase):
+    def test_version_is_major_minor_and_matches_app_and_cli(self):
+        version_path = os.path.join(os.path.dirname(project.__file__), 'VERSION')
+        with open(version_path, encoding='utf-8') as handle:
+            file_version = handle.read().strip()
+
+        self.assertEqual(validate_version(file_version), file_version)
+        self.assertEqual(project.get_app_version(), file_version)
+        self.assertEqual(sdmp3_cli.app_version(), file_version)
+
+        client = project.app.test_client()
+        page = client.get('/')
+        self.assertEqual(page.status_code, 200)
+        self.assertIn('v{}'.format(file_version), page.get_data(as_text=True))
+        system = client.get('/api/system')
+        self.assertEqual(system.status_code, 200)
+        self.assertEqual(system.get_json()['version'], file_version)
+
+    def test_version_validator_rejects_three_part_and_malformed_values(self):
+        for invalid in ('3', '3.0.1', '3.1.0', 'v3.0', '3.x', '', ' 3.0.1 '):
+            with self.subTest(version=invalid):
+                with self.assertRaises(ValueError):
+                    validate_version(invalid)
+
+    def test_app_and_cli_reject_invalid_version_files(self):
+        with mock.patch('builtins.open', mock.mock_open(read_data='3.0.1')):
+            with self.assertRaisesRegex(ValueError, 'major.minor'):
+                project.get_app_version()
+        with mock.patch('builtins.open', mock.mock_open(read_data='3.0.1')):
+            with self.assertRaisesRegex(ValueError, 'major.minor'):
+                sdmp3_cli.app_version()
 
 
 if __name__ == '__main__':

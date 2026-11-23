@@ -42,6 +42,7 @@ from sdmp3_groups import (prepare_copy_groups, group_segments, group_dir_chain,
 from sdmp3_fonts import (DEFAULT_FONT, DEFAULT_FONT_SIZE, FONT_SIZES,
                          font_face_css, font_ids, font_scale, font_size_ids,
                          font_stack, get_font, catalog as font_catalog)
+from sdmp3_version import validate_version
 
 try:
     import edge_tts
@@ -54,7 +55,7 @@ app = Flask(__name__)
 
 # Version is kept in the VERSION file next to this script so that the `sdmp3`
 # CLI can read it without importing the app.
-APP_VERSION_FALLBACK = "1.5.5"
+APP_VERSION_FALLBACK = "3.0"
 
 # Toggled by --no-wakelock (see main() at the bottom).
 WAKELOCK_ENABLED = True
@@ -64,9 +65,10 @@ def get_app_version():
     try:
         here = os.path.dirname(os.path.abspath(__file__))
         with open(os.path.join(here, 'VERSION'), encoding='utf-8') as fh:
-            return fh.read().strip() or APP_VERSION_FALLBACK
+            version = fh.read().strip() or APP_VERSION_FALLBACK
     except OSError:
-        return APP_VERSION_FALLBACK
+        version = APP_VERSION_FALLBACK
+    return validate_version(version)
 
 
 # Copied in 4MB units. A single sequential write per unit is what protects the

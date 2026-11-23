@@ -27,6 +27,8 @@ import sys
 import threading
 import time
 
+from sdmp3_version import validate_version
+
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 APP_PY = os.path.join(APP_DIR, "project.py")
 VERSION_FILE = os.path.join(APP_DIR, "VERSION")
@@ -92,9 +94,10 @@ def die(msg, code=1):
 def app_version():
     try:
         with open(VERSION_FILE, encoding="utf-8") as fh:
-            return fh.read().strip() or "unknown"
+            version = fh.read().strip()
     except OSError:
         return "unknown"
+    return validate_version(version) if version else "unknown"
 
 
 def git(*args, timeout=120):
