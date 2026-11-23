@@ -55,7 +55,7 @@ app = Flask(__name__)
 
 # Version is kept in the VERSION file next to this script so that the `sdmp3`
 # CLI can read it without importing the app.
-APP_VERSION_FALLBACK = "3.7"
+APP_VERSION_FALLBACK = "3.8"
 
 # Toggled by --no-wakelock (see main() at the bottom).
 WAKELOCK_ENABLED = True
@@ -9863,9 +9863,19 @@ def get_items_sizes():
     The modal used to fire one /api/size per selected item, sequentially, so a
     dozen folders meant a dozen full walks and a long row of "يحسب..".
     """
-    body = request.json or {}
-    paths = [p for p in body.get('paths', []) if p]
-    excludes = set(p for p in body.get('excludes', []) if p)
+    body = request.get_json(silent=True) or {}
+    raw_paths = body.get('paths', [])
+    if not isinstance(raw_paths, list):
+        return jsonify({'error': 'قائمة المسارات غير صالحة'}), 400
+    paths = []
+    for path in raw_paths:
+        if not isinstance(path, str) or not path.startswith('/') or '\x00' in path:
+            return jsonify({'error': 'يوجد مسار غير صالح في طلب حساب الأحجام'}), 400
+        paths.append(path)
+    raw_excludes = body.get('excludes', [])
+    if not isinstance(raw_excludes, list):
+        return jsonify({'error': 'قائمة الاستثناءات غير صالحة'}), 400
+    excludes = set(p for p in raw_excludes if isinstance(p, str) and p)
     include_types = body.get('include_types') is True
     # A child's bytes are already inside its parent: walk each tree once.
     roots = []
@@ -9876,34 +9886,48 @@ def get_items_sizes():
     root_bytes = {}
     root_types = {}
     for root in roots:
-        # Saved operations request the root type as well, so a path that changed
-        # from a file to a folder is never restored with the wrong selection.
-        if include_types:
+        try:
+            # Inspect each root independently. A single exceptional path must
+            # not turn a multi-item size request into HTTP 500.
+            root_stat = os.stat(root)
+            root_exists[root] = True
+            if stat.S_ISDIR(root_stat.st_mode):
+                root_types[root] = 'directory'
+            elif stat.S_ISREG(root_stat.st_mode):
+                root_types[root] = 'file'
+            else:
+                root_types[root] = 'other'
             try:
-                root_stat = os.stat(root)
-                root_exists[root] = True
-                if stat.S_ISDIR(root_stat.st_mode):
-                    root_types[root] = 'directory'
-                elif stat.S_ISREG(root_stat.st_mode):
-                    root_types[root] = 'file'
-                else:
-                    root_types[root] = 'other'
-            except OSError:
-                root_exists[root] = False
-                root_types[root] = 'missing'
-        else:
-            # One existence check per root; nested paths inherit the owner's
-            # result instead of issuing duplicate stats.
-            root_exists[root] = os.path.exists(root)
-        root_bytes[root] = get_dir_size(root, excludes) if root_exists[root] else 0
+                root_bytes[root] = get_dir_size(root, excludes)
+            except Exception as size_error:
+                log_event('size scan skipped {}: {}: {}'.format(
+                    root, type(size_error).__name__, size_error
+                ))
+                root_bytes[root] = 0
+        except Exception as path_error:
+            root_exists[root] = False
+            root_types[root] = 'missing'
+            root_bytes[root] = 0
+            log_event('size path skipped {}: {}: {}'.format(
+                root, type(path_error).__name__, path_error
+            ))
     sizes = {}
     missing = []
     types = {}
     for path in paths:
-        owner = next(r for r in roots if path == r or path.startswith(r.rstrip('/') + '/'))
-        total = root_bytes[owner]
+        owner = next(
+            (r for r in roots if path == r or path.startswith(r.rstrip('/') + '/')),
+            None,
+        )
+        if owner is None:
+            sizes[path] = {'bytes': 0, 'formatted': '0 B', 'owner': path}
+            missing.append(path)
+            if include_types:
+                types[path] = 'missing'
+            continue
+        total = root_bytes.get(owner, 0)
         sizes[path] = {'bytes': total, 'formatted': format_size(total), 'owner': owner}
-        if not root_exists[owner]:
+        if not root_exists.get(owner, False):
             missing.append(path)
         if include_types:
             # A missing or inaccessible saved path is still a valid response.

@@ -334,6 +334,34 @@ class SavedOperationApiTests(unittest.TestCase):
         self.assertEqual(data['missing'], [missing_file])
         self.assertEqual(data['types'][missing_file], 'missing')
 
+    def test_size_lookup_skips_keyerror_path_and_keeps_other_sizes(self):
+        with tempfile.TemporaryDirectory() as source:
+            good_file = os.path.join(source, 'good.mp3')
+            with open(good_file, 'wb') as output:
+                output.write(b'good file')
+            broken_file = '/sdcard/Download/nB'
+            real_stat = os.stat
+
+            def stat_with_one_key_error(path, *args, **kwargs):
+                if os.fspath(path) == broken_file:
+                    raise KeyError(broken_file)
+                return real_stat(path, *args, **kwargs)
+
+            with mock.patch.object(project.os, 'stat', side_effect=stat_with_one_key_error):
+                response = self.client.post('/api/sizes', json={
+                    'paths': [broken_file, good_file],
+                    'excludes': [],
+                    'include_types': True,
+                })
+
+        self.assertEqual(response.status_code, 200)
+        data = response.get_json()
+        self.assertEqual(data['missing'], [broken_file])
+        self.assertEqual(data['types'][broken_file], 'missing')
+        self.assertEqual(data['types'][good_file], 'file')
+        self.assertEqual(data['sizes'][good_file]['bytes'], 9)
+        self.assertEqual(data['sizes'][broken_file]['bytes'], 0)
+
     def test_reported_missing_download_path_never_returns_internal_error(self):
         missing_file = '/sdcard/Download/intro8.mp3'
         real_stat = os.stat
