@@ -94,6 +94,14 @@ async function main() {
                 closed: document.getElementById('savedOperationsModal').style.display === 'none',
                 shown: document.getElementById('selectedModal').style.display === 'flex'
             })`);
+            if (test.expectedError) {
+                assert.deepEqual(result.paths, [], JSON.stringify(result));
+                assert(result.status.includes(test.expectedError), JSON.stringify(result));
+                assert(result.status.includes('3.7'), JSON.stringify(result));
+                assert.equal(result.closed, false, JSON.stringify(result));
+                results.push(result);
+                continue;
+            }
             assert.deepEqual(result.paths, test.paths, JSON.stringify(result));
             assert.equal(result.closed, true, JSON.stringify(result));
             assert.equal(result.shown, true, JSON.stringify(result));

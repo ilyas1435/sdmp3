@@ -55,7 +55,7 @@ app = Flask(__name__)
 
 # Version is kept in the VERSION file next to this script so that the `sdmp3`
 # CLI can read it without importing the app.
-APP_VERSION_FALLBACK = "3.6"
+APP_VERSION_FALLBACK = "3.7"
 
 # Toggled by --no-wakelock (see main() at the bottom).
 WAKELOCK_ENABLED = True
@@ -7148,12 +7148,20 @@ HTML_TEMPLATE = """
     }
 
     async function savedOperationsRequest(url, options) {
-        let response = await fetch(url, Object.assign({cache: 'no-store'}, options || {}));
+        let method = (options && options.method) || 'GET';
+        let response;
+        try {
+            response = await fetch(url, Object.assign({cache: 'no-store'}, options || {}));
+        } catch (networkError) {
+            throw new Error('فشل الاتصال بالطلب ' + method + ' ' + url +
+                ' (الإصدار ' + '{{ app_version }}' + '): ' +
+                (networkError.message || 'تعذر الوصول إلى الخادم'));
+        }
         let data = await response.json().catch(function() { return {}; });
         if (!response.ok) {
             let version = response.headers.get('X-SDMP3-Version') || '{{ app_version }}';
             throw new Error((data.error || 'تعذر تنفيذ الطلب') +
-                ' [' + ((options && options.method) || 'GET') + ' ' + url +
+                ' [' + method + ' ' + url +
                 '؛ الإصدار ' + version + ']');
         }
         return data;
@@ -7433,6 +7441,7 @@ HTML_TEMPLATE = """
     async function loadSavedOperation(operationId, activeButton) {
         if (savedOperationLoadingId) return;
         savedOperationLoadingId = String(operationId);
+        let phase = 'قراءة بيانات العملية المحفوظة';
         setSavedOperationLoadState(true, activeButton);
         setSavedOperationsStatus('جارٍ تحميل العملية المحفوظة...', 'is-loading');
         try {
@@ -7440,6 +7449,7 @@ HTML_TEMPLATE = """
                 '/api/saved_operations/' + encodeURIComponent(operationId)
             );
             let operation = data.operation;
+            phase = 'فحص وجود الملفات والمجلدات';
             setSavedOperationsStatus('جارٍ فحص الملفات والمجلدات المحفوظة...', 'is-loading');
             let unavailable = new Set(await checkSavedOperationPaths(operation));
             let sizeWarning = '';
@@ -7487,15 +7497,18 @@ HTML_TEMPLATE = """
                 savedOperationConfigKey(operation);
             let proceed = function() {
                 try {
+                    phase = 'تحديد الملفات السليمة وتطبيق التنظيم';
                     if (applySavedOperation(operation, sizeData, unavailablePaths, sizeWarning)) {
                         closeSavedOperationsModal();
                     }
                 } catch (error) {
                     setSavedOperationsStatus(
-                        error.message || 'تعذر تطبيق العملية المحفوظة', 'err');
+                        'فشل تحميل العملية في مرحلة «تحديد الملفات وتطبيق التنظيم»: ' +
+                        (error.message || 'خطأ غير معروف'), 'err');
                 }
             };
             if (different) {
+                phase = 'انتظار تأكيد استبدال التحديد الحالي';
                 let message = 'سيتم استبدال التحديد الحالي دون بدء النسخ.';
                 if (unavailableItems.length) {
                     message += '\\n' + unavailableItems.length +
@@ -7507,7 +7520,9 @@ HTML_TEMPLATE = """
                 proceed();
             }
         } catch (error) {
-            setSavedOperationsStatus(error.message || 'تعذر تحميل العملية المحفوظة', 'err');
+            setSavedOperationsStatus(
+                'فشل تحميل العملية في مرحلة «' + phase + '»: ' +
+                (error.message || 'خطأ غير معروف'), 'err');
         } finally {
             setSavedOperationLoadState(false);
         }

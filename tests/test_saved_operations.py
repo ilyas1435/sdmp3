@@ -164,8 +164,11 @@ class SavedOperationApiTests(unittest.TestCase):
             'async function loadSavedOperation(operationId, activeButton) {', 1
         )[1].split('function applySavedOperation', 1)[0]
         self.assertIn('if (savedOperationLoadingId) return;', load_function)
-        self.assertIn("setSavedOperationsStatus(error.message || 'تعذر تحميل العملية المحفوظة', 'err')",
-                      load_function)
+        self.assertIn('فشل تحميل العملية في مرحلة', load_function)
+        self.assertIn('قراءة بيانات العملية المحفوظة', load_function)
+        self.assertIn('تحديد الملفات السليمة وتطبيق التنظيم', load_function)
+        self.assertIn('فشل الاتصال بالطلب', page)
+        self.assertIn('X-SDMP3-Version', page)
         self.assertIn('finally {', load_function)
         self.assertIn('setSavedOperationLoadState(false)', load_function)
         self.assertIn('showConfirmModal(message, proceed)', load_function)
@@ -252,6 +255,15 @@ class SavedOperationApiTests(unittest.TestCase):
         self.assertEqual(data['types'][directory], 'directory')
         self.assertEqual(data['types'][file_path], 'file')
         self.assertEqual(data['types'][missing_file], 'missing')
+
+    def test_saved_operation_api_is_uncached_and_reports_running_version(self):
+        response = self.client.get('/')
+        self.assertEqual(response.headers.get('Cache-Control'), 'no-store')
+        self.assertEqual(response.headers.get('X-SDMP3-Version'), project.get_app_version())
+        operation = self.client.post('/api/saved_operations', json=self.payload()).get_json()['operation']
+        detail = self.client.get('/api/saved_operations/' + operation['id'])
+        self.assertEqual(detail.headers.get('Cache-Control'), 'no-store')
+        self.assertEqual(detail.headers.get('X-SDMP3-Version'), project.get_app_version())
 
     def test_path_status_handles_reported_missing_download_path(self):
         missing_file = '/sdcard/Download/intro8.mp3'

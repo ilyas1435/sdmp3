@@ -53,6 +53,12 @@ class SavedRestoreBrowserTests(unittest.TestCase):
                                groups=[], excludes=[])
                 missing = client.post('/api/saved_operations', json=payload)
                 self.assertEqual(missing.status_code, 201)
+                payload.update(name='detail request failure',
+                               paths=[{'path': good, 'is_dir': False}],
+                               groups=[], excludes=[])
+                detail_failure = client.post('/api/saved_operations', json=payload)
+                self.assertEqual(detail_failure.status_code, 201)
+                detail_failure_id = detail_failure.get_json()['operation']['id']
                 os.remove(removed)
                 server = make_server('127.0.0.1', 0, project.app, threaded=True)
                 worker = threading.Thread(target=server.serve_forever, daemon=True)
@@ -65,13 +71,22 @@ class SavedRestoreBrowserTests(unittest.TestCase):
                                    {'id': missing.get_json()['operation']['id'],
                                     'paths': [], 'warning': 'تم تجاهل 1'},
                                    {'id': failing_id,
-                                    'paths': [good, folder], 'warning': 'تم تجاهل 2'},
+                                     'paths': [good, folder], 'warning': 'تم تجاهل 2'},
+                                   {'id': detail_failure_id, 'paths': [],
+                                    'expectedError':
+                                        f'GET /api/saved_operations/{detail_failure_id}'},
                                ]))
                     original_status = project.app.view_functions['get_paths_status']
                     original_sizes = project.app.view_functions['get_items_sizes']
                     inject_errors = {'enabled': False, 'batch': 0, 'item': 0, 'sizes': 0}
 
                     def read_with_injected_errors(operation_id):
+                        if operation_id == detail_failure_id:
+                            response = project.jsonify({
+                                'error': "خطأ داخلي: '/sdcard/Download/intro8.mp3'",
+                            })
+                            response.status_code = 500
+                            return response
                         response = original_read(operation_id)
                         inject_errors['enabled'] = operation_id == failing_id
                         return response
@@ -120,6 +135,8 @@ class SavedRestoreBrowserTests(unittest.TestCase):
                     self.assertIn('تعذر حساب الأحجام', loaded[2]['warning'])
                     self.assertEqual(loaded[2]['groups'], loaded[0]['groups'])
                     self.assertEqual(loaded[2]['excludes'], loaded[0]['excludes'])
+                    self.assertIn('قراءة بيانات العملية المحفوظة', loaded[3]['status'])
+                    self.assertIn('/sdcard/Download/intro8.mp3', loaded[3]['status'])
                     print('Full-page restore: partial selection, groups, exclusions, '
                           'empty selection, failed batch/item/size requests, '
                           'modal closure, and copy plan passed.')
