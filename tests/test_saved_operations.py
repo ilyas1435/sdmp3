@@ -138,7 +138,7 @@ class SavedOperationApiTests(unittest.TestCase):
             'id="saveOperationBtn"',
             'id="savedOperationsModal"',
             'id="updateSavedOperationBtn"',
-            'applySavedOperation(operation, sizeData, unavailablePaths)',
+            'applySavedOperation(operation, sizeData, unavailablePaths, sizeWarning)',
             'اختر الوجهة يدوياً عند النسخ',
             'id="groupStatusHint" class="check-hint" role="status"',
         ):
@@ -169,11 +169,15 @@ class SavedOperationApiTests(unittest.TestCase):
         self.assertIn('finally {', load_function)
         self.assertIn('setSavedOperationLoadState(false)', load_function)
         self.assertIn('showConfirmModal(message, proceed)', load_function)
-        self.assertIn('if (applySavedOperation(operation, sizeData, unavailablePaths))',
+        self.assertIn("savedOperationsRequest('/api/path_status'", load_function)
+        self.assertIn("savedOperationsRequest('/api/sizes'", load_function)
+        self.assertIn('catch (sizeError)', load_function)
+        self.assertIn('تعذر حساب الأحجام الآن، لكن تم تحميل العناصر المتاحة', load_function)
+        self.assertIn('if (applySavedOperation(operation, sizeData, unavailablePaths, sizeWarning))',
                       load_function)
 
         apply_function = page.split(
-            'function applySavedOperation(operation, sizeData, unavailablePaths) {', 1
+            'function applySavedOperation(operation, sizeData, unavailablePaths, sizeWarning) {', 1
         )[1].split('function closeSelectedModal', 1)[0]
         self.assertIn('return true;', apply_function)
         self.assertNotIn('closeSavedOperationsModal()', apply_function)
@@ -189,7 +193,7 @@ class SavedOperationApiTests(unittest.TestCase):
         self.assertIn('} else {\n                proceed();', load_function)
 
         apply_function = page.split(
-            'function applySavedOperation(operation, sizeData, unavailablePaths) {', 1
+            'function applySavedOperation(operation, sizeData, unavailablePaths, sizeWarning) {', 1
         )[1].split('function closeSelectedModal', 1)[0]
         self.assertIn('return !missingSet.has(item.path);', apply_function)
         self.assertIn('savedOperationIssueMessage(unavailableItems)', apply_function)
@@ -224,6 +228,47 @@ class SavedOperationApiTests(unittest.TestCase):
         self.assertEqual(data['types'][directory], 'directory')
         self.assertEqual(data['types'][file_path], 'file')
         self.assertEqual(data['missing'], [])
+
+    def test_path_status_reports_existing_types_and_missing_paths(self):
+        with tempfile.TemporaryDirectory() as source:
+            directory = os.path.join(source, 'folder')
+            file_path = os.path.join(source, 'track.mp3')
+            missing_file = os.path.join(source, 'removed.mp3')
+            os.mkdir(directory)
+            with open(file_path, 'wb') as output:
+                output.write(b'audio')
+
+            response = self.client.post('/api/path_status', json={
+                'paths': [
+                    {'path': directory, 'is_dir': True},
+                    {'path': file_path, 'is_dir': False},
+                    {'path': missing_file, 'is_dir': False},
+                ],
+            })
+
+        self.assertEqual(response.status_code, 200)
+        data = response.get_json()
+        self.assertEqual(data['missing'], [missing_file])
+        self.assertEqual(data['types'][directory], 'directory')
+        self.assertEqual(data['types'][file_path], 'file')
+        self.assertEqual(data['types'][missing_file], 'missing')
+
+    def test_path_status_handles_reported_missing_download_path(self):
+        missing_file = '/sdcard/Download/intro8.mp3'
+        real_stat = os.stat
+
+        def stat_with_missing_saved_file(path, *args, **kwargs):
+            if os.fspath(path) == missing_file:
+                raise FileNotFoundError(2, 'No such file or directory', missing_file)
+            return real_stat(path, *args, **kwargs)
+
+        with mock.patch.object(project.os, 'stat', side_effect=stat_with_missing_saved_file):
+            response = self.client.post('/api/path_status', json={
+                'paths': [{'path': missing_file, 'is_dir': False}],
+            })
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()['missing'], [missing_file])
+        self.assertEqual(response.get_json()['types'][missing_file], 'missing')
 
     def test_size_lookup_reports_missing_saved_paths_instead_of_failing(self):
         with tempfile.TemporaryDirectory() as source:
