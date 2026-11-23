@@ -138,8 +138,9 @@ class SavedOperationApiTests(unittest.TestCase):
             'id="saveOperationBtn"',
             'id="savedOperationsModal"',
             'id="updateSavedOperationBtn"',
-            'applySavedOperation(operation, sizeData, missing)',
+            'applySavedOperation(operation, sizeData, unavailablePaths)',
             'اختر الوجهة يدوياً عند النسخ',
+            'id="groupStatusHint" class="check-hint" role="status"',
         ):
             self.assertIn(marker, page)
 
@@ -172,11 +173,38 @@ class SavedOperationApiTests(unittest.TestCase):
                       load_function)
 
         apply_function = page.split(
-            'function applySavedOperation(operation, sizeData, missing) {', 1
+            'function applySavedOperation(operation, sizeData, unavailablePaths) {', 1
         )[1].split('function closeSelectedModal', 1)[0]
-        self.assertIn('return false;', apply_function)
         self.assertIn('return true;', apply_function)
         self.assertNotIn('closeSavedOperationsModal()', apply_function)
+
+    def test_unavailable_paths_are_skipped_with_names_and_counts(self):
+        page = self.client.get('/').get_data(as_text=True)
+        load_function = page.split(
+            'async function loadSavedOperation(operationId, activeButton) {', 1
+        )[1].split('function applySavedOperation', 1)[0]
+        self.assertIn('let unavailableItems = operation.paths.filter', load_function)
+        self.assertIn('if (different)', load_function)
+        self.assertNotIn('if (unavailableItems.length || different)', load_function)
+
+        apply_function = page.split(
+            'function applySavedOperation(operation, sizeData, unavailablePaths) {', 1
+        )[1].split('function closeSelectedModal', 1)[0]
+        self.assertIn('return !missingSet.has(item.path);', apply_function)
+        self.assertIn('savedOperationIssueMessage(unavailableItems)', apply_function)
+        self.assertIn("setGroupStatus(issueMessage, 'warning')", apply_function)
+
+        issue_function = page.split(
+            'function savedOperationIssueMessage(items) {', 1
+        )[1].split('async function loadSavedOperation', 1)[0]
+        self.assertIn('items.length', issue_function)
+        self.assertIn('folders +', issue_function)
+        self.assertIn('files +', issue_function)
+        self.assertIn('items.map(function(item)', issue_function)
+        self.assertIn('savedOperationPathLabel(item.path)', issue_function)
+        self.assertIn('تعذّر الوصول', issue_function)
+        self.assertIn('حُذف أو نُقل', issue_function)
+        self.assertIn('max-height:140px; overflow-y:auto;', page)
 
     def test_size_lookup_can_validate_saved_path_types(self):
         with tempfile.TemporaryDirectory() as source:
@@ -195,6 +223,19 @@ class SavedOperationApiTests(unittest.TestCase):
         self.assertEqual(data['types'][directory], 'directory')
         self.assertEqual(data['types'][file_path], 'file')
         self.assertEqual(data['missing'], [])
+
+    def test_size_lookup_reports_missing_saved_paths_instead_of_failing(self):
+        with tempfile.TemporaryDirectory() as source:
+            missing_file = os.path.join(source, 'removed.mp3')
+            result = self.client.post('/api/sizes', json={
+                'paths': [missing_file],
+                'excludes': [],
+                'include_types': True,
+            })
+        self.assertEqual(result.status_code, 200)
+        data = result.get_json()
+        self.assertEqual(data['missing'], [missing_file])
+        self.assertEqual(data['types'][missing_file], 'missing')
 
 
 if __name__ == '__main__':

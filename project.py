@@ -2909,6 +2909,9 @@ HTML_TEMPLATE = """
         .check-line { display:flex; align-items:center; gap:9px; cursor:pointer; color:var(--text); font-size:calc(13px * var(--font-scale)); margin:12px 0 0; font-weight:500; }
         .check-line .checkbox { width:17px; height:17px; margin:0; flex-shrink:0; }
         .check-hint { display:block; color:var(--text-muted); font-size:calc(11.5px * var(--font-scale)); line-height:1.55; margin:5px 0 0; }
+        .check-hint.warning { color:var(--warning); background:var(--warning-soft);
+            border:1px solid var(--warning-line); border-radius:9px; padding:8px 10px;
+            white-space:pre-line; overflow-wrap:anywhere; max-height:140px; overflow-y:auto; }
 
         /* The selected-items window keeps one height: the folder list keeps its
            place while the file rows scroll, so the action cannot move under the
@@ -3444,7 +3447,8 @@ HTML_TEMPLATE = """
                         <button type="button" class="btn btn-outline btn-sm" onclick="startNewGroup()"><svg class="icon" aria-hidden="true"><use href="#ico-plus"></use></svg> مجلد جديد</button>
                     </div>
                 </div>
-                <div id="groupStatusHint" class="check-hint" style="display:none; margin:0;"></div>
+            <div id="groupStatusHint" class="check-hint" role="status" aria-live="polite"
+                 aria-atomic="true" style="display:none; margin:0;"></div>
                 <div id="smartPreview" class="smart-preview" style="display:none;"></div>
                 <div id="groupTree" class="group-tree"></div>
                 <div id="groupEmptyHint" class="group-empty-hint">لا توجد مجلدات. أنشئ مجلداً رئيسياً أو فرعياً، ثم اسحب العناصر إليه أو حدّدها وأسندها معاً.</div>
@@ -4193,10 +4197,11 @@ HTML_TEMPLATE = """
             .join(' <span class="group-crumb-sep">›</span> ');
     }
 
-    function setGroupStatus(text) {
+    function setGroupStatus(text, kind) {
         let el = document.getElementById('groupStatusHint');
         if (!el) return;
         el.textContent = text || '';
+        el.className = 'check-hint' + (kind ? ' ' + kind : '');
         el.style.display = text ? 'block' : 'none';
     }
 
@@ -7347,6 +7352,26 @@ HTML_TEMPLATE = """
         if (!loading) savedOperationLoadingId = '';
     }
 
+    function savedOperationPathLabel(path) {
+        let parts = String(path || '').split('/').filter(Boolean);
+        let tail = parts.slice(-3).join('/');
+        let label = parts.length > 3 ? '…/' + tail : (tail || String(path || ''));
+        return label.length > 180 ? '…' + label.slice(-179) : label;
+    }
+
+    function savedOperationIssueMessage(items) {
+        if (!items || !items.length) return '';
+        let folders = items.filter(function(item) { return !!item.is_dir; }).length;
+        let files = items.length - folders;
+        let names = items.map(function(item) {
+            return '• ' + savedOperationPathLabel(item.path);
+        });
+        return 'تحذير: تم تجاهل ' + items.length + ' عنصر غير متاح (' +
+            folders + ' مجلد، ' + files + ' ملف). تعذّر الوصول إلى المسار المحفوظ ' +
+            '(قد يكون حُذف أو نُقل أو تغيّر نوعه)؛ سيتم نسخ العناصر المتاحة فقط.\\n' +
+            names.join('\\n');
+    }
+
     async function loadSavedOperation(operationId, activeButton) {
         if (savedOperationLoadingId) return;
         savedOperationLoadingId = String(operationId);
@@ -7375,6 +7400,9 @@ HTML_TEMPLATE = """
                 }
             });
             let unavailablePaths = Array.from(unavailable);
+            let unavailableItems = operation.paths.filter(function(item) {
+                return unavailable.has(item.path);
+            });
             setSavedOperationsStatus('', '');
             let different = selectedPaths.size > 0 &&
                 savedOperationConfigKey(currentSavedOperationPayload()) !==
@@ -7389,11 +7417,11 @@ HTML_TEMPLATE = """
                         error.message || 'تعذر تطبيق العملية المحفوظة', 'err');
                 }
             };
-            if (unavailablePaths.length || different) {
+            if (different) {
                 let message = 'سيتم استبدال التحديد الحالي دون بدء النسخ.';
-                if (unavailablePaths.length) {
-                    message += ' تعذر العثور على ' + unavailablePaths.length +
-                        ' من العناصر أو تغيّر نوعها؛ سيتم تحميل العناصر المتاحة فقط.';
+                if (unavailableItems.length) {
+                    message += '\\n' + unavailableItems.length +
+                        ' عنصر غير متاح سيتم تجاهله، وستُحمّل العناصر السليمة فقط.';
                 }
                 setSavedOperationsStatus('تم فحص العملية؛ أكّد الاستبدال للمتابعة.', '');
                 showConfirmModal(message, proceed);
@@ -7407,15 +7435,11 @@ HTML_TEMPLATE = """
         }
     }
 
-    function applySavedOperation(operation, sizeData, missing) {
-        let missingSet = new Set(missing || []);
+    function applySavedOperation(operation, sizeData, unavailablePaths) {
+        let missingSet = new Set(unavailablePaths || []);
         let validPaths = operation.paths.filter(function(item) {
             return !missingSet.has(item.path);
         });
-        if (!validPaths.length) {
-            setSavedOperationsStatus('لم يتم تحميل العملية؛ عناصرها غير متاحة أو تغيّر نوعها.', 'err');
-            return false;
-        }
         selectedPaths = new Map(validPaths.map(function(item) {
             return [item.path, !!item.is_dir];
         }));
@@ -7445,9 +7469,15 @@ HTML_TEMPLATE = """
         renderSelectedRows();
         updateSelectedTotal(Array.from(selectedPaths.keys()));
         document.getElementById('selectedModal').style.display = 'flex';
-        setGroupStatus(missing && missing.length
-            ? 'تم تجاهل ' + missing.length + ' عنصر غير موجود أو تغيّر نوعه من العملية المحفوظة.'
-            : 'تم تحميل العملية؛ راجع التحديد ثم اختر الوجهة وابدأ النسخ يدوياً.');
+        let unavailableItems = operation.paths.filter(function(item) {
+            return missingSet.has(item.path);
+        });
+        let issueMessage = savedOperationIssueMessage(unavailableItems);
+        if (issueMessage) {
+            setGroupStatus(issueMessage, 'warning');
+        } else {
+            setGroupStatus('تم تحميل العملية؛ راجع التحديد ثم اختر الوجهة وابدأ النسخ يدوياً.');
+        }
         updateSavedOperationControls();
         scheduleUiSave();
         return true;
@@ -9697,6 +9727,7 @@ def get_items_sizes():
                     root_types[root] = 'other'
             except OSError:
                 root_exists[root] = False
+                root_types[root] = 'missing'
         else:
             # One existence check per root; nested paths inherit the owner's
             # result instead of issuing duplicate stats.
