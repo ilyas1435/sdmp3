@@ -186,6 +186,7 @@ class SavedOperationApiTests(unittest.TestCase):
         self.assertIn('let unavailableItems = operation.paths.filter', load_function)
         self.assertIn('if (different)', load_function)
         self.assertNotIn('if (unavailableItems.length || different)', load_function)
+        self.assertIn('} else {\n                proceed();', load_function)
 
         apply_function = page.split(
             'function applySavedOperation(operation, sizeData, unavailablePaths) {', 1
@@ -234,6 +235,24 @@ class SavedOperationApiTests(unittest.TestCase):
             })
         self.assertEqual(result.status_code, 200)
         data = result.get_json()
+        self.assertEqual(data['missing'], [missing_file])
+        self.assertEqual(data['types'][missing_file], 'missing')
+
+    def test_reported_missing_download_path_never_returns_internal_error(self):
+        missing_file = '/sdcard/Download/intro8.mp3'
+        real_stat = os.stat
+
+        def stat_with_missing_saved_file(path, *args, **kwargs):
+            if os.fspath(path) == missing_file:
+                raise FileNotFoundError(2, 'No such file or directory', missing_file)
+            return real_stat(path, *args, **kwargs)
+
+        with mock.patch.object(project.os, 'stat', side_effect=stat_with_missing_saved_file):
+            response = self.client.post('/api/sizes', json={
+                'paths': [missing_file], 'excludes': [], 'include_types': True,
+            })
+        self.assertEqual(response.status_code, 200)
+        data = response.get_json()
         self.assertEqual(data['missing'], [missing_file])
         self.assertEqual(data['types'][missing_file], 'missing')
 

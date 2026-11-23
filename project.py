@@ -55,7 +55,7 @@ app = Flask(__name__)
 
 # Version is kept in the VERSION file next to this script so that the `sdmp3`
 # CLI can read it without importing the app.
-APP_VERSION_FALLBACK = "3.1"
+APP_VERSION_FALLBACK = "3.2"
 
 # Toggled by --no-wakelock (see main() at the bottom).
 WAKELOCK_ENABLED = True
@@ -9743,7 +9743,9 @@ def get_items_sizes():
         if not root_exists[owner]:
             missing.append(path)
         if include_types:
-            types[path] = root_types[owner]
+            # A missing or inaccessible saved path is still a valid response.
+            # Never let an absent type entry turn a partial restore into HTTP 500.
+            types[path] = root_types.get(owner, 'missing')
     result = {'sizes': sizes, 'missing': missing}
     if include_types:
         result['types'] = types
