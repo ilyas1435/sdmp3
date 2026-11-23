@@ -59,6 +59,17 @@ class SavedRestoreBrowserTests(unittest.TestCase):
                 detail_failure = client.post('/api/saved_operations', json=payload)
                 self.assertEqual(detail_failure.status_code, 201)
                 detail_failure_id = detail_failure.get_json()['operation']['id']
+                size_path = '/sdcard/Download/nB'
+                payload.update(
+                    name='size path exception',
+                    paths=[{'path': size_path, 'is_dir': False},
+                           {'path': good, 'is_dir': False}],
+                    groups=[{'name': 'Keep', 'paths': [size_path, good]}],
+                    excludes=[],
+                )
+                size_failure = client.post('/api/saved_operations', json=payload)
+                self.assertEqual(size_failure.status_code, 201)
+                size_failure_id = size_failure.get_json()['operation']['id']
                 os.remove(removed)
                 server = make_server('127.0.0.1', 0, project.app, threaded=True)
                 worker = threading.Thread(target=server.serve_forever, daemon=True)
@@ -75,10 +86,16 @@ class SavedRestoreBrowserTests(unittest.TestCase):
                                    {'id': detail_failure_id, 'paths': [],
                                     'expectedError':
                                         f'GET /api/saved_operations/{detail_failure_id}'},
+                                   {'id': size_failure_id, 'paths': [good],
+                                    'warning': 'تم تجاهل 1',
+                                    'groups': [{'name': 'Keep', 'paths': [good]}]},
                                ]))
                     original_status = project.app.view_functions['get_paths_status']
                     original_sizes = project.app.view_functions['get_items_sizes']
-                    inject_errors = {'enabled': False, 'batch': 0, 'item': 0, 'sizes': 0}
+                    inject_errors = {
+                        'operation_id': '', 'batch': 0, 'item': 0, 'sizes': 0,
+                        'size_path': 0,
+                    }
 
                     def read_with_injected_errors(operation_id):
                         if operation_id == detail_failure_id:
@@ -88,11 +105,19 @@ class SavedRestoreBrowserTests(unittest.TestCase):
                             response.status_code = 500
                             return response
                         response = original_read(operation_id)
-                        inject_errors['enabled'] = operation_id == failing_id
+                        inject_errors['operation_id'] = operation_id
                         return response
 
                     def status_with_injected_errors():
-                        if inject_errors['enabled']:
+                        if inject_errors['operation_id'] == size_failure_id:
+                            entries = project.request.get_json()['paths']
+                            return project.jsonify({
+                                'missing': [],
+                                'types': {entry['path']: (
+                                    'directory' if entry['is_dir'] else 'file'
+                                ) for entry in entries},
+                            })
+                        if inject_errors['operation_id'] == failing_id:
                             entries = project.request.get_json()['paths']
                             if len(entries) > 1:
                                 inject_errors['batch'] += 1
@@ -103,9 +128,23 @@ class SavedRestoreBrowserTests(unittest.TestCase):
                         return original_status()
 
                     def sizes_with_injected_errors():
-                        if inject_errors['enabled']:
+                        if inject_errors['operation_id'] == failing_id:
                             inject_errors['sizes'] += 1
                             raise KeyError('/sdcard/Download/intro8.mp3')
+                        if inject_errors['operation_id'] == size_failure_id:
+                            real_stat = os.stat
+
+                            def stat_with_one_key_error(path, *args, **kwargs):
+                                if os.fspath(path) == size_path:
+                                    raise KeyError(size_path)
+                                return real_stat(path, *args, **kwargs)
+
+                            with mock.patch.object(
+                                project.os, 'stat', side_effect=stat_with_one_key_error
+                            ):
+                                response = original_sizes()
+                            inject_errors['size_path'] += 1
+                            return response
                         return original_sizes()
 
                     original_read = project.app.view_functions['api_saved_operation']
@@ -132,11 +171,15 @@ class SavedRestoreBrowserTests(unittest.TestCase):
                     self.assertEqual(inject_errors['batch'], 1)
                     self.assertEqual(inject_errors['item'], 1)
                     self.assertEqual(inject_errors['sizes'], 1)
+                    self.assertEqual(inject_errors['size_path'], 1)
                     self.assertIn('تعذر حساب الأحجام', loaded[2]['warning'])
                     self.assertEqual(loaded[2]['groups'], loaded[0]['groups'])
                     self.assertEqual(loaded[2]['excludes'], loaded[0]['excludes'])
                     self.assertIn('قراءة بيانات العملية المحفوظة', loaded[3]['status'])
                     self.assertIn('/sdcard/Download/intro8.mp3', loaded[3]['status'])
+                    self.assertEqual(loaded[4]['paths'], [good])
+                    self.assertEqual(loaded[4]['groups'],
+                                     [{'name': 'Keep', 'paths': [good]}])
                     print('Full-page restore: partial selection, groups, exclusions, '
                           'empty selection, failed batch/item/size requests, '
                           'modal closure, and copy plan passed.')
