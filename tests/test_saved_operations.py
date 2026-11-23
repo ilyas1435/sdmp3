@@ -143,6 +143,41 @@ class SavedOperationApiTests(unittest.TestCase):
         ):
             self.assertIn(marker, page)
 
+    def test_loading_saved_operation_has_visible_busy_and_completion_states(self):
+        page = self.client.get('/').get_data(as_text=True)
+        self.assertIn('aria-live="polite" aria-atomic="true" aria-busy="false"', page)
+        self.assertIn('.settings-save-state.is-loading::before', page)
+        self.assertIn('data-saved-operation-load', page)
+        self.assertIn('جارٍ تحميل العملية المحفوظة...', page)
+        self.assertIn('جارٍ فحص الملفات والمجلدات المحفوظة...', page)
+
+        list_function = page.split(
+            'async function loadSavedOperationsList() {', 1
+        )[1].split('function openSaveOperationDialog', 1)[0]
+        self.assertLess(
+            list_function.index("if (list) list.innerHTML = '';"),
+            list_function.index("await savedOperationsRequest('/api/saved_operations')"),
+        )
+
+        load_function = page.split(
+            'async function loadSavedOperation(operationId, activeButton) {', 1
+        )[1].split('function applySavedOperation', 1)[0]
+        self.assertIn('if (savedOperationLoadingId) return;', load_function)
+        self.assertIn("setSavedOperationsStatus(error.message || 'تعذر تحميل العملية المحفوظة', 'err')",
+                      load_function)
+        self.assertIn('finally {', load_function)
+        self.assertIn('setSavedOperationLoadState(false)', load_function)
+        self.assertIn('showConfirmModal(message, proceed)', load_function)
+        self.assertIn('if (applySavedOperation(operation, sizeData, unavailablePaths))',
+                      load_function)
+
+        apply_function = page.split(
+            'function applySavedOperation(operation, sizeData, missing) {', 1
+        )[1].split('function closeSelectedModal', 1)[0]
+        self.assertIn('return false;', apply_function)
+        self.assertIn('return true;', apply_function)
+        self.assertNotIn('closeSavedOperationsModal()', apply_function)
+
     def test_size_lookup_can_validate_saved_path_types(self):
         with tempfile.TemporaryDirectory() as source:
             directory = os.path.join(source, 'folder')

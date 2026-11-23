@@ -2767,6 +2767,19 @@ HTML_TEMPLATE = """
         .settings-save-state { font-size:calc(11.5px * var(--font-scale)); min-height:16px; color:var(--text-muted); }
         .settings-save-state.ok { color:var(--success); }
         .settings-save-state.err { color:var(--danger-ink); }
+        .settings-save-state.is-loading { display:flex; align-items:center; gap:8px; }
+        .settings-save-state.is-loading::before,
+        .saved-operation-row-actions button.is-loading::before {
+            content:""; width:14px; height:14px; flex:0 0 14px; border-radius:50%;
+            border:2px solid var(--accent-line); border-top-color:var(--accent-text);
+            animation:saved-operation-spin .75s linear infinite;
+        }
+        .saved-operation-row-actions button.is-loading { cursor:wait; }
+        @keyframes saved-operation-spin { to { transform:rotate(360deg); } }
+        @media (prefers-reduced-motion:reduce) {
+            .settings-save-state.is-loading::before,
+            .saved-operation-row-actions button.is-loading::before { animation:none; }
+        }
         /* Read-only status rows (device state): a label and a value, no chrome. */
         .status-list { display:flex; flex-direction:column; border:1px solid var(--field-line);
             border-radius:10px; background:var(--field); }
@@ -3448,7 +3461,8 @@ HTML_TEMPLATE = """
     <div class="modal-content modal-saved-operations" onclick="event.stopPropagation()">
         <h3 style="margin-top:0; font-size:calc(16px * var(--font-scale));">العمليات المحفوظة</h3>
         <div class="settings-note">تُحفظ العناصر والاستثناءات ومجلدات النسخ فقط. اختر الوجهة عند بدء كل نسخة.</div>
-        <div id="savedOperationsStatus" class="settings-save-state" role="status"></div>
+        <div id="savedOperationsStatus" class="settings-save-state" role="status"
+             aria-live="polite" aria-atomic="true" aria-busy="false"></div>
         <div id="savedOperationsList" class="saved-operations-list"></div>
         <div class="modal-footer">
             <button type="button" class="btn btn-outline" style="flex:1;" onclick="closeSavedOperationsModal()">إغلاق</button>
@@ -3944,6 +3958,7 @@ HTML_TEMPLATE = """
     let bulkSelectedPaths = new Set();
     let activeSavedOperationId = '';
     let activeSavedOperationName = '';
+    let savedOperationLoadingId = '';
     let saveOperationDialogMode = 'create';
     let saveOperationDialogId = '';
     // Copy groups: [{id, name, paths: []}]. A selected path belongs to at most
@@ -6956,11 +6971,12 @@ HTML_TEMPLATE = """
         if (!el) return;
         el.textContent = text || '';
         el.className = 'settings-save-state' + (kind ? ' ' + kind : '');
+        el.setAttribute('aria-busy', kind === 'is-loading' ? 'true' : 'false');
     }
 
     function openSavedOperationsModal() {
         document.getElementById('savedOperationsModal').style.display = 'flex';
-        setSavedOperationsStatus('جارٍ تحميل العمليات المحفوظة...', '');
+        setSavedOperationsStatus('جارٍ تحميل قائمة العمليات المحفوظة...', 'is-loading');
         loadSavedOperationsList();
     }
 
@@ -6970,10 +6986,12 @@ HTML_TEMPLATE = """
     }
 
     async function loadSavedOperationsList() {
+        setSavedOperationsStatus('جارٍ تحميل قائمة العمليات المحفوظة...', 'is-loading');
+        let list = document.getElementById('savedOperationsList');
+        if (list) list.innerHTML = '';
         try {
             let data = await savedOperationsRequest('/api/saved_operations');
             let operations = Array.isArray(data.operations) ? data.operations : [];
-            let list = document.getElementById('savedOperationsList');
             list.innerHTML = '';
             if (!operations.length) {
                 let empty = document.createElement('div');
@@ -7011,8 +7029,11 @@ HTML_TEMPLATE = """
                     button.className = action[0] === 'load'
                         ? 'btn btn-primary btn-sm' : 'btn btn-outline btn-sm';
                     button.textContent = action[1];
+                    if (action[0] === 'load') {
+                        button.setAttribute('data-saved-operation-load', operation.id);
+                    }
                     button.onclick = function() {
-                        if (action[0] === 'load') loadSavedOperation(operation.id);
+                        if (action[0] === 'load') loadSavedOperation(operation.id, button);
                         else if (action[0] === 'rename') {
                             openSaveOperationDialog('rename', operation.id, operation.name);
                         } else deleteSavedOperation(operation.id, operation.name);
@@ -7131,14 +7152,40 @@ HTML_TEMPLATE = """
         });
     }
 
-    async function loadSavedOperation(operationId) {
-        setSavedOperationsStatus('جارٍ فحص العناصر المحفوظة...', '');
+    function setSavedOperationLoadState(loading, activeButton) {
+        let buttons = document.querySelectorAll('[data-saved-operation-load]');
+        for (let i = 0; i < buttons.length; i++) {
+            let button = buttons[i];
+            button.disabled = !!loading;
+            if (loading) {
+                button.setAttribute('aria-disabled', 'true');
+                if (button === activeButton) {
+                    button.classList.add('is-loading');
+                    button.setAttribute('aria-busy', 'true');
+                    button.textContent = 'جارٍ التحميل...';
+                }
+            } else {
+                button.removeAttribute('aria-disabled');
+                button.removeAttribute('aria-busy');
+                button.classList.remove('is-loading');
+                button.textContent = 'تحميل';
+            }
+        }
+        if (!loading) savedOperationLoadingId = '';
+    }
+
+    async function loadSavedOperation(operationId, activeButton) {
+        if (savedOperationLoadingId) return;
+        savedOperationLoadingId = String(operationId);
+        setSavedOperationLoadState(true, activeButton);
+        setSavedOperationsStatus('جارٍ تحميل العملية المحفوظة...', 'is-loading');
         try {
             let data = await savedOperationsRequest(
                 '/api/saved_operations/' + encodeURIComponent(operationId)
             );
             let operation = data.operation;
             let pathList = operation.paths.map(function(item) { return item.path; });
+            setSavedOperationsStatus('جارٍ فحص الملفات والمجلدات المحفوظة...', 'is-loading');
             let sizeData = await savedOperationsRequest('/api/sizes', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
@@ -7160,7 +7207,14 @@ HTML_TEMPLATE = """
                 savedOperationConfigKey(currentSavedOperationPayload()) !==
                 savedOperationConfigKey(operation);
             let proceed = function() {
-                applySavedOperation(operation, sizeData, unavailablePaths);
+                try {
+                    if (applySavedOperation(operation, sizeData, unavailablePaths)) {
+                        closeSavedOperationsModal();
+                    }
+                } catch (error) {
+                    setSavedOperationsStatus(
+                        error.message || 'تعذر تطبيق العملية المحفوظة', 'err');
+                }
             };
             if (unavailablePaths.length || different) {
                 let message = 'سيتم استبدال التحديد الحالي دون بدء النسخ.';
@@ -7168,12 +7222,15 @@ HTML_TEMPLATE = """
                     message += ' تعذر العثور على ' + unavailablePaths.length +
                         ' من العناصر أو تغيّر نوعها؛ سيتم تحميل العناصر المتاحة فقط.';
                 }
+                setSavedOperationsStatus('تم فحص العملية؛ أكّد الاستبدال للمتابعة.', '');
                 showConfirmModal(message, proceed);
             } else {
                 proceed();
             }
         } catch (error) {
             setSavedOperationsStatus(error.message || 'تعذر تحميل العملية المحفوظة', 'err');
+        } finally {
+            setSavedOperationLoadState(false);
         }
     }
 
@@ -7184,7 +7241,7 @@ HTML_TEMPLATE = """
         });
         if (!validPaths.length) {
             setSavedOperationsStatus('لم يتم تحميل العملية؛ عناصرها غير متاحة أو تغيّر نوعها.', 'err');
-            return;
+            return false;
         }
         selectedPaths = new Map(validPaths.map(function(item) {
             return [item.path, !!item.is_dir];
@@ -7215,12 +7272,12 @@ HTML_TEMPLATE = """
         renderSelectedRows();
         updateSelectedTotal(Array.from(selectedPaths.keys()));
         document.getElementById('selectedModal').style.display = 'flex';
-        closeSavedOperationsModal();
         setGroupStatus(missing && missing.length
             ? 'تم تجاهل ' + missing.length + ' عنصر غير موجود أو تغيّر نوعه من العملية المحفوظة.'
             : 'تم تحميل العملية؛ راجع التحديد ثم اختر الوجهة وابدأ النسخ يدوياً.');
         updateSavedOperationControls();
         scheduleUiSave();
+        return true;
     }
 
     function closeSelectedModal(e) {
