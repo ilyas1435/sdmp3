@@ -7381,9 +7381,10 @@ HTML_TEMPLATE = """
     }
 
     function savedOperationPathLabel(path) {
+        // Report the file/folder name, not a directory chain: the warning is
+        // about the handful of skipped items, not a repeat of saved paths.
         let parts = String(path || '').split('/').filter(Boolean);
-        let tail = parts.slice(-3).join('/');
-        let label = parts.length > 3 ? '…/' + tail : (tail || String(path || ''));
+        let label = parts.length ? parts[parts.length - 1] : String(path || '');
         return label.length > 180 ? '…' + label.slice(-179) : label;
     }
 
