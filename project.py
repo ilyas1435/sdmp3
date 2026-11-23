@@ -2380,6 +2380,11 @@ HTML_TEMPLATE = """
         }
         * { box-sizing: border-box; font-family: var(--app-font); -webkit-tap-highlight-color: transparent; }
         body { background-color: var(--bg); color: var(--text); margin: 0; padding: 16px 14px 112px; font-size: calc(14px * var(--font-scale)); line-height: 1.55; -webkit-font-smoothing: antialiased; }
+        body.photo-background-enabled {
+            background-image: linear-gradient(var(--photo-overlay), var(--photo-overlay)), var(--photo-image);
+            background-position:center center, center center; background-repeat:no-repeat, no-repeat;
+            background-size:cover, cover; background-attachment:fixed, fixed;
+        }
         .container { max-width: 900px; margin: 0 auto; }
 
         /* ---- header ---------------------------------------------------- */
@@ -2742,6 +2747,16 @@ HTML_TEMPLATE = """
         .theme-preview-chip { display:block; width:25px; height:19px; flex:0 0 auto;
             border:1px solid var(--border); border-radius:6px; box-shadow:inset 0 0 0 1px rgba(0,0,0,.08); }
         #themePreviewName { min-width:0; text-align:end; overflow-wrap:anywhere; }
+        .photo-background-controls { display:flex; flex-direction:column; gap:7px; }
+        .photo-background-actions { display:flex; gap:7px; flex-wrap:wrap; }
+        .photo-background-actions .btn { flex:1 1 130px; min-height:38px; }
+        .photo-background-preview { display:block; width:100%; height:118px; object-fit:cover;
+            border:1px solid var(--border); border-radius:10px; background:var(--field); }
+        .photo-background-preview[hidden] { display:none; }
+        .photo-opacity-row { display:flex; align-items:center; gap:10px; }
+        .photo-opacity-row input { flex:1 1 auto; min-width:0; margin:0; accent-color:var(--accent); }
+        .photo-opacity-value { min-width:42px; text-align:center; color:var(--accent-text); font-weight:700; }
+        #photoBackgroundState { min-height:16px; overflow-wrap:anywhere; }
         #fontPreview { font-size:calc(17px * var(--font-scale)); color:var(--text); }
         .settings-note { font-size:calc(10.5px * var(--font-scale)); color:var(--text-muted); line-height:1.6; }
         .settings-save-state { font-size:calc(11.5px * var(--font-scale)); min-height:16px; color:var(--text-muted); }
@@ -3122,6 +3137,7 @@ HTML_TEMPLATE = """
     <symbol id="ico-shield" viewBox="0 0 24 24"><path d="M12 3l7 3v6c0 4-3 7.5-7 9-4-1.5-7-5-7-9V6z"></path><polyline points="9 12 11.2 14.2 15.2 10"></polyline></symbol>
     <symbol id="ico-music" viewBox="0 0 24 24"><path d="M9 18V6l10-2v12"></path><circle cx="6.5" cy="18" r="2.5"></circle><circle cx="16.5" cy="16" r="2.5"></circle></symbol>
     <symbol id="ico-palette" viewBox="0 0 24 24"><path d="M12 3a9 9 0 1 0 0 18h1.2a2 2 0 0 0 1.5-3.3 1.8 1.8 0 0 1 1.4-3h1.1A3.8 3.8 0 0 0 21 10.9C21 6.5 17 3 12 3z"></path><circle cx="7.5" cy="11" r=".8"></circle><circle cx="10" cy="7.5" r=".8"></circle><circle cx="15" cy="7.5" r=".8"></circle></symbol>
+    <symbol id="ico-image" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"></rect><circle cx="8.5" cy="9" r="1.5"></circle><path d="m21 15-5-5L5 20"></path></symbol>
     <symbol id="ico-type" viewBox="0 0 24 24"><path d="M4 7V4h16v3"></path><path d="M9 20h6"></path><path d="M12 4v16"></path></symbol>
     <symbol id="ico-text-size" viewBox="0 0 24 24"><path d="M4 8V5h12v3"></path><path d="M10 5v15"></path><path d="M7 20h6"></path><path d="M19 11v9M16.5 14h5"></path></symbol>
     <symbol id="ico-general" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1-2.7 2.7-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5v.2h-3.8v-.2a1.7 1.7 0 0 0-1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1-2.7-2.7.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H2.5v-3.8h.2a1.7 1.7 0 0 0 1.5-1 1.7 1.7 0 0 0-.3-1.8l-.1-.1 2.7-2.7.1.1a1.7 1.7 0 0 0 1.8.3 1.7 1.7 0 0 0 1-1.5v-.2h3.8v.2a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1 2.7 2.7-.1.1a1.7 1.7 0 0 0-.3 1.8 1.7 1.7 0 0 0 1.5 1h.2v3.8h-.2a1.7 1.7 0 0 0-1.5 1z"></path></symbol>
@@ -3529,6 +3545,35 @@ HTML_TEMPLATE = """
                             </div>
                             <span id="themePreviewName" class="field-hint">{{ active_theme.name }}</span>
                         </div>
+                    </div>
+                </div>
+                <div class="settings-group">
+                    <div class="settings-group-title"><svg class="icon" aria-hidden="true"><use href="#ico-image"></use></svg>خلفية التطبيق</div>
+                    <label class="settings-check-row" for="photoBackgroundEnabled">
+                        <input type="checkbox" id="photoBackgroundEnabled" class="checkbox" disabled onchange="setPhotoBackgroundEnabled(this.checked)">
+                        <span class="settings-option-copy">
+                            <svg class="icon settings-option-icon" aria-hidden="true"><use href="#ico-image"></use></svg>
+                            <span>إظهار الصورة خلف الصفحة
+                                <small class="settings-note">تُحفظ الصورة في هذا المتصفح فقط ولا تُرفع إلى الخادم.</small>
+                            </span>
+                        </span>
+                    </label>
+                    <div class="photo-background-controls">
+                        <input type="file" id="photoBackgroundFile" accept="image/png,image/jpeg,image/webp" hidden aria-label="اختيار صورة خلفية" onchange="handlePhotoBackgroundFile(this)">
+                        <div class="photo-background-actions">
+                            <button type="button" class="btn btn-outline" onclick="choosePhotoBackground()">اختيار صورة</button>
+                            <button type="button" class="btn btn-outline" id="removePhotoBackgroundBtn" disabled onclick="removePhotoBackground()">إزالة الصورة</button>
+                        </div>
+                        <img id="photoBackgroundPreview" class="photo-background-preview" alt="معاينة صورة الخلفية" hidden>
+                        <div class="settings-field">
+                            <label for="photoOverlayRange">تعتيم الطبقة فوق الصورة</label>
+                            <div class="photo-opacity-row">
+                                <input type="range" id="photoOverlayRange" min="0" max="85" step="5" value="60" disabled oninput="setPhotoOverlayOpacity(this.value)">
+                                <span id="photoOverlayValue" class="photo-opacity-value">60%</span>
+                            </div>
+                            <div class="field-hint">القيمة الأعلى تخفف ظهور الصورة وتزيد وضوح المحتوى.</div>
+                        </div>
+                        <div id="photoBackgroundState" class="settings-save-state" role="status" aria-live="polite">اختر صورة PNG أو JPEG أو WebP بحجم لا يتجاوز 8 ميجابايت.</div>
                     </div>
                 </div>
                 <div class="settings-group">
@@ -6112,6 +6157,7 @@ HTML_TEMPLATE = """
             if (select) select.value = id;
             if (Array.isArray(swatches)) renderThemePreview(swatches, previewName || 'السمة');
             else updateThemePreview(id);
+            updatePhotoOverlayColor();
         }
     }
 
@@ -6149,6 +6195,361 @@ HTML_TEMPLATE = """
         if (!option) return;
         let colors = (option.getAttribute('data-swatches') || '').split(',');
         renderThemePreview(colors, option.textContent.trim());
+    }
+
+    // ---- local background photo -----------------------------------------
+    // Background images stay in this browser's IndexedDB. Only the small on/off
+    // and opacity preferences use localStorage; image bytes are never posted.
+    const PHOTO_DB_NAME = 'sdmp3-local-background';
+    const PHOTO_DB_STORE = 'images';
+    const PHOTO_DB_KEY = 'page-background';
+    const PHOTO_MAX_BYTES = 8 * 1024 * 1024;
+    const PHOTO_MAX_PIXELS = 48000000;
+    const PHOTO_MAX_EDGE = 12000;
+    const PHOTO_TYPES = {
+        'image/jpeg': ['.jpg', '.jpeg'],
+        'image/png': ['.png'],
+        'image/webp': ['.webp']
+    };
+    let photoBackgroundUrl = '';
+    let photoBackgroundRecordExists = false;
+    let photoBackgroundEnabled = false;
+    let photoOverlayOpacity = 60;
+
+    function photoLocalGet(key, fallback) {
+        try {
+            let value = localStorage.getItem(key);
+            return value === null ? fallback : value;
+        } catch (_error) {
+            return fallback;
+        }
+    }
+
+    function photoLocalSet(key, value) {
+        try {
+            localStorage.setItem(key, value);
+            return true;
+        } catch (_error) {
+            return false;
+        }
+    }
+
+    function openPhotoDatabase() {
+        return new Promise(function(resolve, reject) {
+            if (!window.indexedDB) {
+                reject(new Error('تخزين الصور المحلي غير متاح في هذا المتصفح.'));
+                return;
+            }
+            let request;
+            try {
+                request = window.indexedDB.open(PHOTO_DB_NAME, 1);
+            } catch (_error) {
+                reject(new Error('تعذر فتح التخزين المحلي للصور.'));
+                return;
+            }
+            request.onupgradeneeded = function() {
+                let db = request.result;
+                if (!db.objectStoreNames.contains(PHOTO_DB_STORE)) {
+                    db.createObjectStore(PHOTO_DB_STORE);
+                }
+            };
+            request.onsuccess = function() { resolve(request.result); };
+            request.onerror = function() {
+                reject(new Error('تعذر فتح التخزين المحلي للصور.'));
+            };
+        });
+    }
+
+    function photoDatabaseRequest(operation, value) {
+        return openPhotoDatabase().then(function(db) {
+            return new Promise(function(resolve, reject) {
+                let transaction;
+                let settled = false;
+                let result;
+                function fail(event) {
+                    if (settled) return;
+                    settled = true;
+                    try { db.close(); } catch (_error) {}
+                    let storageError = event && event.target && event.target.error;
+                    if (!storageError && transaction) storageError = transaction.error;
+                    reject(new Error(storageError && storageError.name === 'QuotaExceededError'
+                        ? 'مساحة التخزين المحلي غير كافية. اختر صورة أصغر.'
+                        : 'تعذر حفظ صورة الخلفية محلياً.'));
+                }
+                try {
+                    transaction = db.transaction(PHOTO_DB_STORE,
+                        operation === 'get' ? 'readonly' : 'readwrite');
+                    let store = transaction.objectStore(PHOTO_DB_STORE);
+                    let request;
+                    if (operation === 'get') request = store.get(PHOTO_DB_KEY);
+                    else if (operation === 'put') request = store.put(value, PHOTO_DB_KEY);
+                    else request = store.delete(PHOTO_DB_KEY);
+                    request.onsuccess = function() { result = request.result; };
+                    request.onerror = fail;
+                    transaction.oncomplete = function() {
+                        if (settled) return;
+                        settled = true;
+                        try { db.close(); } catch (_error) {}
+                        resolve(result);
+                    };
+                    transaction.onerror = fail;
+                    transaction.onabort = fail;
+                } catch (_error) {
+                    fail();
+                }
+            });
+        });
+    }
+
+    function photoTypeForFile(file, storedType) {
+        let type = String(storedType || file.type || '').toLowerCase();
+        let extension = String(file.name || '').toLowerCase().match(/\\.[^.]+$/);
+        let ext = extension ? extension[0] : '';
+        if (!PHOTO_TYPES[type] && !type && ext) {
+            Object.keys(PHOTO_TYPES).some(function(candidate) {
+                if (PHOTO_TYPES[candidate].indexOf(ext) !== -1) {
+                    type = candidate;
+                    return true;
+                }
+                return false;
+            });
+        }
+        if (!PHOTO_TYPES[type]) {
+            throw new Error('نوع الصورة غير مدعوم. استخدم PNG أو JPEG أو WebP.');
+        }
+        return type;
+    }
+
+    function inspectPhotoFile(file, storedType) {
+        return new Promise(function(resolve, reject) {
+            if (!file || !file.size) {
+                reject(new Error('ملف الصورة فارغ أو غير صالح.'));
+                return;
+            }
+            if (file.size > PHOTO_MAX_BYTES) {
+                reject(new Error('الصورة كبيرة جداً. الحد الأقصى 8 ميجابايت.'));
+                return;
+            }
+            let type;
+            try {
+                type = photoTypeForFile(file, storedType);
+            } catch (error) {
+                reject(error);
+                return;
+            }
+            let temporaryUrl;
+            try {
+                temporaryUrl = URL.createObjectURL(file);
+            } catch (_error) {
+                reject(new Error('تعذر قراءة ملف الصورة.'));
+                return;
+            }
+            let image = new Image();
+            image.onload = function() {
+                let width = image.naturalWidth;
+                let height = image.naturalHeight;
+                URL.revokeObjectURL(temporaryUrl);
+                if (!width || !height) {
+                    reject(new Error('تعذر قراءة أبعاد الصورة. اختر صورة سليمة.'));
+                } else if (width > PHOTO_MAX_EDGE || height > PHOTO_MAX_EDGE
+                           || width * height > PHOTO_MAX_PIXELS) {
+                    reject(new Error('أبعاد الصورة كبيرة جداً. اختر صورة أصغر.'));
+                } else {
+                    resolve({type: type, width: width, height: height});
+                }
+            };
+            image.onerror = function() {
+                URL.revokeObjectURL(temporaryUrl);
+                reject(new Error('تعذر فتح الصورة. استخدم PNG أو JPEG أو WebP سليمة.'));
+            };
+            image.src = temporaryUrl;
+        });
+    }
+
+    function setPhotoBackgroundStatus(text, kind) {
+        let state = document.getElementById('photoBackgroundState');
+        if (!state) return;
+        state.className = 'settings-save-state' + (kind ? ' ' + kind : '');
+        state.textContent = text || '';
+    }
+
+    function updatePhotoBackgroundUi() {
+        let toggle = document.getElementById('photoBackgroundEnabled');
+        let remove = document.getElementById('removePhotoBackgroundBtn');
+        let slider = document.getElementById('photoOverlayRange');
+        let value = document.getElementById('photoOverlayValue');
+        let preview = document.getElementById('photoBackgroundPreview');
+        if (toggle) {
+            toggle.checked = photoBackgroundEnabled;
+            toggle.disabled = !photoBackgroundUrl;
+        }
+        if (remove) remove.disabled = !photoBackgroundRecordExists;
+        if (slider) {
+            slider.value = String(photoOverlayOpacity);
+            slider.disabled = !photoBackgroundUrl;
+        }
+        if (value) value.textContent = photoOverlayOpacity + '%';
+        if (preview) {
+            preview.hidden = !photoBackgroundUrl;
+            if (photoBackgroundUrl) preview.src = photoBackgroundUrl;
+            else preview.removeAttribute('src');
+        }
+        applyPhotoBackground();
+    }
+
+    function updatePhotoOverlayColor() {
+        if (!document.body) return;
+        let color = getComputedStyle(document.documentElement)
+            .getPropertyValue('--bg').trim();
+        let match = color.match(/^#([0-9a-f]{6})$/i);
+        let red = 22, green = 29, blue = 39;
+        if (match) {
+            red = parseInt(match[1].slice(0, 2), 16);
+            green = parseInt(match[1].slice(2, 4), 16);
+            blue = parseInt(match[1].slice(4, 6), 16);
+        }
+        document.body.style.setProperty('--photo-overlay',
+            'rgba(' + red + ',' + green + ',' + blue + ',' + (photoOverlayOpacity / 100) + ')');
+    }
+
+    function applyPhotoBackground() {
+        if (!document.body) return;
+        updatePhotoOverlayColor();
+        if (photoBackgroundUrl) {
+            document.body.style.setProperty('--photo-image',
+                'url("' + photoBackgroundUrl + '")');
+        } else {
+            document.body.style.removeProperty('--photo-image');
+        }
+        document.body.classList.toggle('photo-background-enabled',
+            !!photoBackgroundUrl && photoBackgroundEnabled);
+    }
+
+    function choosePhotoBackground() {
+        let input = document.getElementById('photoBackgroundFile');
+        if (input) input.click();
+    }
+
+    async function handlePhotoBackgroundFile(input) {
+        let file = input && input.files && input.files[0];
+        if (input) input.value = '';
+        if (!file) return;
+        setPhotoBackgroundStatus('جارٍ فحص الصورة وحفظها على هذا الجهاز…', '');
+        try {
+            let info = await inspectPhotoFile(file);
+            let nextUrl = URL.createObjectURL(file);
+            let record = {
+                blob: file, type: info.type, name: String(file.name || 'background'),
+                width: info.width, height: info.height
+            };
+            try {
+                await photoDatabaseRequest('put', record);
+            } catch (error) {
+                URL.revokeObjectURL(nextUrl);
+                throw error;
+            }
+            if (photoBackgroundUrl) URL.revokeObjectURL(photoBackgroundUrl);
+            photoBackgroundUrl = nextUrl;
+            photoBackgroundRecordExists = true;
+            photoBackgroundEnabled = true;
+            let enabledSaved = photoLocalSet('sdmp3_photo_background_enabled', '1');
+            photoLocalSet('sdmp3_photo_background_opacity', String(photoOverlayOpacity));
+            updatePhotoBackgroundUi();
+            setPhotoBackgroundStatus(enabledSaved
+                ? 'تم حفظ الصورة محلياً وتفعيلها.'
+                : 'تم حفظ الصورة، لكن تعذر حفظ حالة التفعيل في المتصفح.', enabledSaved ? 'ok' : 'err');
+        } catch (error) {
+            setPhotoBackgroundStatus(error && error.message
+                ? error.message : 'تعذر حفظ الصورة محلياً.', 'err');
+        }
+    }
+
+    function setPhotoBackgroundEnabled(enabled) {
+        if (enabled && !photoBackgroundUrl) {
+            photoBackgroundEnabled = false;
+            updatePhotoBackgroundUi();
+            setPhotoBackgroundStatus('اختر صورة أولاً لتفعيل الخلفية.', 'err');
+            return;
+        }
+        photoBackgroundEnabled = !!enabled;
+        let saved = photoLocalSet('sdmp3_photo_background_enabled',
+            photoBackgroundEnabled ? '1' : '0');
+        updatePhotoBackgroundUi();
+        setPhotoBackgroundStatus(saved
+            ? (photoBackgroundEnabled ? 'تم تفعيل صورة الخلفية.' : 'تم إخفاء صورة الخلفية.')
+            : 'تم تطبيق الاختيار مؤقتاً، لكن تعذر حفظه في المتصفح.', saved ? 'ok' : 'err');
+    }
+
+    function setPhotoOverlayOpacity(value) {
+        let parsed = Number.parseInt(value, 10);
+        if (!Number.isFinite(parsed)) return;
+        photoOverlayOpacity = Math.max(0, Math.min(85, parsed));
+        let saved = photoLocalSet('sdmp3_photo_background_opacity',
+            String(photoOverlayOpacity));
+        updatePhotoBackgroundUi();
+        if (!saved) {
+            setPhotoBackgroundStatus(
+                'تم تغيير التعتيم مؤقتاً، لكن تعذر حفظه في المتصفح.', 'err');
+        }
+    }
+
+    async function removePhotoBackground() {
+        if (!photoBackgroundRecordExists) return;
+        setPhotoBackgroundStatus('جارٍ إزالة الصورة من التخزين المحلي…', '');
+        try {
+            await photoDatabaseRequest('delete');
+            if (photoBackgroundUrl) URL.revokeObjectURL(photoBackgroundUrl);
+            photoBackgroundUrl = '';
+            photoBackgroundRecordExists = false;
+            photoBackgroundEnabled = false;
+            photoOverlayOpacity = 60;
+            let enabledSaved = photoLocalSet('sdmp3_photo_background_enabled', '0');
+            let opacitySaved = photoLocalSet('sdmp3_photo_background_opacity', '60');
+            updatePhotoBackgroundUi();
+            setPhotoBackgroundStatus(
+                enabledSaved && opacitySaved
+                    ? 'تمت إزالة الصورة وإيقاف الخلفية.'
+                    : 'تمت إزالة الصورة، لكن تعذر حفظ بعض الإعدادات في المتصفح.',
+                enabledSaved && opacitySaved ? 'ok' : 'err');
+        } catch (error) {
+            setPhotoBackgroundStatus(error && error.message
+                ? error.message : 'تعذر إزالة الصورة.', 'err');
+        }
+    }
+
+    async function initializePhotoBackground() {
+        let savedEnabled = photoLocalGet('sdmp3_photo_background_enabled', '0') === '1';
+        let savedOpacity = Number.parseInt(
+            photoLocalGet('sdmp3_photo_background_opacity', '60'), 10);
+        photoOverlayOpacity = Number.isFinite(savedOpacity)
+            ? Math.max(0, Math.min(85, savedOpacity)) : 60;
+        try {
+            let record = await photoDatabaseRequest('get');
+            if (!record) {
+                photoBackgroundEnabled = false;
+                updatePhotoBackgroundUi();
+                setPhotoBackgroundStatus('اختر صورة PNG أو JPEG أو WebP بحجم لا يتجاوز 8 ميجابايت.', '');
+                return;
+            }
+            photoBackgroundRecordExists = true;
+            if (!record.blob || typeof record.blob.size !== 'number') {
+                throw new Error('الصورة المحفوظة غير صالحة. أزلها واختر صورة أخرى.');
+            }
+            await inspectPhotoFile(record.blob, record.type);
+            photoBackgroundUrl = URL.createObjectURL(record.blob);
+            photoBackgroundEnabled = savedEnabled;
+            if (!savedEnabled) photoLocalSet('sdmp3_photo_background_enabled', '0');
+            updatePhotoBackgroundUi();
+            setPhotoBackgroundStatus(savedEnabled
+                ? 'تم استرجاع الصورة من هذا المتصفح.'
+                : 'الصورة محفوظة محلياً. فعّل الخيار لإظهارها.', 'ok');
+        } catch (error) {
+            photoBackgroundEnabled = false;
+            photoLocalSet('sdmp3_photo_background_enabled', '0');
+            updatePhotoBackgroundUi();
+            setPhotoBackgroundStatus(error && error.message
+                ? error.message : 'تعذر استرجاع صورة الخلفية.', 'err');
+        }
     }
 
     // Typography is two CSS variables: `--app-font` (a font stack) and
@@ -7263,6 +7664,7 @@ HTML_TEMPLATE = """
     }
 
     document.addEventListener('DOMContentLoaded', function() {
+        initializePhotoBackground();
         document.querySelectorAll('.seg.option').forEach(el => {
             el.addEventListener('click', function() { setMaskMode(this.getAttribute('data-mode')); });
         });

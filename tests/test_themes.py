@@ -156,5 +156,55 @@ class ThemePaletteTests(unittest.TestCase):
                          'every static SVG cue resolves to a sprite symbol')
 
 
+class PhotoBackgroundUiTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.html = project.app.test_client().get('/').get_data(as_text=True)
+        cls.photo_script = cls.html.split(
+            '// ---- local background photo -----------------------------------------', 1
+        )[1].split('// Typography is two CSS variables', 1)[0]
+
+    def test_settings_include_picker_preview_toggle_and_opacity(self):
+        for control_id in (
+                'photoBackgroundEnabled', 'photoBackgroundFile',
+                'photoBackgroundPreview', 'removePhotoBackgroundBtn',
+                'photoOverlayRange', 'photoOverlayValue', 'photoBackgroundState'):
+            with self.subTest(control=control_id):
+                self.assertIn('id="{}"'.format(control_id), self.html)
+        self.assertIn('accept="image/png,image/jpeg,image/webp"', self.html)
+        self.assertIn('aria-live="polite"', self.html)
+        self.assertIn('min="0" max="85" step="5" value="60"', self.html)
+
+    def test_image_is_saved_restored_and_removed_locally_without_upload(self):
+        for feature in (
+                "store.put(value, PHOTO_DB_KEY)",
+                "store.get(PHOTO_DB_KEY)",
+                "store.delete(PHOTO_DB_KEY)",
+                "photoDatabaseRequest('put', record)",
+                "photoDatabaseRequest('get')",
+                "photoDatabaseRequest('delete')",
+                "async function initializePhotoBackground()",
+                "sdmp3_photo_background_enabled",
+                "sdmp3_photo_background_opacity"):
+            with self.subTest(feature=feature):
+                self.assertIn(feature, self.photo_script)
+        self.assertNotIn('fetch(', self.photo_script)
+        self.assertNotIn('/api/', self.photo_script)
+
+    def test_unsupported_oversized_and_huge_images_show_clear_errors(self):
+        self.assertIn('const PHOTO_MAX_BYTES = 8 * 1024 * 1024', self.photo_script)
+        self.assertIn('const PHOTO_MAX_PIXELS = 48000000', self.photo_script)
+        self.assertIn('const PHOTO_MAX_EDGE = 12000', self.photo_script)
+        self.assertIn('نوع الصورة غير مدعوم', self.photo_script)
+        self.assertIn('الصورة كبيرة جداً. الحد الأقصى 8 ميجابايت.', self.photo_script)
+        self.assertIn('أبعاد الصورة كبيرة جداً', self.photo_script)
+
+    def test_photo_is_a_tinted_page_background_and_preview_fits_mobile_width(self):
+        self.assertIn('body.photo-background-enabled', self.html)
+        self.assertIn('linear-gradient(var(--photo-overlay), var(--photo-overlay))', self.html)
+        self.assertIn('.photo-background-preview { display:block; width:100%;', self.html)
+        self.assertIn('background-size:cover, cover', self.html)
+
+
 if __name__ == '__main__':
     unittest.main()
