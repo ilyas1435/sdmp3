@@ -25,7 +25,7 @@ SEARCH_HISTORY_FILE = 'search_history.json'
 INDEX_SETTINGS_FILE = 'index_settings.json'
 SAVED_OPERATIONS_FILE = 'saved_operations.json'
 
-SETTINGS_VERSION = 2
+SETTINGS_VERSION = 3
 HISTORY_VERSION = 1
 INDEX_SETTINGS_VERSION = 2
 SAVED_OPERATIONS_VERSION = 1
@@ -36,7 +36,6 @@ HISTORY_QUERY_LIMIT = 25
 SAVED_OPERATIONS_LIMIT = 50
 SAVED_OPERATION_PATH_LIMIT = 3000
 SAVED_OPERATION_GROUP_LIMIT = 500
-CUSTOM_THEME_COLOR_KEYS = ('bg', 'card_2', 'accent', 'kind_sdcard', 'text')
 
 # Default JOC / index settings. Kept in one place so the server and the page
 # agree on the shape. Nothing here raises: unknown or missing keys fall back to
@@ -65,20 +64,6 @@ def state_file(name):
 
 def _ensure_dir():
     os.makedirs(STATE_DIR, exist_ok=True)
-
-
-def _clean_custom_theme_colors(value):
-    """Keep only a complete, strictly hex-coded user palette."""
-    if not isinstance(value, dict) or set(value) != set(CUSTOM_THEME_COLOR_KEYS):
-        return None
-    clean = {}
-    for key in CUSTOM_THEME_COLOR_KEYS:
-        color = value.get(key)
-        if (not isinstance(color, str) or len(color) != 7 or color[0] != '#'
-                or any(char not in '0123456789abcdefABCDEF' for char in color[1:])):
-            return None
-        clean[key] = color.upper()
-    return clean
 
 
 def _quarantine(path):
@@ -171,13 +156,18 @@ def load_settings(valid_theme_ids, default_theme,
         smart_depth = 1
     settings = {'version': SETTINGS_VERSION, 'theme': theme,
                 'font': font, 'font_size': font_size,
-                'auto_spoof': auto_spoof, 'smart_depth': smart_depth,
-                'custom_colors': _clean_custom_theme_colors(raw.get('custom_colors'))}
+                'auto_spoof': auto_spoof, 'smart_depth': smart_depth}
     raw_version = raw.get('version')
-    if isinstance(raw_version, int) and raw_version > SETTINGS_VERSION:
+    newer_version = isinstance(raw_version, int) and raw_version > SETTINGS_VERSION
+    if newer_version:
         # A newer app wrote this file. Keep what we understand, but do not
         # pretend to understand the rest.
         settings['version'] = raw_version
+    elif 'custom_colors' in raw or (
+            'theme' in raw and raw.get('theme') not in valid_theme_ids):
+        # Remove the retired custom palette and reset any removed preset to the
+        # default in-place. Do not overwrite settings from a newer app version.
+        save_settings(settings)
     return settings
 
 
@@ -189,7 +179,6 @@ def save_settings(settings):
         'font_size': settings.get('font_size'),
         'auto_spoof': bool(settings.get('auto_spoof')),
         'smart_depth': settings.get('smart_depth') or 1,
-        'custom_colors': _clean_custom_theme_colors(settings.get('custom_colors')),
         'updated': int(time.time()),
     }
     return save_json(state_file(SETTINGS_FILE), payload)
@@ -420,7 +409,7 @@ if __name__ == '__main__':  # pragma: no cover - manual report
         assert load_settings(['a', 'b'], 'a') == {
             'version': SETTINGS_VERSION, 'theme': 'a',
             'font': 'system', 'font_size': 'normal', 'auto_spoof': False,
-            'smart_depth': 1, 'custom_colors': None}
+            'smart_depth': 1}
         assert save_settings({'theme': 'b', 'font': 'f1', 'font_size': 'big',
                               'auto_spoof': True}) is True
         saved = load_settings(['a', 'b'], 'a', ['f1', 'f2'], 'system', ['big', 'small'], 'normal')
@@ -428,10 +417,17 @@ if __name__ == '__main__':  # pragma: no cover - manual report
         assert saved['auto_spoof'] is True, saved
         assert save_settings({'theme': 'b', 'smart_depth': 3}) is True
         assert load_settings(['a', 'b'], 'a')['smart_depth'] == 3
-        colors = {'bg': '#192133', 'card_2': '#222B40', 'accent': '#3D8E9C',
-                  'kind_sdcard': '#2EB9CB', 'text': '#E9E2D1'}
-        assert save_settings({'theme': 'b', 'custom_colors': colors}) is True
-        assert load_settings(['a', 'b'], 'a')['custom_colors'] == colors
+        # Older versions stored custom colors and presets that are no longer
+        # available. Loading migrates to a built-in preset and drops the palette.
+        legacy = {'version': 2, 'theme': 'retired-theme',
+                  'custom_colors': {'bg': '#192133'}}
+        with open(state_file(SETTINGS_FILE), 'w', encoding='utf-8') as fh:
+            json.dump(legacy, fh)
+        migrated = load_settings(['a', 'b'], 'a')
+        assert migrated['theme'] == 'a' and 'custom_colors' not in migrated, migrated
+        migrated_file = load_json(state_file(SETTINGS_FILE), {})
+        assert 'custom_colors' not in migrated_file, migrated_file
+        assert migrated_file['version'] == SETTINGS_VERSION, migrated_file
         # save writes what it is given; load is the validator
         assert save_settings({'theme': 'b', 'smart_depth': 9}) is True
         assert load_settings(['a', 'b'], 'a')['smart_depth'] == 1, 'load must clamp 9'

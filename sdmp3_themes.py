@@ -14,9 +14,6 @@ Adding a theme
 That is the whole contract. Nothing in project.py needs to change.
 """
 
-import re
-
-
 # --------------------------------------------------------------------------
 # colour maths
 # --------------------------------------------------------------------------
@@ -890,6 +887,104 @@ _THEME_DEFS = [{'id': 'coffee-blues',
   'sheet': 'rgba(34,27,44,0.97)',
   'shadow': '#000000'}]
 
+REMOVED_THEME_IDS = frozenset({
+    'dusk-plum', 'forest-mist', 'deep-charcoal', 'night-oxford',
+    'clay-night', 'clay-rose', 'olive-grove', 'midnight-teal', 'slate-sand',
+})
+_THEME_DEFS = [definition for definition in _THEME_DEFS
+               if definition['id'] not in REMOVED_THEME_IDS]
+
+
+def _theme_variant(base_id, theme_id, name, desc, overrides):
+    """Create a coherent preset from a vetted palette and a small color set."""
+    base = next((item for item in _THEME_DEFS if item['id'] == base_id), None)
+    if base is None:
+        raise ValueError('base theme {!r} is missing'.format(base_id))
+    variant = dict(base)
+    variant.update(overrides)
+    variant.update({'id': theme_id, 'name': name, 'desc': desc})
+    return variant
+
+
+_THEME_DEFS.extend([
+    _theme_variant('github-dark', 'aurora-night', 'شفق زمردي',
+                   'داكن عميق بلمسات خضراء ومائية', {
+        'dark': True,
+        'bg': '#101A1C', 'card': '#19282A', 'card_2': '#23383A',
+        'field': '#0B1517', 'border': '#395254',
+        'text': '#EDF6F2', 'text_muted': '#B2C8C0',
+        'accent': '#72D1B9', 'accent_hover': '#4EB49C',
+        'accent_fill': '#287668', 'accent_fill_hover': '#205F54',
+        'accent_text': '#8DE0CB', 'on_accent': '#FFFFFF',
+        'on_fill': '#101917', 'accent_ink': '#101917',
+        'success': '#70C994', 'success_fill': '#70C994',
+        'danger': '#E96C7B', 'danger_fill': '#E96C7B',
+        'danger_ink': '#FFA2AE', 'warning': '#E8BD6A',
+        'sand_fill': '#D2B894', 'sand_fill_hover': '#C2A77F',
+        'kind_internal': '#D2B894', 'kind_internal_ink': '#D2B894',
+        'kind_sdcard': '#34B9C8', 'kind_sdcard_ink': '#92E3E9',
+        'kind_usb': '#86AFCB', 'kind_usb_ink': '#B1D0E5',
+        'kind_card': '#9DB77B', 'kind_card_ink': '#C4D6A0',
+        'scrim': 'rgba(4,10,11,0.90)', 'sheet': 'rgba(22,37,39,0.97)',
+        'shadow': '#000000',
+    }),
+    _theme_variant('github-dark', 'cobalt-evening', 'كوبالت هادئ',
+                   'أزرق ليلي متوازن مع تفاصيل سماوية', {
+        'dark': True,
+        'bg': '#171B2B', 'card': '#22283A', 'card_2': '#303950',
+        'field': '#101522', 'border': '#46516D',
+        'text': '#F0F3FA', 'text_muted': '#BAC3D4',
+        'accent': '#9FB7F2', 'accent_hover': '#829BDA',
+        'accent_fill': '#53679C', 'accent_fill_hover': '#43547F',
+        'accent_text': '#B8C8F3', 'on_accent': '#FFFFFF',
+        'on_fill': '#111827', 'accent_ink': '#111827',
+        'success': '#80C99A', 'success_fill': '#80C99A',
+        'danger': '#EF7180', 'danger_fill': '#EF7180',
+        'danger_ink': '#FFA6B2', 'warning': '#EBC16B',
+        'sand_fill': '#D3BD9A', 'sand_fill_hover': '#C4AA82',
+        'kind_internal': '#D3BD9A', 'kind_internal_ink': '#D3BD9A',
+        'kind_sdcard': '#3ABBCB', 'kind_sdcard_ink': '#95E0EA',
+        'kind_usb': '#86AEDD', 'kind_usb_ink': '#B2CDED',
+        'kind_card': '#A6B985', 'kind_card_ink': '#C4D2A6',
+        'scrim': 'rgba(8,10,19,0.90)', 'sheet': 'rgba(30,35,52,0.97)',
+        'shadow': '#000000',
+    }),
+    _theme_variant('graphite', 'sage-evening', 'حجر ومريمية',
+                   'درجة متوسطة هادئة بين الفحمي والأخضر', {
+        'dark': True,
+        'bg': '#29332E', 'card': '#344039', 'card_2': '#414F47',
+        'field': '#202923', 'border': '#5A6A60',
+        'text': '#F1F6F1', 'text_muted': '#C2CEC4',
+        'accent': '#C4D991', 'accent_hover': '#AEC77A',
+        'accent_fill': '#596E3D', 'accent_fill_hover': '#485B32',
+        'accent_text': '#D6E6AF', 'on_accent': '#FFFFFF',
+        'on_fill': '#172016', 'accent_ink': '#172016',
+        'success': '#8BCB91', 'success_fill': '#8BCB91',
+        'danger': '#ED8178', 'danger_fill': '#ED8178',
+        'danger_ink': '#FFB1A9', 'warning': '#E4BE70',
+        'sand_fill': '#D7C19C', 'sand_fill_hover': '#C6AC81',
+        'kind_internal': '#D7C19C', 'kind_internal_ink': '#D7C19C',
+        'kind_sdcard': '#43BDC9', 'kind_sdcard_ink': '#9CE3E8',
+        'kind_usb': '#8AAFD0', 'kind_usb_ink': '#B8D0E7',
+        'kind_card': '#A8BD83', 'kind_card_ink': '#C9D8A9',
+        'scrim': 'rgba(16,23,19,0.84)', 'sheet': 'rgba(45,57,49,0.97)',
+        'shadow': '#0A100C',
+    }),
+    _theme_variant('github-light', 'cloud-azure', 'غيمة زرقاء',
+                   'خلفية فاتحة باردة ولمسات زرقاء واضحة', {
+        'dark': False,
+        'bg': '#EAF2F9', 'card': '#FBFDFF', 'card_2': '#DCE8F4',
+        'field': '#F4F8FC', 'border': '#C5D5E5',
+        'text': '#1D3044', 'text_muted': '#526A81',
+        'accent': '#4A83B8', 'accent_hover': '#376F9F',
+        'accent_fill': '#2D6598', 'accent_fill_hover': '#24547F',
+        'accent_text': '#286493', 'on_accent': '#FFFFFF',
+        'on_fill': '#FFFFFF', 'accent_ink': '#102030',
+        'scrim': 'rgba(30,45,61,0.54)', 'sheet': 'rgba(249,252,255,0.97)',
+        'shadow': '#718294',
+    }),
+])
+
 THEMES = {}
 _THEME_FAILURES = []
 for _defn in _THEME_DEFS:
@@ -905,7 +1000,7 @@ for _defn in _THEME_DEFS:
         'dark': bool(_defn['dark']),
         'swatches': [
             _defn['bg'], _defn['card_2'], _defn['accent'],
-            _defn['kind_sdcard'], _defn['text'],
+            _defn['kind_internal'], _defn['kind_sdcard'], _defn['text'],
         ],
         'tokens': _tokens,
     }
@@ -943,135 +1038,6 @@ def theme_color(theme_id):
 def catalog():
     """Everything the settings page and the JS need, in one list."""
     return [THEMES[i] for i in THEMES]
-
-
-# These are the five colours shown in the settings preview. Keep their order in
-# sync with `swatches` so the editor, API and preview share one small contract.
-CUSTOM_COLOR_KEYS = ('bg', 'card_2', 'accent', 'kind_sdcard', 'text')
-CUSTOM_COLOR_LABELS = {
-    'bg': 'الخلفية',
-    'card_2': 'السطح',
-    'accent': 'لون التمييز',
-    'kind_sdcard': 'لون بطاقة SD',
-    'text': 'النص',
-}
-_CUSTOM_HEX_RE = re.compile(r'^#[0-9a-fA-F]{6}$')
-
-
-def custom_color_values(theme_id):
-    """Return the five editable preview colours for a built-in theme."""
-    definition = next((item for item in _THEME_DEFS
-                       if item['id'] == theme_id), None)
-    if definition is None:
-        raise ValueError('سمة غير معروفة')
-    return {key: definition[key] for key in CUSTOM_COLOR_KEYS}
-
-
-def normalize_custom_colors(colors):
-    """Validate and normalize exactly the five hex colours accepted by the UI."""
-    if not isinstance(colors, dict) or set(colors) != set(CUSTOM_COLOR_KEYS):
-        raise ValueError('أدخل الألوان الخمسة المطلوبة')
-    normalized = {}
-    for key in CUSTOM_COLOR_KEYS:
-        value = colors.get(key)
-        if not isinstance(value, str) or not _CUSTOM_HEX_RE.fullmatch(value.strip()):
-            raise ValueError('قيمة «{}» يجب أن تكون بالصيغة #RRGGBB'.format(
-                CUSTOM_COLOR_LABELS[key]))
-        normalized[key] = value.strip().upper()
-    return normalized
-
-
-def _mix_hex(first, second, amount):
-    """Blend two hex colours in RGB, where amount is the share of `second`."""
-    left = _parse_hex(first)
-    right = _parse_hex(second)
-    channels = [round(a + (b - a) * amount) for a, b in zip(left, right)]
-    return '#{:02X}{:02X}{:02X}'.format(*channels)
-
-
-def _ensure_ink_contrast(foreground, target, backgrounds, floor):
-    """Move an ink colour minimally toward the readable text colour if needed."""
-    def readable(color):
-        return all(contrast_ratio(color, background) + 0.005 >= floor
-                   for background in backgrounds)
-
-    if readable(foreground):
-        return foreground
-    if not readable(target):
-        return target
-    # Find the first safe blend. This preserves the original hue as much as
-    # possible while adapting semantic text to the user's new surface colour.
-    for step in range(1, 101):
-        candidate = _mix_hex(foreground, target, step / 100.0)
-        if readable(candidate):
-            return candidate
-    return target
-
-
-def build_custom_theme(theme_id, raw_colors):
-    """Overlay the five user colours on a preset without blocking their choices.
-
-    The built-in preset remains untouched. Custom colours are a validated
-    overlay; related surfaces, accent shades and readable status inks are
-    derived from it for the active page only. Contrast and hue are not reasons
-    to reject a valid user palette.
-    """
-    if theme_id not in THEMES:
-        raise ValueError('سمة غير معروفة')
-    colors = normalize_custom_colors(raw_colors)
-    definition = dict(next(item for item in _THEME_DEFS
-                           if item['id'] == theme_id))
-
-    surface = colors['card_2']
-    definition.update({
-        'bg': colors['bg'],
-        # Treat the user-selected surface as the common card/input surface, so
-        # all the app's cards use the colour the user actually entered.
-        'card': surface,
-        'card_2': surface,
-        'field': _mix_hex(colors['bg'], surface, 0.48),
-        'text': colors['text'],
-        'accent': colors['accent'],
-        'kind_sdcard': colors['kind_sdcard'],
-    })
-    definition['border'] = _mix_hex(surface, colors['text'], 0.16)
-    surfaces = [definition['bg'], definition['card'], definition['field']]
-    definition['text_muted'] = _ensure_ink_contrast(
-        definition['text_muted'], colors['text'], surfaces, 4.5)
-
-    # Keep all accent states in the user's chosen hue and choose legible button
-    # text automatically for both light and dark accent colours.
-    fill_ink = max(
-        ('#000000', '#FFFFFF'),
-        key=lambda candidate: contrast_ratio(candidate, colors['accent']))
-    definition['accent_fill'] = colors['accent']
-    definition['accent_fill_hover'] = _mix_hex(
-        colors['accent'], '#FFFFFF' if fill_ink == '#000000' else '#000000', 0.12)
-    definition['accent_hover'] = definition['accent_fill_hover']
-    definition['accent_ink'] = fill_ink
-    definition['on_accent'] = fill_ink
-    definition['accent_text'] = _ensure_ink_contrast(
-        colors['accent'], colors['text'], surfaces, 4.5)
-
-    # Semantic/status text keeps its original hue whenever it already meets
-    # contrast; otherwise it is shifted toward the chosen text colour.
-    for key in ('warning', 'success', 'danger_ink',
-                'kind_internal_ink', 'kind_usb_ink', 'kind_card_ink'):
-        definition[key] = _ensure_ink_contrast(
-            definition[key], colors['text'], surfaces, 4.5)
-    definition['kind_sdcard_ink'] = _ensure_ink_contrast(
-        colors['kind_sdcard'], colors['text'], surfaces, 4.5)
-
-    tokens = build_tokens(definition)
-    return {
-        'id': theme_id,
-        'name': 'ألوان مخصصة',
-        'desc': 'ألوان يحددها المستخدم',
-        'dark': relative_luminance(colors['bg']) < 0.5,
-        'swatches': [colors[key] for key in CUSTOM_COLOR_KEYS],
-        'tokens': tokens,
-        'colors': colors,
-    }
 
 
 if __name__ == '__main__':  # pragma: no cover - manual report
