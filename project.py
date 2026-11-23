@@ -7392,23 +7392,74 @@ HTML_TEMPLATE = """
                 '/api/saved_operations/' + encodeURIComponent(operationId)
             );
             let operation = data.operation;
-            let pathList = operation.paths.map(function(item) { return item.path; });
             setSavedOperationsStatus('جارٍ فحص الملفات والمجلدات المحفوظة...', 'is-loading');
-            let sizeData = await savedOperationsRequest('/api/sizes', {
+            let pathStatus = await savedOperationsRequest('/api/path_status', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({
-                    paths: pathList, excludes: operation.excludes || [], include_types: true
-                })
+                body: JSON.stringify({paths: operation.paths})
             });
-            let unavailable = new Set(Array.isArray(sizeData.missing) ? sizeData.missing : []);
-            let types = sizeData.types || {};
+            let unavailable = new Set(Array.isArray(pathStatus.missing) ? pathStatus.missing : []);
+            let statusTypes = pathStatus.types || {};
             operation.paths.forEach(function(item) {
-                let type = types[item.path];
+                let type = statusTypes[item.path];
                 if (type && type !== (item.is_dir ? 'directory' : 'file')) {
                     unavailable.add(item.path);
                 }
             });
+
+            // Keep size calculation from blocking restore. A saved selection is
+            // still useful when a card/filesystem refuses a folder walk; missing
+            // paths are checked separately above and never enter the selection.
+            let sizeData = {sizes: {}};
+            let sizeWarning = '';
+            let availableBeforeSizing = operation.paths.filter(function(item) {
+                return !unavailable.has(item.path);
+            });
+            if (availableBeforeSizing.length) {
+                try {
+                    sizeData = await savedOperationsRequest('/api/sizes', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({
+                            paths: availableBeforeSizing.map(function(item) { return item.path; }),
+                            excludes: operation.excludes || [],
+                            include_types: true
+                        })
+                    });
+                    (Array.isArray(sizeData.missing) ? sizeData.missing : []).forEach(function(path) {
+                        unavailable.add(path);
+                    });
+                    let sizeTypes = sizeData.types || {};
+                    availableBeforeSizing.forEach(function(item) {
+                        let type = sizeTypes[item.path];
+                        if (type && type !== (item.is_dir ? 'directory' : 'file')) {
+                            unavailable.add(item.path);
+                        }
+                    });
+                } catch (sizeError) {
+                    sizeWarning = 'تعذر حساب الأحجام الآن، لكن تم تحميل العناصر المتاحة؛ يمكنك متابعة النسخ.';
+                    try {
+                        let latestStatus = await savedOperationsRequest('/api/path_status', {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify({paths: availableBeforeSizing})
+                        });
+                        (Array.isArray(latestStatus.missing) ? latestStatus.missing : []).forEach(function(path) {
+                            unavailable.add(path);
+                        });
+                        let latestTypes = latestStatus.types || {};
+                        availableBeforeSizing.forEach(function(item) {
+                            let type = latestTypes[item.path];
+                            if (type && type !== (item.is_dir ? 'directory' : 'file')) {
+                                unavailable.add(item.path);
+                            }
+                        });
+                    } catch (statusError) {
+                        // The first status check already established which paths
+                        // were available; keep those rather than losing the load.
+                    }
+                }
+            }
             let unavailablePaths = Array.from(unavailable);
             let unavailableItems = operation.paths.filter(function(item) {
                 return unavailable.has(item.path);
@@ -7419,7 +7470,7 @@ HTML_TEMPLATE = """
                 savedOperationConfigKey(operation);
             let proceed = function() {
                 try {
-                    if (applySavedOperation(operation, sizeData, unavailablePaths)) {
+                    if (applySavedOperation(operation, sizeData, unavailablePaths, sizeWarning)) {
                         closeSavedOperationsModal();
                     }
                 } catch (error) {
@@ -7445,7 +7496,7 @@ HTML_TEMPLATE = """
         }
     }
 
-    function applySavedOperation(operation, sizeData, unavailablePaths) {
+    function applySavedOperation(operation, sizeData, unavailablePaths, sizeWarning) {
         let missingSet = new Set(unavailablePaths || []);
         let validPaths = operation.paths.filter(function(item) {
             return !missingSet.has(item.path);
@@ -7470,7 +7521,7 @@ HTML_TEMPLATE = """
         let sizes = (sizeData && sizeData.sizes) || {};
         validPaths.forEach(function(item) {
             selectedSizes[item.path] = sizes[item.path] ||
-                {bytes: 0, formatted: '0 B', owner: item.path};
+                {bytes: 0, formatted: sizeWarning ? 'غير محسوب' : '0 B', owner: item.path};
         });
         activeSavedOperationId = operation.id;
         activeSavedOperationName = operation.name;
@@ -7483,6 +7534,9 @@ HTML_TEMPLATE = """
             return missingSet.has(item.path);
         });
         let issueMessage = savedOperationIssueMessage(unavailableItems);
+        if (sizeWarning) {
+            issueMessage += (issueMessage ? '\\n' : '') + sizeWarning;
+        }
         if (issueMessage) {
             setGroupStatus(issueMessage, 'warning');
         } else {
@@ -9702,6 +9756,40 @@ def get_dir_size(path, excludes):
                     total += os.path.getsize(fp)
     except: pass
     return total
+
+@app.route('/api/path_status', methods=['POST'])
+def get_paths_status():
+    """Check saved source roots without walking folders or calculating sizes."""
+    body = request.get_json(silent=True) or {}
+    raw_paths = body.get('paths', [])
+    if not isinstance(raw_paths, list):
+        return jsonify({'error': 'قائمة المسارات غير صالحة'}), 400
+
+    types = {}
+    missing = []
+    for entry in raw_paths:
+        path = entry.get('path') if isinstance(entry, dict) else entry
+        if (not isinstance(path, str) or not path.startswith('/')
+                or len(path) > 4096 or '\x00' in path):
+            return jsonify({'error': 'يوجد مسار محفوظ غير صالح'}), 400
+        try:
+            path_stat = os.stat(path)
+        except OSError:
+            # Access restrictions and removed/moved paths are both unavailable
+            # to this copy. Report them as data instead of failing the request.
+            missing.append(path)
+            types[path] = 'missing'
+            continue
+
+        if stat.S_ISDIR(path_stat.st_mode):
+            types[path] = 'directory'
+        elif stat.S_ISREG(path_stat.st_mode):
+            types[path] = 'file'
+        else:
+            types[path] = 'other'
+
+    return jsonify({'missing': missing, 'types': types})
+
 
 @app.route('/api/sizes', methods=['POST'])
 def get_items_sizes():
