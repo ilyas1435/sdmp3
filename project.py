@@ -55,13 +55,13 @@ app = Flask(__name__)
 
 # Version is kept in the VERSION file next to this script so that the `sdmp3`
 # CLI can read it without importing the app.
-APP_VERSION_FALLBACK = "3.2"
+APP_VERSION_FALLBACK = "3.3"
 
 # Toggled by --no-wakelock (see main() at the bottom).
 WAKELOCK_ENABLED = True
 
 
-def get_app_version():
+def _read_app_version():
     try:
         here = os.path.dirname(os.path.abspath(__file__))
         with open(os.path.join(here, 'VERSION'), encoding='utf-8') as fh:
@@ -69,6 +69,16 @@ def get_app_version():
     except OSError:
         version = APP_VERSION_FALLBACK
     return validate_version(version)
+
+
+# Read once when the server process starts. Reading VERSION on each request let
+# an old, still-running Termux process display a new version after `sdmp3 update`
+# replaced the file, even though its Python code had not been restarted.
+APP_VERSION = _read_app_version()
+
+
+def get_app_version():
+    return APP_VERSION
 
 
 # Copied in 4MB units. A single sequential write per unit is what protects the

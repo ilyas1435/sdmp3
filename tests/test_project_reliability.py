@@ -711,10 +711,15 @@ class AppVersionTests(unittest.TestCase):
     def test_app_and_cli_reject_invalid_version_files(self):
         with mock.patch('builtins.open', mock.mock_open(read_data='3.0.1')):
             with self.assertRaisesRegex(ValueError, 'major.minor'):
-                project.get_app_version()
+                project._read_app_version()
         with mock.patch('builtins.open', mock.mock_open(read_data='3.0.1')):
             with self.assertRaisesRegex(ValueError, 'major.minor'):
                 sdmp3_cli.app_version()
+
+    def test_running_app_version_does_not_change_when_version_file_is_replaced(self):
+        running_version = project.get_app_version()
+        with mock.patch('builtins.open', mock.mock_open(read_data='99.99')):
+            self.assertEqual(project.get_app_version(), running_version)
 
 
 if __name__ == '__main__':
