@@ -1,10 +1,10 @@
 ---
 name: Version increments
-description: The user requires an app version increment for every development update.
+description: The user requires each development update to use a two-part major.minor version.
 ---
 
-Increment the existing app version for every completed development update.
+After the requested 3.0 release, use only major.minor versions and increment the minor number for each completed development update (for example, 3.1 then 3.2). Do not add a third version component.
 
-**Why:** the user asked that each development change update the version.
+**Why:** the user asked for version 3.0 now and only two version numbers afterward.
 
-**How to apply:** Bump the current `VERSION` when completing each separate development update, and verify the app reports the new value.
+**How to apply:** Keep every later `VERSION` in major.minor form, increment the minor number for each completed update, and verify the app reports it.

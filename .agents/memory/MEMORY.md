@@ -1,2 +1,2 @@
 - [Android flush restrictions](android-flush.md) — use syscall stage plus errno; Android may return ENOENT from syncfs on a valid SD-card directory.
-- [Version increments](version-increments.md) — increment the existing `VERSION` for every completed development update.
+- [Version increments](version-increments.md) — after version 3.0, use major.minor only and increment the minor number per completed update.
