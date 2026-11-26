@@ -509,6 +509,183 @@ class CopyWorkerReliabilityTests(unittest.TestCase):
             with open(self.destination_path(name), 'rb') as fh:
                 self.assertTrue(fh.read().startswith(b'track-'))
 
+    def test_worker_retries_a_transient_card_error_and_counts_bytes_once(self):
+        self.write_source('track.mp3', b'z' * 8)
+        original_copy = project.copy_file_sequential
+        calls = []
+
+        def flaky(src, dst, cancel_check=None, on_bytes=None):
+            calls.append(None)
+            if len(calls) == 1:
+                # A weak card reporting EBUSY halfway through: the attempt dies
+                # after reporting 4 bytes, then the retry succeeds.
+                if on_bytes is not None:
+                    on_bytes(4)
+                raise OSError(errno.EBUSY, 'simulated busy card')
+            return original_copy(src, dst, cancel_check=cancel_check,
+                                 on_bytes=on_bytes)
+
+        with mock.patch.object(project, 'copy_file_sequential', side_effect=flaky), \
+                mock.patch.object(project.time, 'sleep'):
+            snapshot = self.run_worker()
+
+        self.assertEqual(snapshot['status'], 'done')
+        self.assertEqual(snapshot['failed'], 0)
+        self.assertEqual(snapshot['copied'], 1)
+        # The failed attempt's 4 reported bytes are rewound, not counted twice.
+        self.assertEqual(snapshot['copied_bytes'], 8)
+        self.assertEqual(snapshot['file'].count('فشل'), 0)
+
+    def test_worker_stops_after_the_card_flips_to_read_only(self):
+        for index in range(5):
+            self.write_source('track {}.mp3'.format(index), b'x')
+
+        def always_read_only(src, dst, cancel_check=None, on_bytes=None):
+            raise OSError(errno.EROFS, 'simulated read-only mount')
+
+        with mock.patch.object(project, 'copy_file_sequential',
+                               side_effect=always_read_only):
+            snapshot = self.run_worker()
+
+        self.assertEqual(snapshot['status'], 'error')
+        self.assertIn('القراءة فقط', snapshot['file'])
+        self.assertIn('القراءة فقط', snapshot['log'])
+
+
+class DestinationProbeTests(unittest.TestCase):
+    def test_system_status_never_writes_a_probe_to_the_card(self):
+        df_output = ('Filesystem Size Used Avail Use% Mounted on\n'
+                     '/dev/block/dm-5 59G 1G 58G 2% /storage/FAKE-0001\n')
+        with mock.patch.object(project, '_sd_status_cache',
+                               {'path': None, 'ts': 0.0, 'value': None}), \
+                mock.patch.object(project.subprocess, 'check_output',
+                                  return_value=df_output), \
+                mock.patch.object(project, 'storage_kind', return_value='sdcard'), \
+                mock.patch.object(project, 'check_destination',
+                                  side_effect=AssertionError('must not write')) as probe:
+            info = project.removable_sd()
+
+        probe.assert_not_called()
+        self.assertEqual(info['path'], '/storage/FAKE-0001')
+        self.assertEqual(info['kind'], 'sdcard')
+        # Writability is measured by a real user-started check, never here.
+        self.assertIsNone(info['writable'])
+
+    def test_destination_probe_does_not_fsync(self):
+        with tempfile.TemporaryDirectory() as tempdir, \
+                mock.patch.object(project.os, 'fsync',
+                                  side_effect=AssertionError('must not fsync')):
+            self.assertIsNone(project.check_destination(tempdir))
+
+    def test_speed_probe_writes_and_cleans_up_without_fsync(self):
+        with tempfile.TemporaryDirectory() as tempdir, \
+                mock.patch.object(project.os, 'fsync',
+                                  side_effect=AssertionError('must not fsync')):
+            mbps = project.probe_card_speed(tempdir, size_mb=1, timeout=10)
+            leftover = [name for name in os.listdir(tempdir)
+                        if name.startswith('.sdmp3')]
+
+        self.assertIsInstance(mbps, float)
+        self.assertGreater(mbps, 0)
+        self.assertEqual(leftover, [])
+
+    def test_start_route_refuses_before_probing_while_a_worker_runs(self):
+        with tempfile.TemporaryDirectory() as tempdir:
+            source = os.path.join(tempdir, 'source')
+            destination = os.path.join(tempdir, 'destination')
+            os.makedirs(source)
+            os.makedirs(destination)
+            worker = threading.Thread(target=lambda: time.sleep(0.5), daemon=True)
+            worker.start()
+            project.reset_state()
+            project.set_state(status='copying')
+            try:
+                with mock.patch.object(project, 'ACTIVE_THREAD', worker), \
+                        mock.patch.object(project, 'check_destination',
+                                          side_effect=AssertionError('must not probe')) as probe:
+                    response = project.app.test_client().post('/transfer/start', json={
+                        'paths': [source], 'dest': destination, 'verify': False})
+                body = response.get_json()
+                self.assertEqual(response.status_code, 200)
+                self.assertIn('error', body)
+                probe.assert_not_called()
+            finally:
+                worker.join()
+                project.reset_state()
+
+    def test_benchmark_refuses_before_probing_while_a_worker_runs(self):
+        with tempfile.TemporaryDirectory() as destination:
+            worker = threading.Thread(target=lambda: time.sleep(0.5), daemon=True)
+            worker.start()
+            project.reset_state()
+            project.set_state(status='copying')
+            try:
+                with mock.patch.object(project, 'ACTIVE_THREAD', worker), \
+                        mock.patch.object(project, 'check_destination',
+                                          side_effect=AssertionError('must not probe')) as probe:
+                    response = project.app.test_client().post('/api/benchmark',
+                                                              json={'dest': destination})
+                body = response.get_json()
+                self.assertEqual(response.status_code, 200)
+                self.assertIn('error', body)
+                probe.assert_not_called()
+            finally:
+                worker.join()
+                project.reset_state()
+
+
+class TransientRetryTests(unittest.TestCase):
+    def test_transient_error_is_retried_once(self):
+        calls = []
+
+        def flaky():
+            calls.append(None)
+            if len(calls) == 1:
+                raise OSError(errno.EBUSY, 'busy')
+            return 'ok'
+
+        with mock.patch.object(project.time, 'sleep') as sleep:
+            self.assertEqual(project.run_with_retries(flaky), 'ok')
+        self.assertEqual(len(calls), 2)
+        sleep.assert_called_once()
+
+    def test_read_only_card_is_not_retried(self):
+        calls = []
+
+        def read_only():
+            calls.append(None)
+            raise OSError(errno.EROFS, 'read-only file system')
+
+        with self.assertRaises(OSError):
+            project.run_with_retries(read_only)
+        self.assertEqual(len(calls), 1)
+
+    def test_retry_budget_stops_retrying_on_a_dying_card(self):
+        budget = project.RetryBudget(limit=2)
+        calls = []
+
+        def always_busy():
+            calls.append(None)
+            raise OSError(errno.EBUSY, 'busy')
+
+        with mock.patch.object(project.time, 'sleep'), self.assertRaises(OSError):
+            project.run_with_retries(always_busy, _budget=budget)
+
+        self.assertEqual(budget.remaining, 0)
+        # Three attempts: the original plus the two the budget allowed.
+        self.assertEqual(len(calls), 3)
+
+    def test_cancellation_stops_retrying(self):
+        calls = []
+
+        def always_busy():
+            calls.append(None)
+            raise OSError(errno.EBUSY, 'busy')
+
+        with self.assertRaises(OSError):
+            project.run_with_retries(always_busy, _cancel_check=lambda: True)
+        self.assertEqual(len(calls), 1)
+
 
 class SearchRankingTests(unittest.TestCase):
     def test_cached_search_returns_only_the_best_forty_matches(self):

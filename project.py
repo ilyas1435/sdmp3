@@ -55,7 +55,7 @@ app = Flask(__name__)
 
 # Version is kept in the VERSION file next to this script so that the `sdmp3`
 # CLI can read it without importing the app.
-APP_VERSION_FALLBACK = "3.9"
+APP_VERSION_FALLBACK = "3.10"
 
 # Toggled by --no-wakelock (see main() at the bottom).
 WAKELOCK_ENABLED = True
@@ -128,10 +128,14 @@ STALL_SECONDS = 60
 # status, not an instruction to remove the card.
 SLOW_SECONDS = 15
 # How long to refuse a destination after a probe timed out, instead of spawning
-# another worker that would hang in exactly the same place.
-UNHEALTHY_DEST_TTL = 120
+# another worker that would hang in exactly the same place. Kept short: after the
+# user re-inserts the card a retry must be able to prove it recovered without an
+# app restart.
+UNHEALTHY_DEST_TTL = 20
 # Seconds to wait for the destination to answer a tiny write before a transfer.
-DEST_PROBE_TIMEOUT = 8
+# The probe no longer fsyncs (see _probe_write), so this is only consumed by an
+# actually hung mount, not by a slow-but-working card's flush.
+DEST_PROBE_TIMEOUT = 15
 
 transfer_lock = threading.RLock()
 
@@ -205,6 +209,28 @@ def is_thread_alive(thread):
         return bool(thread is not None and thread.is_alive())
     except Exception:
         return False
+
+
+def busy_worker_reason(message, stale_note='copy'):
+    """Return `message` while a worker owns the card, else None.
+
+    Every start route must call this *before* it probes the destination. A probe
+    writes a tiny file, and writing into a card that the single copy worker is
+    writing to is exactly the interleaving the copy engine must never allow (it
+    can split FAT clusters and change playback order). It is also what made a
+    running copy look like a dead card: the probe waited behind the worker's own
+    dirty pages and timed out.
+
+    A status='copying' whose thread is gone is recovered here instead of
+    blocking every future attempt forever.
+    """
+    if transfer_state['status'] == 'copying':
+        if is_thread_alive(ACTIVE_THREAD):
+            return message
+        log_event('recovering a stale {} state (worker thread is gone)'.format(stale_note))
+        transfer_state['status'] = 'idle'
+    return None
+
 
 def reset_state(**overrides):
     with transfer_lock:
@@ -600,18 +626,26 @@ def shizuku_refresher():
         time.sleep(SHIZUKU_TTL)
 
 
-# Cached answer for the header pill: probing a card on every page load would be
-# wasteful (and would hammer a dying card).
+# Cached answer for the header pill: resolving the mount runs `df` and reads
+# /proc/mounts, so cache it briefly.
 _SD_STATUS_TTL = 60
 _sd_status_cache = {'path': None, 'ts': 0.0, 'value': None}
 
 
 def removable_sd():
-    """First external (non-emulated) /storage mount + whether we can really write.
+    """First external (non-emulated) /storage mount, its path and kind.
 
-    `os.access(W_OK)` lies on Android: it says yes for a card whose every write
-    fails with EIO. So the pill is driven by the same 5-byte probe the copy path
-    uses, cached for a minute.
+    This deliberately does *not* write a probe file. It used to call
+    check_destination() with a 5s timeout on every /api/system poll, which runs
+    every two minutes while the page is open. On a busy card that flush easily
+    took longer than 5s, so the poll marked the destination "not responding" in
+    `_UNHEALTHY_DESTS` for two minutes - and the next copy refused to start with
+    "الكارت لا يستجيب" even though browsing (and the Android file manager) worked.
+    It also wrote to the card while the single-threaded copy worker was writing,
+    which is exactly the interleaving the copy engine must never allow.
+
+    Writability is `None` = not measured. The UI answers «هل الكارت يكتب؟» with a
+    real user-started write test (`/api/benchmark`), never with this field.
     """
     path = None
     try:
@@ -621,20 +655,17 @@ def removable_sd():
                 path = line.split()[-1]
                 break
     except Exception:
-        return {'path': None, 'writable': None}
+        return {'path': None, 'writable': None, 'kind': None}
     if not path:
-        return {'path': None, 'writable': None}
+        return {'path': None, 'writable': None, 'kind': None}
 
     now = time.time()
     cached = _sd_status_cache
     if cached['path'] == path and (now - cached['ts']) < _SD_STATUS_TTL:
         return dict(cached['value'])
 
-    problem = check_destination(path, timeout=5)
-    value = {'path': path, 'writable': problem is None,
+    value = {'path': path, 'writable': None,
              'kind': storage_kind(path) or 'card'}
-    if problem:
-        value['error'] = problem
     _sd_status_cache.update({'path': path, 'ts': now, 'value': value})
     return dict(value)
 
@@ -1073,7 +1104,7 @@ CARD_SPEED_PROBE_MB = 8
 CARD_SPEED_PROBE_MIN_BYTES = 48 * 1024 * 1024
 
 
-def _probe_speed_write(dest, size_mb, result):
+def _probe_speed_write(dest, size_mb, result, cancel=None):
     probe = os.path.join(dest, '.sdmp3_speed_probe')
     block = b'\0' * (4 * 1024 * 1024)
     try:
@@ -1082,51 +1113,61 @@ def _probe_speed_write(dest, size_mb, result):
             started = time.time()
             remaining = size_mb * 1024 * 1024
             while remaining > 0:
+                if cancel is not None and cancel.is_set():
+                    return
                 chunk = block if remaining >= len(block) else block[:remaining]
                 os.write(fd, chunk)
                 remaining -= len(chunk)
-            os.fsync(fd)
+            # No fsync: the real copy has none either, and an end flush measures
+            # the kernel's dirty-page backlog rather than this card's write
+            # speed. It is what pushed a healthy 5 MB/s card past the 25s probe
+            # timeout and aborted the copy before its first file.
             elapsed = max(time.time() - started, 0.001)
         finally:
             os.close(fd)
-        try:
-            os.remove(probe)
-        except OSError:
-            pass
         result.append(size_mb / elapsed)
     except Exception as exc:
+        result.append(exc)
+    finally:
         try:
             if os.path.exists(probe):
                 os.remove(probe)
-        except Exception:
+        except OSError:
             pass
-        result.append(exc)
 
 
 def probe_card_speed(dest, size_mb=CARD_SPEED_PROBE_MB, timeout=None):
     """Write `size_mb` sequentially to `dest` and return MB/s, or None.
 
     Deliberately the same shape as the copy itself: one file, 4MB sequential
-    writes, a single flush at the end. The old benchmark that fsynced every
-    block was measuring flush latency and always looked slow.
+    writes, no per-file flush.
 
-    Returns None when the probe could not be measured; a probe that hangs is
-    cached in `_UNHEALTHY_DESTS` (see `destination_is_unhealthy`).
+    Returns None when the probe could not be measured. Only a worker still stuck
+    in a write after timeout is cached in `_UNHEALTHY_DESTS` (see
+    `destination_is_unhealthy`); a slow result is returned as a number and only
+    produces a warning in the copy worker.
     """
     if not dest or not os.path.isdir(dest):
         return None
-    # Only a card 4x slower than the "slow card" line is called *unresponsive*:
-    # a 1 MB/s card is bad news, but it is alive and must be reported as slow,
-    # not as dead.
-    timeout = timeout or max(25, int(size_mb / max(SLOW_CARD_MBPS / 4.0, 0.1)) + 10)
+    # A card writing at 0.5 MB/s needs 16s for 8MB; 30s leaves room for a very
+    # slow card without calling it dead. A write that blocks the whole 30s is
+    # past "slow": it would take hours to move a real album.
+    timeout = timeout or max(30, int(size_mb / 0.5) + 10)
     result = []
+    cancel = threading.Event()
     worker = threading.Thread(target=_probe_speed_write,
-                              args=(dest, size_mb, result), daemon=True)
+                              args=(dest, size_mb, result, cancel), daemon=True)
     worker.start()
     worker.join(timeout)
     if worker.is_alive():
+        cancel.set()
+        worker.join(3)
+    if worker.is_alive():
         _UNHEALTHY_DESTS[dest] = time.time() + UNHEALTHY_DEST_TTL
         log_event('speed probe NOT responding (>{:.0f}s): {!r}'.format(timeout, dest))
+        return None
+    if cancel.is_set():
+        log_event('speed probe cancelled after {:.0f}s: {!r}'.format(timeout, dest))
         return None
     if not result or not isinstance(result[0], float):
         return None
@@ -1140,11 +1181,19 @@ def destination_is_unhealthy(dest):
 
 def _probe_write(dest, result):
     probe = os.path.join(dest, '.sdmp3_probe')
+    payload = b'sdmp3'
     try:
-        fd = os.open(probe, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o666)
+        fd = os.open(probe, os.O_RDWR | os.O_CREAT | os.O_TRUNC, 0o666)
         try:
-            os.write(fd, b'sdmp3')
-            os.fsync(fd)
+            os.write(fd, payload)
+            # Read it back from the same descriptor. This still proves the
+            # open/write path (read-only mount, EACCES, a hung FUSE daemon)
+            # without an fsync: on a card busy with a copy the kernel fsync
+            # blocks until *every* dirty page is flushed, which routinely takes
+            # longer than the probe timeout and used to report a healthy card as
+            # dead. A truly hung mount blocks the write itself.
+            if os.pread(fd, len(payload), 0) != payload:
+                raise OSError(errno.EIO, 'Destination probe did not read back', probe)
         finally:
             os.close(fd)
         try:
@@ -1188,8 +1237,8 @@ def check_destination(dest, timeout=DEST_PROBE_TIMEOUT):
         # The probe is stuck in the kernel; remember it and stop probing.
         _UNHEALTHY_DESTS[dest] = time.time() + UNHEALTHY_DEST_TTL
         log_event('destination NOT responding (>{:.0f}s): {!r}'.format(timeout, dest))
-        return ('الوجهة لا تستجيب (الكارت معلّق). أخرجه وأدخله ثم أعد المحاولة. '
-                'إذا استمرت المشكلة أعد تشغيل التطبيق: sdmp3 restart')
+        return ('الوجهة لا تستجيب (الكارت معلّق). أخرجه وأدخله جيداً ثم أعد '
+                'المحاولة؛ لا حاجة لإعادة تشغيل التطبيق.')
     if not result:
         return 'تعذر اختبار الوجهة'
     if result[0] is None:
@@ -1279,6 +1328,65 @@ def force_delete_tree(target, cancel_check=None, progress_cb=None):
 
     if progress_cb: progress_cb(deleted, len(failures))
     return deleted, failures
+
+# Errors a working but weak/busy card can return for a moment. The Android file
+# manager retries these and finishes; failing the file on the first one is why a
+# slow card looked like a broken card. Bounded in count and in total sleep so a
+# genuinely dead card still fails fast.
+TRANSIENT_IO_ERRNOS = frozenset({
+    errno.EAGAIN, errno.EBUSY, errno.EINTR, errno.EACCES, errno.EIO,
+})
+TRANSIENT_IO_RETRIES = 3
+TRANSIENT_IO_DELAY = 0.35
+# Ceiling for the whole sleep budget of one operation (all retries together).
+TRANSIENT_IO_BUDGET = 2.0
+
+
+class RetryBudget(object):
+    """Shared allowance so one bad card cannot make every file retry forever."""
+
+    def __init__(self, limit=40):
+        self.remaining = int(limit)
+
+    def take(self):
+        if self.remaining <= 0:
+            return False
+        self.remaining -= 1
+        return True
+
+
+def run_with_retries(fn, *args, _cancel_check=None, _budget=None, **kwargs):
+    """Call `fn` and retry a bounded number of transient filesystem errors.
+
+    `fn` must be safe to repeat: copy_file_sequential() deletes its half-written
+    destination on failure, and os.makedirs(exist_ok=True) is idempotent.
+
+    The caller's cancel flag is honoured between attempts, and `_budget` (a
+    RetryBudget shared by one transfer) stops a dying card from paying the retry
+    cost on every single file.
+    """
+    attempt = 0
+    slept = 0.0
+    while True:
+        try:
+            return fn(*args, **kwargs)
+        except OSError as exc:
+            if exc.errno not in TRANSIENT_IO_ERRNOS:
+                raise
+            if _cancel_check is not None and _cancel_check():
+                raise
+            if attempt >= TRANSIENT_IO_RETRIES:
+                raise
+            if _budget is not None and not _budget.take():
+                raise
+            attempt += 1
+            pause = min(TRANSIENT_IO_DELAY * attempt,
+                        max(TRANSIENT_IO_BUDGET - slept, 0.0))
+            if pause <= 0:
+                raise
+            time.sleep(pause)
+            slept += pause
+
 
 def _advise_sequential(fd):
     """Tell the kernel this file is read/written front-to-back.
@@ -1653,6 +1761,7 @@ def copy_thread_task(paths, dest, excludes=None, groups=None, verify=True,
     bytes_since_sync = 0
     failed_details = []
     write_failed = False
+    readonly_failures = 0
     excludes = excludes or set()
     last_ui_update = time.time()
     UI_UPDATE_INTERVAL = 0.5
@@ -1664,6 +1773,7 @@ def copy_thread_task(paths, dest, excludes=None, groups=None, verify=True,
     groups = list(groups or [])
     speed_window = deque()
     speed_ema = None
+    retry_budget = RetryBudget()
 
     def flush_copy(phase_after):
         warning = sync_with_heartbeat(phase_after, dest=dest)
@@ -1796,11 +1906,20 @@ def copy_thread_task(paths, dest, excludes=None, groups=None, verify=True,
                     ).format(mbps))
             elif destination_is_unhealthy(dest):
                 # Nothing planned has been written yet, so this is the cheapest
-                # possible place to stop: a card that cannot take 8MB in 25s
+                # possible place to stop: a card that cannot take 8MB in 30s
                 # would stall on the first real file.
                 raise RuntimeError(
-                    'الوجهة لا تستجيب (الكارت معلّق). أخرجه وأدخله ثم أعد المحاولة. '
-                    'إذا استمرت المشكلة أعد تشغيل التطبيق: sdmp3 restart')
+                    'الوجهة لا تستجيب (الكارت معلّق). أخرجه وأدخله جيداً ثم أعد '
+                    'المحاولة؛ لا حاجة لإعادة تشغيل التطبيق.')
+            else:
+                # The probe could not finish (cancelled or a transient error),
+                # but the tiny destination check and the card itself answered.
+                # Never abort a copy just because a speed *measurement* failed:
+                # the real copy reports its own speed within seconds.
+                set_state(card_warning=(
+                    'تعذر قياس سرعة الكتابة مسبقاً، لكن الكارت يستجيب. '
+                    'سيبدأ النسخ وقد يكون بطيئاً؛ تابع السرعة من نافذة التقدم.'
+                ))
             set_state(phase='copying', file='جاري النقل المستقر المباشر...')
 
         def on_bytes(count):
@@ -1824,9 +1943,29 @@ def copy_thread_task(paths, dest, excludes=None, groups=None, verify=True,
             name = os.path.basename(src)
 
             if kind == 'file':
+                def copy_attempt():
+                    # One attempt at one file. A failed attempt reports the bytes
+                    # it managed before dying; rewind those so a retry cannot
+                    # count the same bytes twice (which would inflate progress
+                    # and the average speed).
+                    nonlocal bytes_done, bytes_since_sync
+                    started_done = bytes_done
+                    started_since = bytes_since_sync
+                    try:
+                        return copy_file_sequential(
+                            src, dst_path, cancel_check=is_cancelled,
+                            on_bytes=on_bytes)
+                    except TransferCancelled:
+                        raise
+                    except Exception:
+                        bytes_done = started_done
+                        bytes_since_sync = started_since
+                        raise
+
                 try:
-                    written = copy_file_sequential(
-                        src, dst_path, cancel_check=is_cancelled, on_bytes=on_bytes)
+                    written = run_with_retries(
+                        copy_attempt, _cancel_check=is_cancelled,
+                        _budget=retry_budget)
                     planned_files[dst_path] = written
                     planned_sources[dst_path] = src
                     copied += 1
@@ -1836,12 +1975,29 @@ def copy_thread_task(paths, dest, excludes=None, groups=None, verify=True,
                     reason = describe_os_error(e)
                     failed_details.append((src, reason))
                     log_event('copy failed: {!r} -> {}'.format(src, reason))
-                    if isinstance(e, OSError) and getattr(e, 'errno', None) in (5, 30):
+                    err_no = getattr(e, 'errno', None) if isinstance(e, OSError) else None
+                    if err_no == errno.EROFS:
+                        # The mount flipped to read-only (Android does this after
+                        # a card I/O error). Nothing else will succeed, so stop
+                        # instead of burning ten minutes on guaranteed failures.
+                        readonly_failures += 1
+                        if readonly_failures >= 3:
+                            if copied:
+                                raise RuntimeError(
+                                    'الكارت تحوّل إلى القراءة فقط بعد نسخ {} '
+                                    'ملفاً سليماً. أخرج الكارت، انتظر ثانيتين، ثم '
+                                    'أدخله جيداً وأعد المحاولة — سيُكمل النسخ فوق '
+                                    'الموجود دون تكراره.'.format(copied))
+                            raise RuntimeError(
+                                'الكارت تحوّل إلى القراءة فقط قبل نسخ أي ملف. '
+                                'أخرج الكارت، انتظر ثانيتين، ثم أدخله جيداً وأعد '
+                                'المحاولة — لم يُنقل شيء بعد.')
+                    if err_no in (5, 30):
                         # The card itself refuses writes (a dying card or broken
                         # FAT). Keep going so the user sees the full picture, but
                         # flag it for the final hint.
                         write_failed = True
-                    if isinstance(e, OSError) and getattr(e, 'errno', None) == 28:
+                    if err_no == 28:
                         raise RuntimeError('انتهت المساحة الخالية في الوجهة أثناء النسخ.')
 
                 # Flush the whole transfer to the card occasionally, never per file.
@@ -1851,7 +2007,9 @@ def copy_thread_task(paths, dest, excludes=None, groups=None, verify=True,
 
             elif kind == 'dir':
                 try:
-                    os.makedirs(dst_path, exist_ok=True)
+                    run_with_retries(os.makedirs, dst_path, exist_ok=True,
+                                     _cancel_check=is_cancelled,
+                                     _budget=retry_budget)
                 except Exception as e:
                     reason = describe_os_error(e)
                     failed_details.append((src, reason))
@@ -9974,6 +10132,14 @@ def benchmark():
     if not dest or not os.path.isdir(dest):
         return jsonify({'error': 'مسار الوجهة غير صالح'})
 
+    # The check writes 32MB. Never do that while the copy worker owns the card:
+    # two writers interleave FAT directory entries and clusters, and the
+    # benchmark would measure the worker's queue instead of the card.
+    with transfer_lock:
+        busy = busy_worker_reason('هناك عملية قيد التشغيل بالفعل، انتظر انتهاءها',
+                                  'benchmark')
+    if busy: return jsonify({'error': busy})
+
     problem = check_destination(dest)
     if problem: return jsonify({'error': problem})
 
@@ -10366,6 +10532,12 @@ def tts_index():
     else:
         obfuscate = bool(obf)
 
+    # Busy before probing: the destination probe writes a file, and the single
+    # worker must not be joined by another writer.
+    with transfer_lock:
+        busy = busy_worker_reason('هناك عملية قيد التشغيل بالفعل', 'tts')
+    if busy: return jsonify({'error': busy})
+
     # Optional: write the finished MP3 straight into the destination instead of
     # the temp cache (the UI then offers no download). Probe the folder first -
     # the same 5-byte check a copy does - so a dead card fails before ffmpeg
@@ -10375,8 +10547,6 @@ def tts_index():
         dest_dir = (data.get('save_dir') or '').strip()
         if not dest_dir or not os.path.isdir(dest_dir):
             return jsonify({'error': 'مسار الوجهة غير صالح لحفظ MP3'})
-        if not os.access(dest_dir, os.W_OK):
-            return jsonify({'error': 'لا توجد صلاحية كتابة في الوجهة'})
         if os.path.exists(os.path.join(dest_dir, out_name)):
             return jsonify({'error': 'يوجد ملف بالاسم نفسه في الوجهة — اختر اسماً آخر.'})
         problem = check_destination(dest_dir)
@@ -10385,10 +10555,8 @@ def tts_index():
 
     global ACTIVE_THREAD
     with transfer_lock:
-        if transfer_state['status'] == 'copying' and is_thread_alive(ACTIVE_THREAD):
-            return jsonify({'error': 'هناك عملية قيد التشغيل بالفعل'})
-        if transfer_state['status'] == 'copying':
-            log_event('recovering a stale tts state (worker thread is gone)')
+        busy = busy_worker_reason('هناك عملية قيد التشغيل بالفعل', 'tts')
+        if busy: return jsonify({'error': busy})
         reset_state(status='copying', action='tts', start_time=time.time(),
                     file='جاري تحضير الصوت…')
         ACTIVE_THREAD = threading.Thread(
@@ -10436,7 +10604,12 @@ def start_transfer():
     dest = data.get('dest', '')
     if not paths: return jsonify({'error': 'لم يتم تحديد أي ملفات'})
     if not dest or not os.path.isdir(dest): return jsonify({'error': 'مسار الوجهة غير صالح'})
-    if not os.access(dest, os.W_OK): return jsonify({'error': 'لا توجد صلاحية كتابة'})
+
+    # Busy first, probe second. The destination check writes a tiny file, and a
+    # worker already writing this card must not be joined by another writer.
+    with transfer_lock:
+        busy = busy_worker_reason('هناك عملية قيد التشغيل بالفعل', 'copy')
+    if busy: return jsonify({'error': busy})
 
     # One request may carry several named parent folders ("groups"). The old
     # single `group` field is still accepted so an old page cannot break.
@@ -10514,13 +10687,8 @@ def start_transfer():
     verify_mode = 'content' if verify_content else ('size' if verify else 'off')
     global ACTIVE_THREAD
     with transfer_lock:
-        if transfer_state['status'] == 'copying' and is_thread_alive(ACTIVE_THREAD):
-            return jsonify({'error': 'هناك عملية قيد التشغيل بالفعل'})
-        if transfer_state['status'] == 'copying':
-            # The previous worker died without clearing the flag; recover instead
-            # of blocking every future copy with "already running" forever.
-            log_event('recovering a stale copy state (worker thread is gone)')
-            transfer_state['status'] = 'idle'
+        busy = busy_worker_reason('هناك عملية قيد التشغيل بالفعل', 'copy')
+        if busy: return jsonify({'error': busy})
         # Clear the previous run here, not in the worker: otherwise a poll that
         # lands between this request and the thread start still sees the old
         # 'done'/'error' state and the UI reports the wrong result.
@@ -10543,16 +10711,18 @@ def start_spoof_only():
     if not dest or not os.path.isdir(dest): return jsonify({'error': 'مسار الوجهة غير صالح'})
     if not spoof_timestamp: return jsonify({'error': 'تاريخ التمويه غير صالح'})
 
+    # Busy before probing: see start_transfer().
+    with transfer_lock:
+        busy = busy_worker_reason('النظام مشغول', 'spoof')
+    if busy: return jsonify({'error': busy})
+
     problem = check_destination(dest)
     if problem: return jsonify({'error': problem})
 
     global ACTIVE_THREAD
     with transfer_lock:
-        if transfer_state['status'] == 'copying' and is_thread_alive(ACTIVE_THREAD):
-            return jsonify({'error': 'النظام مشغول'})
-        if transfer_state['status'] == 'copying':
-            log_event('recovering a stale spoof state (worker thread is gone)')
-            transfer_state['status'] = 'idle'
+        busy = busy_worker_reason('النظام مشغول', 'spoof')
+        if busy: return jsonify({'error': busy})
         # Same race as copy: clear the previous result before the worker starts.
         reset_state(status='copying', action='spoof', start_time=time.time())
         ACTIVE_THREAD = threading.Thread(
