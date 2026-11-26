@@ -686,6 +686,37 @@ class TransientRetryTests(unittest.TestCase):
             project.run_with_retries(always_busy, _cancel_check=lambda: True)
         self.assertEqual(len(calls), 1)
 
+    def test_eio_gets_more_retries_than_other_transient_errors(self):
+        # EIO on a weak card gets EIO_RETRIES attempts, not just TRANSIENT_IO_RETRIES.
+        calls = []
+
+        def always_eio():
+            calls.append(None)
+            raise OSError(errno.EIO, 'simulated weak card I/O error')
+
+        sleeps = []
+        with mock.patch.object(project.time, 'sleep', side_effect=lambda s: sleeps.append(s)):
+            with self.assertRaises(OSError):
+                project.run_with_retries(always_eio)
+
+        # One original attempt + EIO_RETRIES retries = EIO_RETRIES + 1 calls.
+        self.assertEqual(len(calls), project.EIO_RETRIES + 1)
+        # All pauses should be at least EIO_DELAY based.
+        self.assertTrue(all(s >= project.EIO_DELAY for s in sleeps))
+
+    def test_eio_retries_succeed_after_intermittent_failures(self):
+        calls = []
+
+        def intermittent_eio():
+            calls.append(None)
+            if len(calls) <= 2:
+                raise OSError(errno.EIO, 'simulated weak card I/O error')
+            return 'ok'
+
+        with mock.patch.object(project.time, 'sleep'):
+            self.assertEqual(project.run_with_retries(intermittent_eio), 'ok')
+        self.assertEqual(len(calls), 3)
+
 
 class SearchRankingTests(unittest.TestCase):
     def test_cached_search_returns_only_the_best_forty_matches(self):

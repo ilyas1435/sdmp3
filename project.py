@@ -55,7 +55,7 @@ app = Flask(__name__)
 
 # Version is kept in the VERSION file next to this script so that the `sdmp3`
 # CLI can read it without importing the app.
-APP_VERSION_FALLBACK = "3.10"
+APP_VERSION_FALLBACK = "3.11"
 
 # Toggled by --no-wakelock (see main() at the bottom).
 WAKELOCK_ENABLED = True
@@ -918,11 +918,14 @@ CARD_DAMAGE_HINT = (
 )
 
 # Shown when the card refuses *writes* (errno 5 EIO / 30 read-only).
+# errno.EIO on a weak card is often intermittent: suggest re-seating and
+# retrying before telling the user to replace the card.
 CARD_WRITE_HINT = (
-    'الكارت يرفض الكتابة (خطأ إدخال/إخراج) وليس مشكلة صلاحيات. انسخ بياناتك '
-    'منه ثم أصلح نظام الملفات من الكمبيوتر: chkdsk X: /f في ويندوز أو '
-    'fsck.vfat -a في لينكس. إذا تكرر الخطأ بعد الإصلاح فالكارت متعب أو '
-    'سعته غير حقيقية — استبدله'
+    'الكارت يرفض الكتابة الآن (خطأ إدخال/إخراج). قد يكون الكارت ضعيفاً أو '
+    'غير مثبت بإحكام في المساحة: أخرج الكارت، انتظر لحظة، ثم أدخله جيداً '
+    'وجرب النسخ مرة ثانية. ليس مشكلة صلاحيات. إذا تكرر الخطأ بعد الإصلاح من '
+    'الكمبيوتر (chkdsk X: /f في ويندوز أو fsck.vfat -a في لينكس) فالكارت '
+    'متعب أو سعته غير حقيقية — استبدله'
 )
 
 
@@ -1336,10 +1339,15 @@ def force_delete_tree(target, cancel_check=None, progress_cb=None):
 TRANSIENT_IO_ERRNOS = frozenset({
     errno.EAGAIN, errno.EBUSY, errno.EINTR, errno.EACCES, errno.EIO,
 })
+# errno.EIO on a weak card is often intermittent: the card recovers after a
+# moment. Give it more retries and a longer pause than other transient errors.
+EIO_RETRIES = 6
+EIO_DELAY = 0.8
 TRANSIENT_IO_RETRIES = 3
 TRANSIENT_IO_DELAY = 0.35
 # Ceiling for the whole sleep budget of one operation (all retries together).
-TRANSIENT_IO_BUDGET = 2.0
+# EIO retries need more room than other transient errors.
+TRANSIENT_IO_BUDGET = 10.0
 
 
 class RetryBudget(object):
@@ -1364,6 +1372,10 @@ def run_with_retries(fn, *args, _cancel_check=None, _budget=None, **kwargs):
     The caller's cancel flag is honoured between attempts, and `_budget` (a
     RetryBudget shared by one transfer) stops a dying card from paying the retry
     cost on every single file.
+
+    errno.EIO (weak-card I/O error) gets more attempts and a longer pause than
+    other transient errors, because a weak card often recovers after re-seating
+    or after a brief pause.
     """
     attempt = 0
     slept = 0.0
@@ -1375,13 +1387,25 @@ def run_with_retries(fn, *args, _cancel_check=None, _budget=None, **kwargs):
                 raise
             if _cancel_check is not None and _cancel_check():
                 raise
-            if attempt >= TRANSIENT_IO_RETRIES:
+            # EIO on a weak card needs more patience: more retries, longer pause.
+            if exc.errno == errno.EIO:
+                max_attempts = EIO_RETRIES
+                base_delay = EIO_DELAY
+            else:
+                max_attempts = TRANSIENT_IO_RETRIES
+                base_delay = TRANSIENT_IO_DELAY
+            if attempt >= max_attempts:
                 raise
             if _budget is not None and not _budget.take():
                 raise
             attempt += 1
-            pause = min(TRANSIENT_IO_DELAY * attempt,
-                        max(TRANSIENT_IO_BUDGET - slept, 0.0))
+            # EIO uses a fixed pause per retry (weak card recovery time),
+            # other transient errors use an increasing pause.
+            if exc.errno == errno.EIO:
+                pause = EIO_DELAY
+            else:
+                pause = base_delay * attempt
+            pause = min(pause, max(TRANSIENT_IO_BUDGET - slept, 0.0))
             if pause <= 0:
                 raise
             time.sleep(pause)
@@ -1455,8 +1479,17 @@ def copy_file_sequential(src, dst, cancel_check=None, on_bytes=None):
             while offset < len(chunk):
                 if cancel_check is not None and cancel_check():
                     raise TransferCancelled()
-                count = os.write(dst_fd, view[offset:])
+                try:
+                    count = os.write(dst_fd, view[offset:])
+                except OSError as write_exc:
+                    # Weak cards sometimes return EIO briefly then recover.
+                    # Pause before raising so run_with_retries gives the card
+                    # a moment to recover instead of failing the file outright.
+                    if write_exc.errno == errno.EIO:
+                        time.sleep(0.25)
+                    raise
                 if count <= 0:
+                    time.sleep(0.25)
                     raise OSError(errno.EIO, 'Destination write made no progress', dst)
                 offset += count
             written_total += len(chunk)
@@ -1762,6 +1795,7 @@ def copy_thread_task(paths, dest, excludes=None, groups=None, verify=True,
     failed_details = []
     write_failed = False
     readonly_failures = 0
+    eio_failures = 0
     excludes = excludes or set()
     last_ui_update = time.time()
     UI_UPDATE_INTERVAL = 0.5
@@ -1992,10 +2026,15 @@ def copy_thread_task(paths, dest, excludes=None, groups=None, verify=True,
                                 'الكارت تحوّل إلى القراءة فقط قبل نسخ أي ملف. '
                                 'أخرج الكارت، انتظر ثانيتين، ثم أدخله جيداً وأعد '
                                 'المحاولة — لم يُنقل شيء بعد.')
-                    if err_no in (5, 30):
-                        # The card itself refuses writes (a dying card or broken
-                        # FAT). Keep going so the user sees the full picture, but
-                        # flag it for the final hint.
+                    if err_no == errno.EIO:
+                        # A weak card often returns EIO for a moment then recovers.
+                        # Don't flag the card as dead on one or two files: only
+                        # show the write-failure hint when EIO is widespread.
+                        eio_failures += 1
+                        if eio_failures > max(3, len(failed_details) // 2):
+                            write_failed = True
+                    elif err_no == 30:
+                        # Read-only mount is more serious: flag it immediately.
                         write_failed = True
                     if err_no == 28:
                         raise RuntimeError('انتهت المساحة الخالية في الوجهة أثناء النسخ.')
