@@ -55,7 +55,7 @@ app = Flask(__name__)
 
 # Version is kept in the VERSION file next to this script so that the `sdmp3`
 # CLI can read it without importing the app.
-APP_VERSION_FALLBACK = "3.11"
+APP_VERSION_FALLBACK = "3.12"
 
 # Toggled by --no-wakelock (see main() at the bottom).
 WAKELOCK_ENABLED = True
@@ -460,14 +460,28 @@ def is_cancelled():
     with transfer_lock:
         return transfer_state['cancel']
 
+def _format_duration(seconds):
+    """Format seconds as ساعة(s):دقيقة(s):ثانية(s), dropping leading zeros."""
+    seconds = int(round(seconds))
+    hours, rem = divmod(seconds, 3600)
+    mins, secs = divmod(rem, 60)
+    parts = []
+    if hours:
+        parts.append('{} ساعة'.format(hours))
+    if mins:
+        parts.append('{} دقيقة'.format(mins))
+    if secs or not parts:
+        parts.append('{} ثانية'.format(secs))
+    return ' و '.join(parts)
+
+
 class TransferCancelled(Exception):
     pass
 
 def finish_transfer(final_status, msg, extra=None):
     snap = get_state_snapshot()
     elapsed = int(time.time() - snap['start_time'])
-    mins, secs = divmod(elapsed, 60)
-    kwargs = dict(status=final_status, file=msg, time_taken=f"{mins} دقيقة و {secs} ثانية")
+    kwargs = dict(status=final_status, file=msg, time_taken=_format_duration(elapsed))
     if extra:
         kwargs.update(extra)
     set_state(**kwargs)
@@ -1968,6 +1982,26 @@ def copy_thread_task(paths, dest, excludes=None, groups=None, verify=True,
         # the probe: walking 2000 source dirs is not the card's fault, and folding
         # it into the average made a fast card look slow.
         copy_started = time.time()
+
+        def copy_one_file(src, dst_path):
+            # One attempt at one file. A failed attempt reports the bytes
+            # it managed before dying; rewind those so a retry cannot
+            # count the same bytes twice (which would inflate progress
+            # and the average speed).
+            nonlocal bytes_done, bytes_since_sync
+            started_done = bytes_done
+            started_since = bytes_since_sync
+            try:
+                return copy_file_sequential(
+                    src, dst_path, cancel_check=is_cancelled,
+                    on_bytes=on_bytes)
+            except TransferCancelled:
+                raise
+            except Exception:
+                bytes_done = started_done
+                bytes_since_sync = started_since
+                raise
+
         for src, dst_path, kind in tasks:
             # Heartbeat per entry too: a folder full of 0-byte files moves no
             # bytes at all, and must not look like a dead card.
@@ -1977,28 +2011,10 @@ def copy_thread_task(paths, dest, excludes=None, groups=None, verify=True,
             name = os.path.basename(src)
 
             if kind == 'file':
-                def copy_attempt():
-                    # One attempt at one file. A failed attempt reports the bytes
-                    # it managed before dying; rewind those so a retry cannot
-                    # count the same bytes twice (which would inflate progress
-                    # and the average speed).
-                    nonlocal bytes_done, bytes_since_sync
-                    started_done = bytes_done
-                    started_since = bytes_since_sync
-                    try:
-                        return copy_file_sequential(
-                            src, dst_path, cancel_check=is_cancelled,
-                            on_bytes=on_bytes)
-                    except TransferCancelled:
-                        raise
-                    except Exception:
-                        bytes_done = started_done
-                        bytes_since_sync = started_since
-                        raise
-
                 try:
                     written = run_with_retries(
-                        copy_attempt, _cancel_check=is_cancelled,
+                        copy_one_file, src, dst_path,
+                        _cancel_check=is_cancelled,
                         _budget=retry_budget)
                     planned_files[dst_path] = written
                     planned_sources[dst_path] = src
@@ -2209,11 +2225,7 @@ def copy_thread_task(paths, dest, excludes=None, groups=None, verify=True,
         # Honest numbers, in the user's terms: copy speed (the only part the
         # card controls), how long the copy took, and the verify time.
         def _dur(seconds):
-            seconds = int(round(seconds))
-            if seconds < 60:
-                return '{} ثانية'.format(seconds)
-            mins, secs = divmod(seconds, 60)
-            return '{} دقيقة و {} ثانية'.format(mins, secs)
+            return _format_duration(seconds)
 
         if bytes_done:
             speed_note = ' — {:.1f} MB/s في {}'.format(avg_speed, _dur(copy_seconds))
