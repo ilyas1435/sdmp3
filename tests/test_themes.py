@@ -217,10 +217,14 @@ class PhotoBackgroundUiTests(unittest.TestCase):
 
     def test_photo_is_a_tinted_page_background_and_preview_fits_mobile_width(self):
         self.assertIn('body.photo-background-enabled::before', self.html)
-        self.assertIn('position:fixed; inset:0; z-index:-1; pointer-events:none', self.html)
-        # Without its own compositor layer Android repaints the fixed image on
-        # every scroll frame, which reads as a slight jitter.
-        self.assertIn('will-change:transform', self.html)
+        # inset:0 sizes a fixed layer from the *visual* viewport, so Android
+        # resizes it (and re-crops the cover image) when the URL bar hides.
+        # An explicit large-viewport size stays put; vh is the fallback.
+        self.assertIn(
+            'position:fixed; top:0; left:0; width:100vw; height:100vh; height:100lvh; '
+            'z-index:-1; pointer-events:none; will-change:transform',
+            self.html)
+        self.assertNotIn('position:fixed; inset:0', self.html)
         self.assertIn('linear-gradient(var(--photo-overlay), var(--photo-overlay))', self.html)
         self.assertIn('.photo-background-preview { display:block; width:100%;', self.html)
         self.assertIn('background-size:cover, cover', self.html)

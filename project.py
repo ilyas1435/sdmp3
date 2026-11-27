@@ -3038,7 +3038,7 @@ HTML_TEMPLATE = """
            every scroll and reads as a jitter. A fixed, non-interactive layer
            behind the content gives the same look and scrolls independently. */
         body.photo-background-enabled::before {
-            content:""; position:fixed; inset:0; z-index:-1; pointer-events:none; will-change:transform;
+            content:""; position:fixed; top:0; left:0; width:100vw; height:100vh; height:100lvh; z-index:-1; pointer-events:none; will-change:transform;
             background-image: linear-gradient(var(--photo-overlay), var(--photo-overlay)), var(--photo-image);
             background-position:center center, center center; background-repeat:no-repeat, no-repeat;
             background-size:cover, cover;
