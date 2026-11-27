@@ -3023,13 +3023,25 @@ HTML_TEMPLATE = """
                the size preset. Both are rendered server-side so the first paint
                is already correct. */
             --app-font: {{ app_font|safe }};
+            /* Surfaces use the theme's own RGB channels, so the saved opacity
+               can fade a card without inventing a colour outside the registry.
+               1 means the old opaque look; the settings slider lowers it. */
+            --surface-alpha: 1;
+            --surface-card: rgba(var(--card-rgb), var(--surface-alpha));
+            --surface-card-2: rgba(var(--card-2-rgb), var(--surface-alpha));
+            --surface-field: rgba(var(--field-rgb), var(--surface-alpha));
+            --surface-bar: rgba(var(--bar-rgb), var(--surface-alpha));
         }
         * { box-sizing: border-box; font-family: var(--app-font); -webkit-tap-highlight-color: transparent; }
-        body { background-color: var(--bg); color: var(--text); margin: 0; padding: 16px 14px 112px; font-size: calc(14px * var(--font-scale)); line-height: 1.55; -webkit-font-smoothing: antialiased; }
-        body.photo-background-enabled {
+        body { position:relative; background-color: var(--bg); color: var(--text); margin: 0; padding: 16px 14px 112px; font-size: calc(14px * var(--font-scale)); line-height: 1.55; -webkit-font-smoothing: antialiased; }
+        /* A fixed background-attachment makes Android repaint the whole page on
+           every scroll and reads as a jitter. A fixed, non-interactive layer
+           behind the content gives the same look and scrolls independently. */
+        body.photo-background-enabled::before {
+            content:""; position:fixed; inset:0; z-index:-1; pointer-events:none;
             background-image: linear-gradient(var(--photo-overlay), var(--photo-overlay)), var(--photo-image);
             background-position:center center, center center; background-repeat:no-repeat, no-repeat;
-            background-size:cover, cover; background-attachment:fixed, fixed;
+            background-size:cover, cover;
         }
         .container { max-width: 900px; margin: 0 auto; }
 
@@ -3090,7 +3102,7 @@ HTML_TEMPLATE = """
         .dest-path { display:flex; align-items:center; gap:7px; max-width:min(520px, 100%);
             min-width:0; padding:5px 10px; border-radius:9px; cursor:pointer;
             border:1px solid transparent; color:var(--text-muted); }
-        .dest-path:hover, .dest-path:focus-visible { background:var(--field); color:var(--text); }
+        .dest-path:hover, .dest-path:focus-visible { background:var(--surface-field); color:var(--text); }
         .dest-path .icon { width:14px; height:14px; flex-shrink:0; color:var(--accent); }
         .dest-path .dest-path-go { color:var(--text-muted); }
         #custom_dest_path { flex:1 1 auto; width:auto; min-width:0; min-height:0;
@@ -3117,7 +3129,7 @@ HTML_TEMPLATE = """
            and the optional folder-scope panel on top, the scrollable tree
            beneath. Search sits directly above the results. */
         .browser-head { border:1px solid var(--field-line); border-bottom:0; border-radius:10px 10px 0 0;
-            background:var(--field); }
+            background:var(--surface-field); }
         .browser-sort { display:flex; align-items:center; gap:8px; padding:6px 11px;
             font-size:calc(12px * var(--font-scale)); color:var(--text-muted);
             border-bottom:1px solid var(--field-line); }
@@ -3132,7 +3144,7 @@ HTML_TEMPLATE = """
         .scope-line > .icon { width:15px; height:15px; color:var(--accent); flex-shrink:0; }
         /* The scope path is a field like the destination's, so both pickers read
            the same: a locked path on one line, «تحديد» underneath. */
-        #searchScopePath { flex:1 1 auto; min-width:0; margin-bottom:0; background:var(--field);
+        #searchScopePath { flex:1 1 auto; min-width:0; margin-bottom:0; background:var(--surface-field);
             font-family:var(--num-font); color:var(--text); }
         @media (max-width: 480px) { .browser-search { padding:6px 8px; gap:5px; }
             .browser-search > .icon-btn { width:34px; height:34px; }
@@ -3142,9 +3154,9 @@ HTML_TEMPLATE = """
         .num { font-family: var(--num-font); font-variant-numeric: tabular-nums; direction:ltr; unicode-bidi:isolate; }
 
         label { font-weight: 500; margin-bottom: 8px; display: block; color: var(--text-muted); font-size: calc(13px * var(--font-scale)); }
-        select, input[type="text"], input[type="number"], input[type="datetime-local"] { width: 100%; padding: 12px 14px; border: 1px solid var(--border); border-radius: 10px; font-size: calc(14px * var(--font-scale)); background-color: var(--field); color: var(--text); outline: none; margin-bottom: 12px; transition: border-color 0.15s, box-shadow 0.15s; min-height: 46px; }
+        select, input[type="text"], input[type="number"], input[type="datetime-local"] { width: 100%; padding: 12px 14px; border: 1px solid var(--border); border-radius: 10px; font-size: calc(14px * var(--font-scale)); background-color: var(--surface-field); color: var(--text); outline: none; margin-bottom: 12px; transition: border-color 0.15s, box-shadow 0.15s; min-height: 46px; }
         select:focus, input[type="text"]:focus, input[type="number"]:focus, input[type="datetime-local"]:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
-        textarea { width: 100%; padding: 12px 14px; box-sizing: border-box; border: 1px solid var(--border); border-radius: 10px; font-family: var(--num-font); font-size: calc(14px * var(--font-scale)); line-height: 1.7; background-color: var(--field); color: var(--text); outline: none; resize: none; }
+        textarea { width: 100%; padding: 12px 14px; box-sizing: border-box; border: 1px solid var(--border); border-radius: 10px; font-family: var(--num-font); font-size: calc(14px * var(--font-scale)); line-height: 1.7; background-color: var(--surface-field); color: var(--text); outline: none; resize: none; }
         textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
 
         .btn { padding: 11px 16px; min-height: 44px; border: none; border-radius: 10px; cursor: pointer; font-weight: 600; font-size: calc(13.5px * var(--font-scale)); color: var(--text); transition: transform 0.08s ease, filter 0.15s ease, background-color 0.15s ease, border-color 0.15s ease; display: inline-flex; align-items: center; justify-content: center; gap: 7px; }
@@ -3160,7 +3172,7 @@ HTML_TEMPLATE = """
         .btn-danger:hover { filter: brightness(1.08); }
         .btn-sand { background: var(--sand-fill); color: var(--on-fill); }
         .btn-sand:hover { background: var(--sand-fill-hover); }
-        .btn-outline { background: var(--card-2); border: 1px solid var(--border); color: var(--text); }
+        .btn-outline { background: var(--surface-card-2); border: 1px solid var(--border); color: var(--text); }
         .btn-outline.is-open { background: var(--accent-soft); border-color: var(--accent); color: var(--accent-text); }
         .btn-outline:hover { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent-soft); }
         .btn-sm { padding: 8px 12px; min-height: 38px; font-size: calc(12.5px * var(--font-scale)); }
@@ -3176,7 +3188,7 @@ HTML_TEMPLATE = """
            progress bar, and none of them was scannable. */
         .report { display:flex; flex-direction:column; gap:0; margin-top:14px;
             border:1px solid var(--field-line); border-radius:10px; overflow:hidden;
-            background:var(--field); text-align:start; }
+            background:var(--surface-field); text-align:start; }
         .report-row { display:flex; align-items:center; gap:9px; padding:9px 11px;
             font-size:calc(12.5px * var(--font-scale)); line-height:1.5; }
         .report-row + .report-row { border-top:1px solid var(--rule); }
@@ -3197,9 +3209,9 @@ HTML_TEMPLATE = """
            every result set (three hits = a three-row strip), and the keyboard
            inset shrank it while typing. It is now the same height always, and the
            page scrolls the section into view instead of resizing the list. */
-        .tree { height: clamp(320px, 54vh, 560px); overflow: auto; background: var(--field); border: 1px solid var(--border); border-radius: 10px; padding: 8px; scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
+        .tree { height: clamp(320px, 54vh, 560px); overflow: auto; background: var(--surface-field); border: 1px solid var(--border); border-radius: 10px; padding: 8px; scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
         /* Search replaces the tree's contents; the header stays put while rows scroll. */
-        .search-view-head { position: sticky; top: 0; z-index: 2; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 8px; margin: -8px -8px 8px; background: var(--field); border-bottom: 1px solid var(--field-line); }
+        .search-view-head { position: sticky; top: 0; z-index: 2; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 8px; margin: -8px -8px 8px; background: var(--surface-field); border-bottom: 1px solid var(--field-line); }
         .search-view-head .search-view-label { color: var(--text-muted); font-size: calc(12px * var(--font-scale)); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .search-view-head .search-view-path { color: var(--text-muted); font-size: calc(11px * var(--font-scale)); direction: ltr; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .tree::-webkit-scrollbar, .modal-content .modal-body::-webkit-scrollbar { width: 8px; height: 8px; }
@@ -3207,7 +3219,7 @@ HTML_TEMPLATE = """
         .tree::-webkit-scrollbar-track, .modal-content .modal-body::-webkit-scrollbar-track { background: transparent; }
         .item-row { display: flex; align-items: center; padding: 9px 8px; border-radius: 8px; border-bottom: 1px solid var(--border); min-width: max-content; transition: background-color 0.15s; }
         .item-row:last-child { border-bottom: none; }
-        .item-row:hover { background: var(--card-2); }
+        .item-row:hover { background: var(--surface-card-2); }
         .toggle-btn { background: none; border: none; color: var(--text-muted); cursor: pointer; font-size: calc(12px * var(--font-scale)); width: 26px; height: 26px; padding: 0; flex-shrink:0; }
         .excluded-badge { color: var(--warning); font-size: calc(11px * var(--font-scale)); margin-right: 8px; background: var(--warning-soft); border: 1px solid var(--warning-line); padding: 2px 6px; border-radius: 6px;}
         .checkbox { accent-color: var(--accent); width: 18px; height: 18px; margin: 0 10px; flex-shrink: 0; cursor: pointer;}
@@ -3220,7 +3232,7 @@ HTML_TEMPLATE = """
            rename buttons line up with the folder rows above them. */
         .picker-file-row .row-actions { margin-inline-start: 0; padding-inline-start: 6px; }
         .picker-file-row .file-size { margin-inline-start: auto; }
-        .icon-btn { width:30px; height:30px; border-radius:8px; border:1px solid var(--border); background:var(--field); color:var(--text-muted); display:flex; align-items:center; justify-content:center; cursor:pointer; flex-shrink:0; }
+        .icon-btn { width:30px; height:30px; border-radius:8px; border:1px solid var(--border); background:var(--surface-field); color:var(--text-muted); display:flex; align-items:center; justify-content:center; cursor:pointer; flex-shrink:0; }
         .icon-btn svg { width:14px; height:14px; }
         .icon-btn:active { transform: scale(0.92); }
 
@@ -3232,13 +3244,13 @@ HTML_TEMPLATE = """
            thing the thumb hits, small enough that three volumes still fit one row. */
         .storage-card { position: relative; display: flex; flex: 0 0 auto; flex-direction: column; align-items: center; gap: 4px;
             padding: 6px 8px; border: 1px solid var(--field-line); border-radius: 11px;
-            background: var(--field); color: var(--text); cursor: pointer; text-align: center;
+            background: var(--surface-field); color: var(--text); cursor: pointer; text-align: center;
             transition: border-color .15s, background .15s; font-family: inherit; appearance: none; -webkit-appearance: none; }
         .storage-card:hover { border-color: var(--kind, var(--accent)); }
         /* The kind hue is always there, but only the selected volume wears it at
            full strength: an unselected tile stays quiet without losing its identity. */
         .storage-card .storage-ico { width: 32px; height: 32px; padding: 5px; flex-shrink: 0; box-sizing: border-box;
-            border-radius: 9px; background: var(--field); color: var(--kind, var(--text-muted));
+            border-radius: 9px; background: var(--surface-field); color: var(--kind, var(--text-muted));
             opacity: .42; transition: opacity .15s, background .15s; }
         .storage-short { font-size: calc(11px * var(--font-scale)); font-weight: 600; color: var(--text-muted); line-height:1.2; opacity: .8; }
         .storage-card.active { border-color: var(--kind, var(--accent)); background: var(--kind-soft, var(--accent-soft)); }
@@ -3271,7 +3283,7 @@ HTML_TEMPLATE = """
            unreadable while scrolling, and backdrop-filter costs the phone GPU
            for nothing. The copy's progress is mirrored here as a 3px line so
            the user never has to open the progress dialog to know where it is. */
-        .actionbar { position: fixed; bottom: 0; left: 0; width: 100%; background: var(--bar-bg);
+        .actionbar { position: fixed; bottom: 0; left: 0; width: 100%; background: var(--surface-bar);
             border-top: 1px solid var(--bar-line); padding: 9px 16px calc(9px + env(safe-area-inset-bottom));
             z-index: 60; box-shadow: 0 -12px 30px -20px var(--shadow-strong); }
         .actionbar-line { display:flex; align-items:center; gap:10px; max-width:900px; margin:0 auto; }
@@ -3305,14 +3317,14 @@ HTML_TEMPLATE = """
            the report and its buttons stay usable underneath. */
         .app-toast { display:none; position:fixed; top:calc(12px + env(safe-area-inset-top)); left:50%; transform:translateX(-50%); z-index:1200;
             width:max-content; max-width:min(92vw, 520px); padding:11px 15px; border-radius:12px; border:1px solid var(--border);
-            background:var(--card-2); color:var(--text); box-shadow:0 18px 40px -16px var(--shadow-strong);
+            background:var(--surface-card-2); color:var(--text); box-shadow:0 18px 40px -16px var(--shadow-strong);
             font-size:calc(13px * var(--font-scale)); font-weight:600; line-height:1.6; gap:8px;
             align-items:center; pointer-events:none; }
         .app-toast .icon { width:17px; height:17px; flex:0 0 auto; }
         .app-toast.is-success { background:var(--ok-soft); border-color:var(--ok-line); color:var(--success); }
         .app-toast.is-error { background:var(--danger-soft); border-color:var(--danger); color:var(--danger-ink); }
         .app-toast.is-info { background:var(--accent-soft); border-color:var(--accent-line); color:var(--accent-text); }
-        .modal-content { background: var(--card); padding: 20px; border-radius: 18px; width: 100%; max-width: 600px; border: 1px solid var(--border); max-height: max(70vh, 480px); display: flex; flex-direction: column; box-shadow: 0 24px 48px -12px var(--shadow-strong); margin: auto; }
+        .modal-content { background: var(--surface-card); padding: 20px; border-radius: 18px; width: 100%; max-width: 600px; border: 1px solid var(--border); max-height: max(70vh, 480px); display: flex; flex-direction: column; box-shadow: 0 24px 48px -12px var(--shadow-strong); margin: auto; }
         .modal-content .modal-body { overflow-y: auto; flex: 1 1 auto; min-height: 0; -webkit-overflow-scrolling: touch; }
         .modal-content .modal-footer { display: flex; gap: 12px; margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--border); flex-shrink: 0; }
         /* The folder picker keeps one height whatever the folder holds: a 3-item
@@ -3331,7 +3343,7 @@ HTML_TEMPLATE = """
         #progressModal > .modal-content { max-height:min(92dvh, 820px); overflow-y:auto;
             overscroll-behavior:contain; scrollbar-width:thin; }
         #progressModal .modal-head-row { position:sticky; top:-20px; z-index:1;
-            background:var(--card); padding-top:2px; }
+            background:var(--surface-card); padding-top:2px; }
         #errorsBox { max-height:32dvh; overflow:auto; overflow-wrap:anywhere; word-break:break-word;
             line-height:1.75; scrollbar-width:thin; -webkit-overflow-scrolling:touch; }
         #errorsBox:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
@@ -3341,7 +3353,7 @@ HTML_TEMPLATE = """
             outline:2px solid var(--accent); outline-offset:2px; }
         .settings-tabs { display:flex; gap:6px; margin:2px 0 10px; flex-shrink:0; }
         .settings-tab { flex:1; min-width:0; min-height:40px; padding:7px 9px; border-radius:10px; border:1px solid var(--border);
-            background:var(--field); color:var(--text-muted); font-size:calc(12.5px * var(--font-scale)); font-weight:600;
+            background:var(--surface-field); color:var(--text-muted); font-size:calc(12.5px * var(--font-scale)); font-weight:600;
             cursor:pointer; font-family:inherit; display:flex; align-items:center; justify-content:center; gap:6px;
             transition:border-color .15s, color .15s, background .15s; }
         .settings-tab .icon { width:14px; height:14px; flex:0 0 auto; }
@@ -3366,7 +3378,7 @@ HTML_TEMPLATE = """
         .settings-field > label .icon { width:14px; height:14px; flex:0 0 auto; color:var(--accent); }
         .size-seg { display:flex; gap:6px; }
         .size-seg .size-seg-btn { flex:1; min-height:38px; padding:6px 8px; border-radius:9px;
-            border:1px solid var(--border); background:var(--field); color:var(--text-muted);
+            border:1px solid var(--border); background:var(--surface-field); color:var(--text-muted);
             font-family:inherit; font-size:calc(12px * var(--font-scale)); font-weight:600; cursor:pointer; }
         .size-seg .size-seg-btn.is-active { border-color:var(--accent); background:var(--accent-soft); color:var(--accent-text); }
         .draft-banner { display:flex; align-items:center; gap:8px; padding:9px 11px; border-radius:10px;
@@ -3374,7 +3386,7 @@ HTML_TEMPLATE = """
             font-size:calc(11.5px * var(--font-scale)); font-weight:600; line-height:1.5; }
         .draft-banner .icon { width:15px; height:15px; flex-shrink:0; }
         .index-group { display:flex; flex-direction:column; gap:7px; padding:10px 11px;
-            border:1px solid var(--border); border-radius:12px; background:var(--card-2); min-width:0; }
+            border:1px solid var(--border); border-radius:12px; background:var(--surface-card-2); min-width:0; }
         .index-group-title { display:flex; align-items:center; gap:6px; font-size:calc(11px * var(--font-scale));
             font-weight:700; color:var(--text-muted); }
         .index-group-title .icon { width:14px; height:14px; color:var(--accent); }
@@ -3383,7 +3395,7 @@ HTML_TEMPLATE = """
         .index-field-label .icon { width:13px; height:13px; flex:0 0 auto; color:var(--accent-text); }
         .index-options-grid { display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); gap:6px; min-width:0; }
         .index-check-row { min-height:40px; align-items:center; padding:7px 8px; border:1px solid var(--border);
-            border-radius:9px; background:var(--field); font-size:calc(11.5px * var(--font-scale)); }
+            border-radius:9px; background:var(--surface-field); font-size:calc(11.5px * var(--font-scale)); }
         .index-check-row .checkbox { margin-top:0; }
         .index-check-row .settings-option-copy { gap:6px; }
         .index-check-row .settings-option-icon { width:14px; height:14px; flex-basis:14px; margin-top:1px; }
@@ -3395,7 +3407,7 @@ HTML_TEMPLATE = """
         .settings-field { display:flex; flex-direction:column; gap:4px; min-width:0; }
         .settings-field > label { font-size:calc(12.5px * var(--font-scale)); font-weight:600; color:var(--text); }
         .settings-field select { width:100%; min-height:44px; padding:9px 12px; border-radius:10px;
-            border:1px solid var(--border); background:var(--field); color:var(--text);
+            border:1px solid var(--border); background:var(--surface-field); color:var(--text);
             font-family:inherit; font-size:calc(13px * var(--font-scale)); cursor:pointer; }
         .settings-field select:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
         .field-hint { font-size:calc(10.5px * var(--font-scale)); color:var(--text-muted); line-height:1.5; }
@@ -3408,7 +3420,7 @@ HTML_TEMPLATE = """
         .photo-background-actions { display:flex; gap:7px; flex-wrap:wrap; }
         .photo-background-actions .btn { flex:1 1 130px; min-height:38px; }
         .photo-background-preview { display:block; width:100%; height:118px; object-fit:cover;
-            border:1px solid var(--border); border-radius:10px; background:var(--field); }
+            border:1px solid var(--border); border-radius:10px; background:var(--surface-field); }
         .photo-background-preview[hidden] { display:none; }
         .photo-opacity-row { display:flex; align-items:center; gap:10px; }
         .photo-opacity-row input { flex:1 1 auto; min-width:0; margin:0; accent-color:var(--accent); }
@@ -3434,7 +3446,7 @@ HTML_TEMPLATE = """
         }
         /* Read-only status rows (device state): a label and a value, no chrome. */
         .status-list { display:flex; flex-direction:column; border:1px solid var(--field-line);
-            border-radius:10px; background:var(--field); }
+            border-radius:10px; background:var(--surface-field); }
         .status-row { display:flex; align-items:center; gap:10px; padding:9px 11px;
             font-size:calc(12.5px * var(--font-scale)); }
         .status-row + .status-row { border-top:1px solid var(--rule); }
@@ -3453,7 +3465,7 @@ HTML_TEMPLATE = """
         .index-form select, .index-form input[type="number"] { min-width:0; margin:0; }
         .index-form .grid-2 { gap:8px; }
         .about-card { display:flex; flex-direction:column; gap:12px; padding:14px; border:1px solid var(--border);
-            border-radius:14px; background:var(--card-2); min-width:0; }
+            border-radius:14px; background:var(--surface-card-2); min-width:0; }
         .about-brand { display:flex; align-items:center; gap:10px; min-width:0; }
         .about-mark { width:42px; height:42px; flex:0 0 42px; display:flex; align-items:center; justify-content:center;
             border-radius:12px; border:1px solid var(--accent-line); background:var(--accent-soft); color:var(--accent-text); }
@@ -3461,7 +3473,7 @@ HTML_TEMPLATE = """
         .about-brand-name { min-width:0; color:var(--text); font-size:calc(15px * var(--font-scale)); font-weight:700; }
         .about-brand-caption { color:var(--text-muted); font-size:calc(11px * var(--font-scale)); }
         .about-version { display:flex; align-items:center; justify-content:space-between; gap:10px; padding:9px 11px;
-            border:1px solid var(--border); border-radius:10px; background:var(--field); }
+            border:1px solid var(--border); border-radius:10px; background:var(--surface-field); }
         .about-version-label { display:flex; align-items:center; gap:7px; color:var(--text-muted); font-size:calc(12px * var(--font-scale)); }
         .about-version-label .icon { width:15px; height:15px; color:var(--accent); }
         .about-version-value { color:var(--text); font-weight:700; }
@@ -3475,7 +3487,7 @@ HTML_TEMPLATE = """
         .about-github-link .icon { width:18px; height:18px; }
         .about-github-link .external-icon { width:14px; height:14px; margin-inline-start:auto; }
         .about-state-path { color:var(--text-muted); font-size:calc(10.5px * var(--font-scale)); line-height:1.6; overflow-wrap:anywhere; }
-        .joc-summary { background:var(--field); border:1px solid var(--border); border-radius:12px;
+        .joc-summary { background:var(--surface-field); border:1px solid var(--border); border-radius:12px;
             padding:12px 14px; font-size:calc(12px * var(--font-scale)); color:var(--text-muted);
             line-height:1.9; }
         .joc-summary b { color:var(--text); font-weight:600; }
@@ -3489,13 +3501,13 @@ HTML_TEMPLATE = """
         .history-head .btn { margin-inline-start:auto; padding:4px 9px; font-size:calc(11px * var(--font-scale)); }
         .history-chips { display:flex; flex-wrap:wrap; gap:6px; margin-bottom:10px; }
         .history-chip { display:inline-flex; align-items:center; gap:6px; padding:5px 11px;
-            border-radius:999px; border:1px solid var(--border); background:var(--field);
+            border-radius:999px; border:1px solid var(--border); background:var(--surface-field);
             color:var(--text); font-family:inherit; font-size:calc(11.5px * var(--font-scale)); cursor:pointer; }
         .history-chip:hover, .history-chip:focus-visible { border-color:var(--accent); color:var(--accent-text); outline:none; }
         .history-chip small { font-size:calc(9.5px * var(--font-scale)); color:var(--text-muted); }
         .history-rows { display:flex; flex-direction:column; gap:6px; max-height:280px; overflow-y:auto; scrollbar-width:thin; }
         .history-row { display:flex; align-items:center; gap:8px; padding:8px 10px;
-            border:1px solid var(--border); background:var(--field); border-radius:11px; }
+            border:1px solid var(--border); background:var(--surface-field); border-radius:11px; }
         .history-row-main { flex:1; min-width:0; cursor:pointer; display:flex; flex-direction:column; gap:3px; }
         .history-row-main:hover .history-row-name { color:var(--accent-text); }
         .history-row-name { font-size:calc(12.5px * var(--font-scale)); color:var(--text); display:flex; align-items:center; gap:6px; }
@@ -3526,7 +3538,7 @@ HTML_TEMPLATE = """
             .index-fields-grid { grid-template-columns:1fr; }
         }
 
-        .progress-bar { width: 100%; height: 10px; background: var(--field); border-radius: 999px; overflow: hidden; margin: 15px 0; border: 1px solid var(--border);}
+        .progress-bar { width: 100%; height: 10px; background: var(--surface-field); border-radius: 999px; overflow: hidden; margin: 15px 0; border: 1px solid var(--border);}
         .progress-fill { height: 100%; background: var(--accent); width: 0%; border-radius: 999px; transition: width 0.3s ease; }
         /* The dialog folds into the action bar (its header carries «تصغير») so a
            running copy never blocks the page. */
@@ -3534,7 +3546,7 @@ HTML_TEMPLATE = """
         .modal-head-row h2 { margin:0; flex:1 1 auto; font-size:calc(16px * var(--font-scale)); border:0; padding:0; }
         /* Queue hook: only rendered once something is waiting, so the section
            never advertises an idle feature. */
-        .queue-block { margin-top:14px; border:1px solid var(--field-line); border-radius:10px; background:var(--field); padding:8px 10px; }
+        .queue-block { margin-top:14px; border:1px solid var(--field-line); border-radius:10px; background:var(--surface-field); padding:8px 10px; }
         .queue-head { display:flex; align-items:center; justify-content:space-between; gap:8px;
             font-size:calc(11px * var(--font-scale)); color:var(--text-muted); letter-spacing:.04em; }
         .queue-rows { display:flex; flex-direction:column; gap:4px; margin-top:6px; }
@@ -3557,7 +3569,7 @@ HTML_TEMPLATE = """
         .ltr-input { direction: ltr; text-align: left; font-family: var(--num-font); font-size: calc(12px * var(--font-scale)); }
 
         .disk-space-container { margin-bottom: 10px; font-size: calc(13px * var(--font-scale)); color: var(--text-muted); display: none;}
-        .disk-bar { width: 100%; height: 6px; background: var(--field); border-radius: 3px; overflow: hidden; margin-top: 6px; border: 1px solid var(--border);}
+        .disk-bar { width: 100%; height: 6px; background: var(--surface-field); border-radius: 3px; overflow: hidden; margin-top: 6px; border: 1px solid var(--border);}
         .disk-used { height: 100%; background: var(--accent); width: 0%; transition: width 0.3s ease; }
 
         /* Copy options and the optional parent folders ("groups"). */
@@ -3579,17 +3591,17 @@ HTML_TEMPLATE = """
         .saved-operation-active { color:var(--accent-text); font-size:calc(11px * var(--font-scale)); overflow-wrap:anywhere; }
         .selected-list { flex:1 1 auto; min-height:0; overflow-y:auto; padding:10px 2px 4px; display:flex; flex-direction:column; gap:8px; }
         .selected-browse-toggle { width:27px; height:27px; flex:0 0 27px; padding:0; border:1px solid var(--border);
-            border-radius:7px; background:var(--field); color:var(--text-muted); display:inline-flex;
+            border-radius:7px; background:var(--surface-field); color:var(--text-muted); display:inline-flex;
             align-items:center; justify-content:center; cursor:pointer; }
         .selected-browse-toggle:hover, .selected-browse-toggle.open { color:var(--accent-text); border-color:var(--accent-line); }
         .selected-browse-toggle .icon { width:13px; height:13px; transition:transform .15s ease; }
         .selected-browse-toggle.open .icon { transform:rotate(90deg); }
         .selected-browse-tree { display:flex; flex-direction:column; gap:4px; padding:7px 8px;
-            border-inline-start:2px solid var(--accent-line); border-radius:8px; background:var(--field);
+            border-inline-start:2px solid var(--accent-line); border-radius:8px; background:var(--surface-field);
             color:var(--text-muted); font-size:calc(11.5px * var(--font-scale)); }
         .selected-browse-tree.is-empty { font-style:italic; }
         .selected-browse-row { min-width:0; display:flex; align-items:center; gap:7px; padding:5px 6px;
-            border:1px solid var(--border); border-radius:8px; background:var(--card); }
+            border:1px solid var(--border); border-radius:8px; background:var(--surface-card); }
         .selected-browse-checkbox { width:16px; height:16px; flex:0 0 16px; margin:0; }
         .selected-browse-icon { width:17px; height:17px; flex:0 0 17px; display:inline-flex; align-items:center; }
         .selected-browse-icon .icon { width:16px; height:16px; }
@@ -3599,7 +3611,7 @@ HTML_TEMPLATE = """
         .saved-operations-list { display:flex; flex-direction:column; gap:7px; min-height:0; max-height:55vh; max-height:55dvh;
             overflow-y:auto; overscroll-behavior:contain; padding:2px 1px; }
         .saved-operation-row { display:flex; align-items:center; gap:8px; flex-wrap:wrap; padding:9px 10px;
-            border:1px solid var(--border); border-radius:10px; background:var(--field); }
+            border:1px solid var(--border); border-radius:10px; background:var(--surface-field); }
         .saved-operation-row-main { min-width:0; flex:1 1 130px; display:flex; flex-direction:column; gap:3px; }
         .saved-operation-row-name { color:var(--text); font-size:calc(13px * var(--font-scale)); font-weight:600; overflow-wrap:anywhere; }
         .saved-operation-row-detail { color:var(--text-muted); font-size:calc(10.5px * var(--font-scale)); line-height:1.4; }
@@ -3614,7 +3626,7 @@ HTML_TEMPLATE = """
         }
 
         .group-section { display:flex; flex-direction:column; gap:8px; padding:10px 11px; border-radius:12px;
-            background:var(--field); border:1px solid var(--border); max-height:34vh; overflow-y:auto; }
+            background:var(--surface-field); border:1px solid var(--border); max-height:34vh; overflow-y:auto; }
         .group-section-head { display:flex; align-items:center; justify-content:space-between; gap:8px; flex-wrap:wrap; }
         .group-section-title { display:flex; align-items:center; gap:8px; font-size:calc(12.5px * var(--font-scale)); font-weight:600; color:var(--text); }
         .group-section-title .icon { color:var(--accent); width:16px; height:16px; }
@@ -3628,7 +3640,7 @@ HTML_TEMPLATE = """
         .gt-row:hover, .gt-row:focus-within { background:var(--accent-soft); }
         .gt-row.is-drop { border-color:var(--accent); border-style:dashed; background:var(--accent-soft); }
         .gt-row.is-group-dragging { opacity:.45; }
-        .gt-row.is-renaming { background:var(--card); border-color:var(--accent-line); }
+        .gt-row.is-renaming { background:var(--surface-card); border-color:var(--accent-line); }
         .gt-twisty { width:22px; height:22px; padding:0; border:0; background:none; color:var(--text-muted);
             display:inline-flex; align-items:center; justify-content:center; cursor:pointer; flex-shrink:0; border-radius:6px; }
         .gt-twisty:hover { color:var(--accent-text); }
@@ -3642,7 +3654,7 @@ HTML_TEMPLATE = """
         .gt-name { flex:1; min-width:0; font-size:calc(12.5px * var(--font-scale)); font-weight:600; color:var(--text);
             white-space:nowrap; overflow:hidden; text-overflow:ellipsis; cursor:pointer; }
         .gt-count { flex-shrink:0; font-size:calc(10px * var(--font-scale)); color:var(--text-muted);
-            background:var(--card); border:1px solid var(--border); border-radius:999px; padding:1px 7px; }
+            background:var(--surface-card); border:1px solid var(--border); border-radius:999px; padding:1px 7px; }
         .gt-actions { display:flex; align-items:center; gap:2px; flex-shrink:0; }
         .gt-btn { width:26px; height:26px; padding:0; border:1px solid transparent; border-radius:7px;
             background:none; color:var(--text-muted); display:inline-flex; align-items:center;
@@ -3651,11 +3663,11 @@ HTML_TEMPLATE = """
         .gt-btn.danger:hover { color:var(--danger-ink); border-color:var(--danger-line); }
         .gt-btn .icon { width:14px; height:14px; }
         .gt-rename { flex:1; min-width:0; margin:0; padding:3px 8px; border-radius:7px;
-            border:1px solid var(--accent); background:var(--field); color:var(--text);
+            border:1px solid var(--accent); background:var(--surface-field); color:var(--text);
             font-family:inherit; font-size:calc(12.5px * var(--font-scale)); }
         .gt-paths { display:flex; flex-direction:column; gap:3px; padding:2px 0 5px; margin-inline-start:26px; }
         .gt-path { display:flex; align-items:center; gap:7px; padding:4px 8px; border-radius:8px;
-            background:var(--card); border:1px solid var(--border); }
+            background:var(--surface-card); border:1px solid var(--border); }
         .gt-path.is-dragging { opacity:.45; }
         .gt-path .icon { width:13px; height:13px; color:var(--text-muted); flex-shrink:0; }
         .gt-path-name { flex:1; min-width:0; font-size:calc(11px * var(--font-scale)); color:var(--text);
@@ -3673,7 +3685,7 @@ HTML_TEMPLATE = """
            selected file. It is the touch-friendly twin of drag & drop. */
         .assign-list { display:flex; flex-direction:column; gap:6px; max-height:38vh; overflow-y:auto; }
         .assign-row { display:flex; align-items:center; gap:9px; width:100%; padding:10px 12px; border-radius:10px;
-            border:1px solid var(--border); background:var(--field); color:var(--text); cursor:pointer;
+            border:1px solid var(--border); background:var(--surface-field); color:var(--text); cursor:pointer;
             font-family:inherit; font-size:calc(12.5px * var(--font-scale)); text-align:start; }
         .assign-row:hover { border-color:var(--accent); background:var(--accent-soft); }
         .assign-row.is-active { border-color:var(--accent); background:var(--accent-soft); color:var(--accent-text); font-weight:600; }
@@ -3684,12 +3696,12 @@ HTML_TEMPLATE = """
         .assign-new .btn { flex-shrink:0; }
         .group-parent-list { display:flex; flex-direction:column; gap:6px; max-height:44vh; overflow-y:auto; }
 
-        .selected-row { display:flex; align-items:center; gap:10px; padding:10px 11px; border-radius:10px; background:var(--field); border:1px solid var(--border); }
+        .selected-row { display:flex; align-items:center; gap:10px; padding:10px 11px; border-radius:10px; background:var(--surface-field); border:1px solid var(--border); }
         .selected-row.is-dragging { opacity:.5; }
         .selected-row-check { width:19px; height:19px; margin:0; flex-shrink:0; accent-color:var(--accent); cursor:pointer; }
         .bulk-assign-bar { position:sticky; top:0; z-index:2; display:flex; align-items:center; gap:8px;
             flex-wrap:wrap; padding:8px 10px; border:1px solid var(--accent-line); border-radius:10px;
-            background:var(--card); box-shadow:0 3px 10px rgba(0,0,0,.15); }
+            background:var(--surface-card); box-shadow:0 3px 10px rgba(0,0,0,.15); }
         .bulk-select-all { display:flex; align-items:center; gap:7px; flex:1; min-width:130px;
             color:var(--text); font-size:calc(11.5px * var(--font-scale)); cursor:pointer; }
         .bulk-select-all input { width:17px; height:17px; margin:0; accent-color:var(--accent); }
@@ -3717,7 +3729,7 @@ HTML_TEMPLATE = """
             font-size:calc(12px * var(--font-scale)); font-weight:600; color:var(--text); }
         .smart-preview-list { display:flex; flex-direction:column; gap:4px; max-height:22vh; overflow-y:auto; }
         .smart-preview-row { display:flex; align-items:center; gap:8px; padding:5px 8px; border-radius:8px;
-            background:var(--card); border:1px solid var(--border); cursor:pointer; }
+            background:var(--surface-card); border:1px solid var(--border); cursor:pointer; }
         .smart-preview-row.is-off { opacity:.5; }
         .smart-preview-name { flex:1; min-width:0; font-size:calc(11.5px * var(--font-scale)); color:var(--text); }
         .smart-preview-meta { flex-shrink:0; font-size:calc(10.5px * var(--font-scale)); color:var(--text-muted); }
@@ -4008,7 +4020,7 @@ HTML_TEMPLATE = """
             <button class="btn btn-outline btn-sm" style="padding: 10px 14px;" onclick="goUpDest()">
                 <svg class="icon" viewBox="0 0 24 24"><line x1="12" y1="19" x2="12" y2="5"></line><polyline points="5 12 12 5 19 12"></polyline></svg>
             </button>
-            <input type="text" id="currentDestView" class="ltr-input" readonly style="margin: 0; background: var(--field);">
+            <input type="text" id="currentDestView" class="ltr-input" readonly style="margin: 0; background: var(--surface-field);">
         </div>
         <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:4px; min-height:22px;">
             <span id="pickerStorageBadge" class="pill" style="display:none;"></span>
@@ -4093,7 +4105,7 @@ HTML_TEMPLATE = """
                 </div>
             </div>
             <div id="savedOperationActiveLabel" class="saved-operation-active" style="display:none;"></div>
-            <div id="totalSizeSelected" style="font-size:calc(13px * var(--font-scale)); font-weight:500; background:var(--field); padding:12px; border-radius:10px; border: 1px solid var(--border);">جاري حساب المساحة...</div>
+            <div id="totalSizeSelected" style="font-size:calc(13px * var(--font-scale)); font-weight:500; background:var(--surface-field); padding:12px; border-radius:10px; border: 1px solid var(--border);">جاري حساب المساحة...</div>
 
             <div class="group-section">
                 <div class="group-section-head">
@@ -4237,6 +4249,14 @@ HTML_TEMPLATE = """
                                 <span id="photoOverlayValue" class="photo-opacity-value">60%</span>
                             </div>
                             <div class="field-hint">القيمة الأعلى تخفف ظهور الصورة وتزيد وضوح المحتوى.</div>
+                        </div>
+                        <div class="settings-field">
+                            <label for="surfaceAlphaRange">شفافية الأسطح</label>
+                            <div class="photo-opacity-row">
+                                <input type="range" id="surfaceAlphaRange" min="30" max="100" step="5" value="100" oninput="setSurfaceAlpha(this.value)">
+                                <span id="surfaceAlphaValue" class="photo-opacity-value">100%</span>
+                            </div>
+                            <div class="field-hint">100% تعني الأسطح كما هي. قلّل القيمة لتظهر الخلفية عبر البطاقات والقوائم وشريط الإجراءات.</div>
                         </div>
                         <div id="photoBackgroundState" class="settings-save-state" role="status" aria-live="polite">اختر صورة PNG أو JPEG أو WebP بحجم لا يتجاوز 8 ميجابايت.</div>
                     </div>
@@ -4431,7 +4451,7 @@ HTML_TEMPLATE = """
 
                             <div>
                                 <div class="index-subtitle"><svg class="icon" aria-hidden="true"><use href="#ico-mask"></use></svg>تمويه الصوت</div>
-                                <div style="display:flex; gap:6px; background:var(--field); border:1px solid var(--border); border-radius:10px; padding:4px;">
+                                <div style="display:flex; gap:6px; background:var(--surface-field); border:1px solid var(--border); border-radius:10px; padding:4px;">
                                     <label class="seg option" data-mode="none" style="flex:1; text-align:center; padding:9px 6px; border-radius:7px; cursor:pointer; font-size:calc(12.5px * var(--font-scale)); color:var(--text-muted); display:flex; align-items:center; justify-content:center; gap:5px;">
                                         <svg class="icon" style="width:15px;height:15px;" viewBox="0 0 24 24"><path d="M11 5 6 9H2v6h4l5 4V5z"></path></svg>
                                         بدون
@@ -4448,7 +4468,7 @@ HTML_TEMPLATE = """
                                 <small id="maskHint" class="settings-note" style="display:block; margin-top:6px;"></small>
 
                                 <div id="customFileBox" style="display:none; margin-top:8px;">
-                                    <div style="display:flex; align-items:center; gap:10px; background:var(--field); border:1px dashed var(--border); border-radius:10px; padding:10px 12px;">
+                                    <div style="display:flex; align-items:center; gap:10px; background:var(--surface-field); border:1px dashed var(--border); border-radius:10px; padding:10px 12px;">
                                         <input type="file" id="jocCustomAudio" accept=".mp3,audio/mpeg" hidden>
                                         <button type="button" class="btn btn-outline btn-sm" style="white-space:nowrap; flex-shrink:0;" onclick="document.getElementById('jocCustomAudio').click()">
                                             <svg class="icon" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg>
@@ -4581,7 +4601,7 @@ HTML_TEMPLATE = """
             <span id="failedText"></span>
         </div>
         <div id="cardWarningBox" style="display:none; margin-top:10px; padding:10px 12px; border-radius:10px; font-size:calc(12px * var(--font-scale)); line-height:1.7; background:var(--warning-soft); border:1px solid var(--warning-line); color:var(--warning);"></div>
-        <div id="errorsBox" role="region" aria-label="تفاصيل الأخطاء والملاحظات" tabindex="0" style="display:none; background:var(--field); border:1px solid var(--border); border-radius:8px; padding:11px 12px; margin-top:10px; font-size:calc(12.5px * var(--font-scale)); color:var(--danger-ink);"></div>
+        <div id="errorsBox" role="region" aria-label="تفاصيل الأخطاء والملاحظات" tabindex="0" style="display:none; background:var(--surface-field); border:1px solid var(--border); border-radius:8px; padding:11px 12px; margin-top:10px; font-size:calc(12.5px * var(--font-scale)); color:var(--danger-ink);"></div>
         <button type="button" class="btn btn-outline btn-sm" id="copyTransferDetailsBtn" onclick="copyTransferDetails()" style="display:none; align-self:flex-start; margin-top:10px;">نسخ التفاصيل</button>
         <div id="timeTakenDiv" class="report" style="display:none;"></div>
         <div id="queueBlock" class="queue-block" style="display:none;">
@@ -6145,15 +6165,25 @@ HTML_TEMPLATE = """
         opts = opts || {};
         let isChecked = isPathSelected(item.path) ? 'checked' : '';
         let excludedMark = isPathExplicitlyExcluded(item.path) ? '<span class="excluded-badge">مستثنى</span>' : '';
-        let onChange = opts.searchMode ? 'toggleSearchResultSelect' : 'toggleSelect';
+        // An archive found in search is shown with the folders (no size, no
+        // expand arrow) but stays a FILE in the selection, because the copy
+        // worker unpacks it. Marking it is_dir would break extraction entirely.
+        let isZip = !!item.is_zip;
+        let nameHint = isZip ? ' title="أرشيف: يُفكّ تلقائياً عند النسخ"' : '';
+        let onChange = opts.searchMode
+            ? `toggleSearchResultSelect(this, ${!!item.is_dir}, ${isZip})`
+            : `toggleSelect(this, ${!!item.is_dir})`;
+        let nameAttrs = nameHint + (item.is_dir
+            ? ' data-toggle="1"'
+            : ' onclick="this.previousElementSibling.click()"');
         return `
             <div class="item-row">
                 ${item.is_dir ? `<button class="toggle-btn" data-toggle="1" aria-label="فتح المجلد">${spriteIcon('ico-chevron-right')}</button>` : `<span style="width:26px;display:inline-block;"></span>`}
-                <input type="checkbox" class="checkbox" value="${esc(item.path)}" data-name="${esc(item.name)}" ${isChecked} onchange="${onChange}(this, ${item.is_dir})">
-                <div class="item-name" ${item.is_dir ? 'data-toggle="1"' : `onclick="this.previousElementSibling.click()"`}>
+                <input type="checkbox" class="checkbox" value="${esc(item.path)}" data-name="${esc(item.name)}" ${isChecked} onchange="${onChange}">
+                <div class="item-name" ${nameAttrs}>
                     ${item.is_dir ? iconDir : fileIcon(item.name)} <span>${esc(item.name)}</span>${excludedMark}
                 </div>
-                ${item.is_dir ? '' : `<span class="file-size">${formatBytes(item.size || 0)}</span>`}
+                ${(item.is_dir || isZip) ? '' : `<span class="file-size">${formatBytes(item.size || 0)}</span>`}
                 ${rowActionsHtml(item.path, item.name, item.is_dir)}
             </div>
             ${item.is_dir ? '<div class="children"></div>' : ''}
@@ -6343,7 +6373,7 @@ HTML_TEMPLATE = """
         list.innerHTML = '';
         failures.forEach(function(f) {
             let row = document.createElement('div');
-            row.style.cssText = 'background:var(--field); border:1px solid var(--border); border-radius:8px; padding:8px; word-break:break-all;';
+            row.style.cssText = 'background:var(--surface-field); border:1px solid var(--border); border-radius:8px; padding:8px; word-break:break-all;';
             let nameEl = document.createElement('div');
             nameEl.style.cssText = 'color:var(--text); font-weight:500;';
             nameEl.textContent = String(f.path || '').split('/').filter(Boolean).pop() || f.path;
@@ -6416,13 +6446,14 @@ HTML_TEMPLATE = """
 
     // Search-result checkboxes use this: a committed selection is also saved to
     // the search history so the folder can be reused later without re-searching.
-    function toggleSearchResultSelect(cb, isDir) {
+    function toggleSearchResultSelect(cb, isDir, isZip) {
         if (cb.checked) {
             includePath(cb.value, isDir);
             rememberSearchSelection([{
                 path: cb.value,
                 name: cb.getAttribute('data-name') || '',
-                is_dir: isDir
+                is_dir: isDir,
+                is_zip: !!isZip
             }]);
         } else {
             excludePath(cb.value);
@@ -6667,10 +6698,13 @@ HTML_TEMPLATE = """
             rows.innerHTML = '<div class="history-empty">لا يوجد سجل بعد — حدّد مجلدات من نتائج البحث أو نفّذ بحثاً، وستظهر هنا.</div>';
             return;
         }
+        let folderIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>';
+        let fileIconSvg = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline></svg>';
+        let zipIconSvg = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="11" y1="4" x2="11" y2="6"></line><line x1="13" y1="6" x2="13" y2="8"></line><line x1="11" y1="8" x2="11" y2="10"></line><line x1="13" y1="10" x2="13" y2="12"></line><rect x="10.5" y="13" width="3" height="4" rx=".5"></rect></svg>';
         rows.innerHTML = items.map(function(it, index) {
-            let icon = it.is_dir
-                ? '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>'
-                : '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path></svg>';
+            let zipLike = !!it.is_zip || String(it.name || it.path || '')
+                .toLowerCase().endsWith('.zip');
+            let icon = it.is_dir ? folderIcon : (zipLike ? zipIconSvg : fileIconSvg);
             return '<div class="history-row" data-index="' + index + '">' +
                 '<div class="history-row-main" data-act="use" role="button" tabindex="0" title="أضف إلى التحديد">' +
                     '<div class="history-row-name">' + icon + '<span class="truncate-text">' + esc(it.name || it.path) + '</span></div>' +
@@ -6854,6 +6888,7 @@ HTML_TEMPLATE = """
             if (Array.isArray(swatches)) renderThemePreview(swatches, previewName || 'السمة');
             else updateThemePreview(id);
             updatePhotoOverlayColor();
+            applySurfaceAlpha();
         }
     }
 
@@ -6911,6 +6946,9 @@ HTML_TEMPLATE = """
     let photoBackgroundRecordExists = false;
     let photoBackgroundEnabled = false;
     let photoOverlayOpacity = 60;
+    // 100 keeps today's opaque surfaces; a lower value fades only the UI
+    // surfaces, never the text or the image layer behind them.
+    let surfaceAlpha = 100;
 
     function photoLocalGet(key, fallback) {
         try {
@@ -7108,9 +7146,31 @@ HTML_TEMPLATE = """
             'rgba(' + red + ',' + green + ',' + blue + ',' + (photoOverlayOpacity / 100) + ')');
     }
 
+    function applySurfaceAlpha() {
+        document.documentElement.style.setProperty('--surface-alpha',
+            String(surfaceAlpha / 100));
+        let slider = document.getElementById('surfaceAlphaRange');
+        let value = document.getElementById('surfaceAlphaValue');
+        if (slider) slider.value = String(surfaceAlpha);
+        if (value) value.textContent = surfaceAlpha + '%';
+    }
+
+    function setSurfaceAlpha(value) {
+        let parsed = Number.parseInt(value, 10);
+        if (!Number.isFinite(parsed)) return;
+        surfaceAlpha = Math.max(30, Math.min(100, parsed));
+        let saved = photoLocalSet('sdmp3_surface_alpha', String(surfaceAlpha));
+        applySurfaceAlpha();
+        if (!saved) {
+            setPhotoBackgroundStatus(
+                'تم تغيير شفافية الأسطح مؤقتاً، لكن تعذر حفظها في المتصفح.', 'err');
+        }
+    }
+
     function applyPhotoBackground() {
         if (!document.body) return;
         updatePhotoOverlayColor();
+        applySurfaceAlpha();
         if (photoBackgroundUrl) {
             document.body.style.setProperty('--photo-image',
                 'url("' + photoBackgroundUrl + '")');
@@ -7199,14 +7259,16 @@ HTML_TEMPLATE = """
             photoBackgroundRecordExists = false;
             photoBackgroundEnabled = false;
             photoOverlayOpacity = 60;
+            surfaceAlpha = 100;
             let enabledSaved = photoLocalSet('sdmp3_photo_background_enabled', '0');
             let opacitySaved = photoLocalSet('sdmp3_photo_background_opacity', '60');
+            let alphaSaved = photoLocalSet('sdmp3_surface_alpha', '100');
             updatePhotoBackgroundUi();
             setPhotoBackgroundStatus(
-                enabledSaved && opacitySaved
-                    ? 'تمت إزالة الصورة وإيقاف الخلفية.'
+                enabledSaved && opacitySaved && alphaSaved
+                    ? 'تمت إزالة الصورة وإيقاف الخلفية، وأُعيدت الأسطح إلى عتامتها الكاملة.'
                     : 'تمت إزالة الصورة، لكن تعذر حفظ بعض الإعدادات في المتصفح.',
-                enabledSaved && opacitySaved ? 'ok' : 'err');
+                enabledSaved && opacitySaved && alphaSaved ? 'ok' : 'err');
         } catch (error) {
             setPhotoBackgroundStatus(error && error.message
                 ? error.message : 'تعذر إزالة الصورة.', 'err');
@@ -7219,6 +7281,11 @@ HTML_TEMPLATE = """
             photoLocalGet('sdmp3_photo_background_opacity', '60'), 10);
         photoOverlayOpacity = Number.isFinite(savedOpacity)
             ? Math.max(0, Math.min(85, savedOpacity)) : 60;
+        let savedAlpha = Number.parseInt(
+            photoLocalGet('sdmp3_surface_alpha', '100'), 10);
+        surfaceAlpha = Number.isFinite(savedAlpha)
+            ? Math.max(30, Math.min(100, savedAlpha)) : 100;
+        applySurfaceAlpha();
         try {
             let record = await photoDatabaseRequest('get');
             if (!record) {
@@ -10068,7 +10135,11 @@ def build_cache_index(root, cancel_check=None):
                         continue
                     if _search_should_skip(entry.name, parent_name):
                         continue
-                    items.append({'name': entry.name, 'name_lower': entry.name.lower(), 'path': entry.path, 'is_dir': is_dir})
+                    # A selected archive is unpacked by the copy worker, so in
+                    # search it is presented with folders but selected as a file.
+                    is_zip = (not is_dir) and looks_like_zip(entry.path)
+                    items.append({'name': entry.name, 'name_lower': entry.name.lower(),
+                                  'path': entry.path, 'is_dir': is_dir, 'is_zip': is_zip})
                     if is_dir:
                         stack.append(entry.path)
         except (PermissionError, OSError):
@@ -10169,7 +10240,9 @@ def cache_clear():
 def _fill_search_result_sizes(results):
     """Add the size a shared tree row needs, for at most 40 file hits."""
     for item in results:
-        if item.get('is_dir'):
+        if item.get('is_dir') or item.get('is_zip'):
+            # An archive is shown folder-like; no need to stat a possibly huge
+            # zip just for a size the row will not display.
             continue
         try:
             item['size'] = os.path.getsize(item['path'])
@@ -10195,9 +10268,11 @@ def deep_search():
     if cached:
         # Instant path: filter the pre-built in-memory index, no disk access at all.
         matches = (
-            {'name': it['name'], 'path': it['path'], 'is_dir': it['is_dir']}
+            {'name': it['name'], 'path': it['path'], 'is_dir': it['is_dir'],
+             'is_zip': it.get('is_zip', False)}
             for it in cached['items']
-            if (not folders_only or it['is_dir']) and q in it['name_lower']
+            if (not folders_only or it['is_dir'] or it.get('is_zip'))
+            and q in it['name_lower']
         )
         results = _rank_search_results(matches, q)
         if remember:
@@ -10223,9 +10298,11 @@ def deep_search():
                             continue
                         if is_dir:
                             stack.append(entry.path)
+                        is_zip = (not is_dir) and looks_like_zip(entry.path)
                         if q in entry.name.lower():
-                            if not folders_only or is_dir:
-                                results.append({'name': entry.name, 'path': entry.path, 'is_dir': is_dir})
+                            if not folders_only or is_dir or is_zip:
+                                results.append({'name': entry.name, 'path': entry.path,
+                                                'is_dir': is_dir, 'is_zip': is_zip})
                                 if len(results) >= SEARCH_MAX_RESULTS:
                                     break
             except (PermissionError, OSError):
@@ -10262,6 +10339,7 @@ def remember_search(query, root, results):
             'path': path,
             'name': item.get('name') or os.path.basename(path),
             'is_dir': bool(item.get('is_dir')),
+            'is_zip': bool(item.get('is_zip')),
             'root': root,
             'q': query,
             'at': now,
@@ -10687,6 +10765,7 @@ def api_history_update():
             'path': path,
             'name': item.get('name') or os.path.basename(path),
             'is_dir': bool(item.get('is_dir')),
+            'is_zip': bool(item.get('is_zip')),
             'root': item.get('root') or '/sdcard',
             'q': item.get('q') or '',
             'at': now,

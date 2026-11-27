@@ -1111,6 +1111,82 @@ class SearchRankingTests(unittest.TestCase):
             ['Track {:03d}.mp3'.format(i) for i in range(project.SEARCH_MAX_RESULTS)])
 
 
+class ZipSearchTests(unittest.TestCase):
+    """Archives look like folders in search but must stay files for extraction."""
+
+    def setUp(self):
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.root = os.path.join(self.tempdir.name, 'source')
+        os.makedirs(os.path.join(self.root, 'مجلد'))
+        self.zip_path = os.path.join(self.root, 'مجموعة.zip')
+        with zipfile.ZipFile(self.zip_path, 'w') as archive:
+            archive.writestr('01.mp3', b'audio')
+        with open(os.path.join(self.root, 'track.mp3'), 'wb') as handle:
+            handle.write(b'audio')
+        self.old_history = project.SEARCH_HISTORY
+        project.SEARCH_HISTORY = {'version': 1, 'items': [], 'queries': []}
+        project.app.testing = True
+
+    def tearDown(self):
+        with project.folder_cache_lock:
+            project.FOLDER_CACHE.pop(self.root, None)
+        project.SEARCH_HISTORY = self.old_history
+        project.app.testing = False
+        self.tempdir.cleanup()
+
+    def search(self, **extra):
+        params = {'q': 'مجموعة', 'root': self.root, 'folders_only': 'true'}
+        params.update(extra)
+        response = project.app.test_client().get('/api/search', query_string=params)
+        return response.get_json()
+
+    def find_zip(self, body):
+        hits = [item for item in body['results'] if item['name'] == 'مجموعة.zip']
+        self.assertEqual(len(hits), 1, body['results'])
+        return hits[0]
+
+    def test_uncached_search_includes_zip_when_folders_only_is_checked(self):
+        body = self.search()
+        self.assertFalse(body['from_cache'])
+        hit = self.find_zip(body)
+        self.assertFalse(hit['is_dir'])
+        self.assertTrue(hit['is_zip'])
+        self.assertEqual(hit['path'], self.zip_path)
+        # The shared tree row hides sizes for folder-like hits; no stat needed.
+        self.assertNotIn('size', hit)
+        self.assertNotIn('track.mp3', [item['name'] for item in body['results']])
+
+    def test_cached_search_keeps_the_same_zip_hit(self):
+        items = project.build_cache_index(self.root)
+        self.assertTrue(any(it.get('is_zip') for it in items))
+        with project.folder_cache_lock:
+            project.FOLDER_CACHE[self.root] = {
+                'items': items, 'count': len(items), 'built_at': 0,
+            }
+
+        body = self.search()
+        self.assertTrue(body['from_cache'])
+        hit = self.find_zip(body)
+        self.assertFalse(hit['is_dir'])
+        self.assertTrue(hit['is_zip'])
+
+    def test_committed_search_and_selection_remember_zip_as_a_file(self):
+        with mock.patch.object(project, 'save_search_history'):
+            self.search(remember='1')
+        items = project.SEARCH_HISTORY['items']
+        hit = next(item for item in items if item['path'] == self.zip_path)
+        self.assertTrue(hit['is_zip'])
+        self.assertFalse(hit['is_dir'])
+        self.assertEqual(project.selected_archives([self.zip_path]), [self.zip_path])
+
+        with mock.patch.object(project, 'save_search_history'):
+            response = project.app.test_client().post('/api/history/update', json={
+                'selected_folders': [{'path': self.zip_path, 'name': 'مجموعة.zip',
+                                      'is_dir': False, 'is_zip': True}],
+            })
+        self.assertTrue(response.get_json()['items'][0]['is_zip'])
+
+
 class TransferRouteTests(unittest.TestCase):
     def test_main_page_loads_nested_group_and_bulk_assignment_controls(self):
         client = project.app.test_client()

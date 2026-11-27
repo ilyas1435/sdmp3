@@ -763,10 +763,14 @@ v1.10, plus `forest-mist` (light sage) and `dusk-plum` (dark plum). All 16 keep
   `project.py` changes. Run `python sdmp3_themes.py`: it prints every contrast
   ratio and the module **raises at import** if any theme breaks `CONTRAST_RULES`
   (text ≥ 7:1 on page/card, muted/labels/kind-inks ≥ 4.5:1).
-- The layout tokens `--rule`, `--field-line`, `--bar-bg`, `--bar-line` and
-  `--num-font` are derived in `build_tokens()` as well, so the `:root` block is
-  always complete (66 tokens per theme) and a theme dict still holds palette
-  colours only — never add one of these to a theme by hand.
+- The layout tokens `--rule`, `--field-line`, `--bar-bg`, `--bar-line`,
+  `--num-font` and the surface channels `--card-rgb`, `--card-2-rgb`,
+  `--field-rgb`, `--bar-rgb` are derived in `build_tokens()` as well, so the
+  `:root` block is always complete (70 tokens per theme) and a theme dict still
+  holds palette colours only — never add one of these to a theme by hand. The
+  channels feed `--surface-*` with the saved opacity from الإعدادات › المظهر;
+  100% is the original opaque look and lower values fade cards, fields, dialogs
+  and the action bar together.
 - Tokens are rendered **server-side** into `:root` (`theme_css_pairs`) plus
   `<html data-theme>` and `<meta name="theme-color">` (`theme_color` = `--bg`),
   so there is no flash of the default theme. The `/` route passes `active_theme`,

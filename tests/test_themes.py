@@ -168,7 +168,8 @@ class PhotoBackgroundUiTests(unittest.TestCase):
         for control_id in (
                 'photoBackgroundEnabled', 'photoBackgroundFile',
                 'photoBackgroundPreview', 'removePhotoBackgroundBtn',
-                'photoOverlayRange', 'photoOverlayValue', 'photoBackgroundState'):
+                'photoOverlayRange', 'photoOverlayValue',
+                'surfaceAlphaRange', 'surfaceAlphaValue', 'photoBackgroundState'):
             with self.subTest(control=control_id):
                 self.assertIn('id="{}"'.format(control_id), self.html)
         self.assertIn('accept="image/png,image/jpeg,image/webp"', self.html)
@@ -191,6 +192,21 @@ class PhotoBackgroundUiTests(unittest.TestCase):
         self.assertNotIn('fetch(', self.photo_script)
         self.assertNotIn('/api/', self.photo_script)
 
+    def test_surface_opacity_is_local_and_applies_to_every_surface(self):
+        for feature in (
+                "sdmp3_surface_alpha",
+                "function applySurfaceAlpha()",
+                "function setSurfaceAlpha(value)",
+                "--surface-alpha",
+                "applySurfaceAlpha();"):
+            with self.subTest(feature=feature):
+                self.assertIn(feature, self.photo_script)
+        self.assertIn('id="surfaceAlphaRange" min="30" max="100" step="5"', self.html)
+        self.assertIn('rgba(var(--card-rgb), var(--surface-alpha))', self.html)
+        self.assertIn('rgba(var(--card-2-rgb), var(--surface-alpha))', self.html)
+        self.assertIn('rgba(var(--field-rgb), var(--surface-alpha))', self.html)
+        self.assertIn('rgba(var(--bar-rgb), var(--surface-alpha))', self.html)
+
     def test_unsupported_oversized_and_huge_images_show_clear_errors(self):
         self.assertIn('const PHOTO_MAX_BYTES = 8 * 1024 * 1024', self.photo_script)
         self.assertIn('const PHOTO_MAX_PIXELS = 48000000', self.photo_script)
@@ -200,10 +216,23 @@ class PhotoBackgroundUiTests(unittest.TestCase):
         self.assertIn('أبعاد الصورة كبيرة جداً', self.photo_script)
 
     def test_photo_is_a_tinted_page_background_and_preview_fits_mobile_width(self):
-        self.assertIn('body.photo-background-enabled', self.html)
+        self.assertIn('body.photo-background-enabled::before', self.html)
+        self.assertIn('position:fixed; inset:0; z-index:-1; pointer-events:none', self.html)
         self.assertIn('linear-gradient(var(--photo-overlay), var(--photo-overlay))', self.html)
         self.assertIn('.photo-background-preview { display:block; width:100%;', self.html)
         self.assertIn('background-size:cover, cover', self.html)
+        self.assertNotIn('background-attachment:fixed', self.html)
+
+    def test_surface_rgb_tokens_follow_the_active_theme(self):
+        tokens = sdmp3_themes.theme_tokens('coffee-blues')
+        palette = next(d for d in sdmp3_themes._THEME_DEFS
+                       if d['id'] == 'coffee-blues')
+        self.assertEqual(tokens['--card-rgb'], sdmp3_themes.rgb_channels(palette['card']))
+        self.assertEqual(tokens['--card-2-rgb'],
+                         sdmp3_themes.rgb_channels(palette['card_2']))
+        self.assertEqual(tokens['--field-rgb'],
+                         sdmp3_themes.rgb_channels(palette['field']))
+        self.assertEqual(tokens['--bar-rgb'], tokens['--card-rgb'])
 
 
 if __name__ == '__main__':

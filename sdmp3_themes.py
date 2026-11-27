@@ -36,6 +36,11 @@ def rgba(hex_colour, alpha):
     return 'rgba({},{},{},{:.2f})'.format(r, g, b, alpha)
 
 
+def rgb_channels(hex_colour):
+    """'#39918c' -> '57,145,140', for CSS rgba(var(--token), alpha)."""
+    return '{},{},{}'.format(*_parse_hex(hex_colour))
+
+
 def relative_luminance(hex_colour):
     """WCAG 2.1 relative luminance of a hex colour."""
     channels = []
@@ -145,6 +150,7 @@ TOKEN_ORDER = (
     '--pill-bg', '--shine', '--scrim', '--sheet',
     '--shadow-soft', '--shadow-strong', '--shadow-card',
     '--rule', '--field-line', '--bar-bg', '--bar-line', '--num-font',
+    '--card-rgb', '--card-2-rgb', '--field-rgb', '--bar-rgb',
     '--radius',
 )
 
@@ -208,6 +214,12 @@ def build_tokens(defn):
         '--bar-bg': defn['card'],
         '--bar-line': rgba(defn['accent'], 0.30),
         '--num-font': NUM_FONT_STACK,
+        # Channels, not another colour literal: the page combines these with a
+        # single saved opacity so every surface fades with the active theme.
+        '--card-rgb': rgb_channels(defn['card']),
+        '--card-2-rgb': rgb_channels(defn['card_2']),
+        '--field-rgb': rgb_channels(defn['field']),
+        '--bar-rgb': rgb_channels(defn['card']),
         '--radius': defn.get('radius', '12px'),
     }
 
