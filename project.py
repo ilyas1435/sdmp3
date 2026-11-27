@@ -17,6 +17,7 @@ import hashlib
 import heapq
 import stat
 import uuid
+import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import deque
 from werkzeug.exceptions import HTTPException
@@ -55,7 +56,7 @@ app = Flask(__name__)
 
 # Version is kept in the VERSION file next to this script so that the `sdmp3`
 # CLI can read it without importing the app.
-APP_VERSION_FALLBACK = "3.12"
+APP_VERSION_FALLBACK = "3.13"
 
 # Toggled by --no-wakelock (see main() at the bottom).
 WAKELOCK_ENABLED = True
@@ -1266,6 +1267,56 @@ def check_destination(dest, timeout=DEST_PROBE_TIMEOUT):
     if isinstance(exc, OSError) and getattr(exc, 'errno', None) in (5, 30):
         return 'تعذر الكتابة على الوجهة — ' + CARD_WRITE_HINT
     return 'تعذر الكتابة على الوجهة: ' + reason
+
+
+def extract_zip_to_dest(zip_path, dest_dir, cancel_check=None, on_progress=None):
+    """Extract a ZIP archive directly into `dest_dir` (single write, no staging).
+
+    Files are extracted in natural-sorted order so JOC playback order is
+    preserved. Nothing is copied twice - the archive contents are written once
+    straight to the card, which matters on slow/weak SD cards. Returns the
+    destination folder path. On error or cancel the folder is cleaned up if
+    empty, and the exception propagates to the caller.
+    """
+    extracted_count = 0
+    try:
+        with zipfile.ZipFile(zip_path, 'r') as zf:
+            # Sort members naturally for consistent playback order on MP3 players.
+            members = sorted(zf.infolist(), key=lambda m: natural_sort_key(m.filename))
+            total = len(members)
+            for i, member in enumerate(members):
+                if cancel_check is not None and cancel_check():
+                    raise TransferCancelled()
+                if member.is_dir():
+                    continue
+                # Security: reject absolute paths and path traversal (..).
+                target = os.path.normpath(os.path.join(dest_dir, member.filename))
+                dest_root = os.path.normpath(dest_dir)
+                if target != dest_root and not target.startswith(dest_root + os.sep):
+                    raise RuntimeError('مسار غير آمن داخل الأرشيف: {}'.format(member.filename))
+                zf.extract(member, dest_dir)
+                extracted_count += 1
+                if on_progress is not None:
+                    try:
+                        on_progress(extracted_count, total, member.filename)
+                    except Exception:
+                        pass
+    except TransferCancelled:
+        try:
+            if os.path.isdir(dest_dir) and not os.listdir(dest_dir):
+                os.rmdir(dest_dir)
+        except OSError:
+            pass
+        raise
+    except Exception:
+        try:
+            if os.path.isdir(dest_dir) and not os.listdir(dest_dir):
+                os.rmdir(dest_dir)
+        except OSError:
+            pass
+        raise
+    log_event('extracted zip {!r} -> {!r} ({} file(s))'.format(zip_path, dest_dir, extracted_count))
+    return dest_dir
 
 def try_remove_entry(path):
     """Remove one file/link/dir. Returns (ok, reason)."""
@@ -3385,6 +3436,7 @@ HTML_TEMPLATE = """
     <symbol id="ico-chevron-right" viewBox="0 0 24 24"><polyline points="9 18 15 12 9 6"></polyline></symbol>
     <symbol id="ico-chevron-down" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"></polyline></symbol>
     <symbol id="ico-folder" viewBox="0 0 24 24"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></symbol>
+    <symbol id="ico-zip" viewBox="0 0 24 24"><path d="M22 7H2v13h3v-2a1 1 0 0 1 1-1h14a1 1 0 0 1 1 1v2h3V7z"></path><polyline points="7 9 12 14 17 9"></polyline></symbol>
 </svg>
 
 <div class="container">
@@ -5304,6 +5356,7 @@ HTML_TEMPLATE = """
 
     const iconDir = `<svg class="icon" style="min-width:20px; color:var(--accent)" viewBox="0 0 24 24"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>`;
     const iconFile = `<svg class="icon" style="min-width:20px; color:var(--text-muted)" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline></svg>`;
+    const iconZip = `<svg class="icon" style="min-width:20px; color:var(--accent)" viewBox="0 0 24 24"><path d="M22 7H2v13h3v-2a1 1 0 0 1 1-1h14a1 1 0 0 1 1 1v2h3V7z"></path><polyline points="7 9 12 14 17 9"></polyline></svg>`;
     const iconEdit = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path></svg>`;
     const iconTrash = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"></path><path d="M10 11v6"></path><path d="M14 11v6"></path><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"></path></svg>`;
 
@@ -5686,7 +5739,7 @@ HTML_TEMPLATE = """
                 ${item.is_dir ? `<button class="toggle-btn" data-toggle="1" aria-label="فتح المجلد">${spriteIcon('ico-chevron-right')}</button>` : `<span style="width:26px;display:inline-block;"></span>`}
                 <input type="checkbox" class="checkbox" value="${esc(item.path)}" data-name="${esc(item.name)}" ${isChecked} onchange="${onChange}(this, ${item.is_dir})">
                 <div class="item-name" ${item.is_dir ? 'data-toggle="1"' : `onclick="this.previousElementSibling.click()"`}>
-                    ${item.is_dir ? iconDir : iconFile} <span>${esc(item.name)}</span>${excludedMark}
+                    ${item.is_dir ? iconDir : (item.name.toLowerCase().endsWith('.zip') ? iconZip : iconFile)} <span>${esc(item.name)}</span>${excludedMark}
                 </div>
                 ${item.is_dir ? '' : `<span class="file-size">${formatBytes(item.size || 0)}</span>`}
                 ${rowActionsHtml(item.path, item.name, item.is_dir)}
@@ -10679,6 +10732,48 @@ def start_transfer():
     # gets "الكارت لا يستجيب" instead of a transfer that freezes at 0%.
     problem = check_destination(dest)
     if problem: return jsonify({'error': problem})
+
+    # ----- ZIP auto-extraction: extract directly to destination folders -----
+    # Files are written once straight to the card (no staging copy), which
+    # keeps weak/slow cards happy and preserves JOC playback order.
+    zip_paths = [p for p in paths if p.lower().endswith('.zip')]
+    regular_paths = [p for p in paths if not p.lower().endswith('.zip')]
+    extract_confirm_needed = []
+    extracted_folders = []  # [(zip_path, extract_dest)] already extracted
+
+    for zip_path in zip_paths:
+        zip_name = os.path.basename(zip_path)
+        folder_name = zip_name[:-4] if zip_name.lower().endswith('.zip') else zip_name
+        extract_dest = os.path.join(dest, folder_name)
+        if os.path.exists(extract_dest):
+            extract_confirm_needed.append(folder_name)
+        else:
+            # Single write: extract straight to the card, no intermediate copy.
+            extract_zip_to_dest(zip_path, extract_dest)
+            extracted_folders.append((zip_path, extract_dest))
+            regular_paths.append(extract_dest)
+
+    if extract_confirm_needed and not data.get('confirm_extract'):
+        return jsonify({
+            'needs_extract_confirm': True,
+            'folders': extract_confirm_needed,
+            'error': ('المجلدات التالية موجودة بالفعل وسيتم دمج الملفات المنزوعة '
+                      'من المضغوط داخلها: {}'.format(
+                          '، '.join('«{}»'.format(n) for n in extract_confirm_needed)))
+        })
+
+    # User confirmed merging into existing folders: extract the remaining ZIPs.
+    if extract_confirm_needed and data.get('confirm_extract'):
+        for zip_path in zip_paths:
+            zip_name = os.path.basename(zip_path)
+            folder_name = zip_name[:-4] if zip_name.lower().endswith('.zip') else zip_name
+            extract_dest = os.path.join(dest, folder_name)
+            if os.path.exists(extract_dest):
+                extract_zip_to_dest(zip_path, extract_dest)
+                extracted_folders.append((zip_path, extract_dest))
+                regular_paths.append(extract_dest)
+
+    paths = regular_paths
 
     # A group's TOP-LEVEL folder that matches an ungrouped root would put that
     # root inside the group folder instead of at the destination: silent mixing,

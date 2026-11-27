@@ -5,6 +5,7 @@ import ctypes
 import threading
 import time
 import unittest
+import zipfile
 from unittest import mock
 
 import project
@@ -716,6 +717,61 @@ class TransientRetryTests(unittest.TestCase):
         with mock.patch.object(project.time, 'sleep'):
             self.assertEqual(project.run_with_retries(intermittent_eio), 'ok')
         self.assertEqual(len(calls), 3)
+
+
+class ZipExtractTests(unittest.TestCase):
+    def test_extract_zip_creates_folder_with_files(self):
+        with tempfile.TemporaryDirectory() as tempdir:
+            zip_path = os.path.join(tempdir, 'album.zip')
+            dest_dir = os.path.join(tempdir, 'album')
+            # Create a zip with two files in natural order
+            with zipfile.ZipFile(zip_path, 'w') as zf:
+                zf.writestr('02 Track B.mp3', b'B-content')
+                zf.writestr('01 Track A.mp3', b'A-content')
+                zf.writestr('subdir/', '')  # directory entry
+                zf.writestr('subdir/03 Track C.mp3', b'C-content')
+
+            result = project.extract_zip_to_dest(zip_path, dest_dir)
+
+            self.assertEqual(result, dest_dir)
+            self.assertTrue(os.path.isdir(dest_dir))
+            self.assertTrue(os.path.isfile(os.path.join(dest_dir, '01 Track A.mp3')))
+            self.assertTrue(os.path.isfile(os.path.join(dest_dir, '02 Track B.mp3')))
+            self.assertTrue(os.path.isdir(os.path.join(dest_dir, 'subdir')))
+            self.assertTrue(os.path.isfile(os.path.join(dest_dir, 'subdir', '03 Track C.mp3')))
+            with open(os.path.join(dest_dir, '01 Track A.mp3'), 'rb') as f:
+                self.assertEqual(f.read(), b'A-content')
+
+    def test_extract_zip_rejects_path_traversal(self):
+        with tempfile.TemporaryDirectory() as tempdir:
+            zip_path = os.path.join(tempdir, 'evil.zip')
+            dest_dir = os.path.join(tempdir, 'dest')
+            os.makedirs(dest_dir)
+            with zipfile.ZipFile(zip_path, 'w') as zf:
+                zf.writestr('../../etc/passwd', b'evil')
+
+            with self.assertRaises(RuntimeError):
+                project.extract_zip_to_dest(zip_path, dest_dir)
+
+    def test_extract_zip_cancel_cleans_up_empty_folder(self):
+        with tempfile.TemporaryDirectory() as tempdir:
+            zip_path = os.path.join(tempdir, 'album.zip')
+            dest_dir = os.path.join(tempdir, 'album')
+            with zipfile.ZipFile(zip_path, 'w') as zf:
+                zf.writestr('track.mp3', b'audio')
+
+            cancelled = [False]
+            def cancel_check():
+                return cancelled[0]
+
+            # Cancel on first member
+            try:
+                project.extract_zip_to_dest(zip_path, dest_dir,
+                                            cancel_check=lambda: True)
+            except project.TransferCancelled:
+                pass
+            # Folder should not exist or be empty/removed
+            self.assertFalse(os.path.exists(dest_dir))
 
 
 class SearchRankingTests(unittest.TestCase):
