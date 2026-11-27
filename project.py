@@ -3005,6 +3005,7 @@ HTML_TEMPLATE = """
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>SD Card Coffee</title>
     <meta name="theme-color" content="{{ theme_bg }}">
+    <link rel="icon" type="image/svg+xml" href="/static/favicon.svg?v={{ app_version }}">
     <style>
         /* Self-hosted Arabic fonts (static/fonts/). They are declared here but
            only downloaded when the selected --app-font actually uses one, so the

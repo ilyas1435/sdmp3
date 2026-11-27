@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <rect width="64" height="64" rx="14" fill="#192133"/>
+  <rect x="8" y="8" width="48" height="48" rx="11" fill="#222b40" stroke="#2f3c5a" stroke-width="2"/>
+  <!-- SD card with its cut corner -->
+  <path d="M18 46V21a5 5 0 0 1 5-5h13l9 9v21a5 5 0 0 1-5 5H23a5 5 0 0 1-5-5z" fill="#3d8e9c"/>
+  <path d="M36 16v9h9z" fill="#222b40"/>
+  <!-- Music notes: the MP3 payload -->
+  <path d="M31 38V26l9-2v12" fill="none" stroke="#d0b49f" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="28.5" cy="38.5" r="4" fill="#d0b49f"/>
+  <circle cx="37.5" cy="36.5" r="4" fill="#d0b49f"/>
+</svg>

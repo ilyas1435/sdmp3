@@ -3,6 +3,8 @@ import json
 import re
 import tempfile
 import unittest
+import xml.etree.ElementTree as ET
+from pathlib import Path
 from unittest import mock
 
 import project
@@ -240,6 +242,27 @@ class PhotoBackgroundUiTests(unittest.TestCase):
         self.assertEqual(tokens['--field-rgb'],
                          sdmp3_themes.rgb_channels(palette['field']))
         self.assertEqual(tokens['--bar-rgb'], tokens['--card-rgb'])
+
+
+class FaviconTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.html = project.app.test_client().get('/').get_data(as_text=True)
+
+    def test_self_hosted_svg_favicon_is_versioned(self):
+        version = project.get_app_version()
+        self.assertIn(
+            '<link rel="icon" type="image/svg+xml" href="/static/favicon.svg?v='
+            + version + '">',
+            self.html)
+        icon = Path(project.app.static_folder) / 'favicon.svg'
+        self.assertTrue(icon.is_file(), 'favicon.svg must live in the static folder')
+        svg = icon.read_text(encoding='utf-8')
+        ET.fromstring(svg)
+        self.assertIn('viewBox="0 0 64 64"', svg)
+        self.assertIn('#3d8e9c', svg)
+        self.assertIn('#d0b49f', svg)
+        self.assertNotIn('href="http', svg)
 
 
 if __name__ == '__main__':

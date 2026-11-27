@@ -499,6 +499,10 @@ the selection, the groups and the search folder. Additive and cheap:
   system face (`system-ui, … 'Noto Sans Arabic'`). Keep the page self-contained:
   the 10 selectable fonts are self-hosted woff2 in `static/fonts/` (see «General
   settings: fonts»), never a `fonts.googleapis.com` link.
+- **The favicon is self-hosted too.** `static/favicon.svg` draws an SD card with
+  music notes in the Coffee Blues palette and is linked from `<head>` with
+  `?v={{ app_version }}`, so every version bump refreshes the tab icon without
+  a manual cache clear.
 - **Every `font-size` is `calc(Npx * var(--font-scale))`.** A raw `Npx` silently
   ignores the size preset, so it is a bug even though it renders. Same for the
   inline `style="font-size:…"` attributes in the template — they are scaled too.
