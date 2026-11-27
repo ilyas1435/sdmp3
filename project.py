@@ -3034,11 +3034,11 @@ HTML_TEMPLATE = """
         }
         * { box-sizing: border-box; font-family: var(--app-font); -webkit-tap-highlight-color: transparent; }
         body { position:relative; background-color: var(--bg); color: var(--text); margin: 0; padding: 16px 14px 112px; font-size: calc(14px * var(--font-scale)); line-height: 1.55; -webkit-font-smoothing: antialiased; }
-        /* A fixed background-attachment makes Android repaint the whole page on
-           every scroll and reads as a jitter. A fixed, non-interactive layer
-           behind the content gives the same look and scrolls independently. */
+        /* Android resizes the visual viewport when the URL bar hides. Even a
+           stable-sized fixed layer re-crops its cover image and jitters, so the
+           tint lives in an absolute layer that scrolls with the document. */
         body.photo-background-enabled::before {
-            content:""; position:fixed; top:0; left:0; width:100vw; height:100vh; height:100lvh; z-index:-1; pointer-events:none; will-change:transform;
+            content:""; position:absolute; inset:0; z-index:-1; pointer-events:none; will-change:transform;
             background-image: linear-gradient(var(--photo-overlay), var(--photo-overlay)), var(--photo-image);
             background-position:center center, center center; background-repeat:no-repeat, no-repeat;
             background-size:cover, cover;

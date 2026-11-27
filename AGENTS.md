@@ -866,14 +866,14 @@ A `jocReviewTxt` checkbox (in الإعدادات › الفهرس) defers txt-do
   terminal branch and re-shown by `showProgressModal()`: minimizing a finished
   run would be undone by the next poll, so the control would do nothing. There
   is no `.background-note` any more.
-- **Photo background is a stable, fixed pseudo-layer.**
-  `body.photo-background-enabled::before` uses `position:fixed` with
-  `width:100vw; height:100vh; height:100lvh` and `will-change:transform` —
-  **never** `inset:0` or `background-attachment:fixed`. Android shrinks the
-  visual viewport when the URL bar hides; inset/percentage sizing made the
-  fixed layer re-crop its `cover` image and jitter. The explicit large viewport
-  keeps the layer (and the image) still, and the compositor hint stops repaint
-  jitter.
+- **Photo background scrolls with the document.**
+  `body.photo-background-enabled::before` is `position:absolute; inset:0`
+  inside the already-positioned `body` — **never** `position:fixed` or
+  `background-attachment:fixed`. Android resizes the visual viewport when the
+  URL bar hides; even a stable-sized fixed layer still re-cropped its `cover`
+  image and jittered. An absolute layer is sized to the document, so neither
+  scrolling nor the URL bar can resize or re-crop it; `will-change:transform`
+  keeps it on one compositor layer.
 - **Queue hook, not a queue.** `transferQueue = []` + `renderQueue()` fill
   `#queueBlock`/`#queueRows`/`#queueCount` and the `#barQueueBadge`; the block is
   hidden while the list is empty and **nothing enqueues yet**. The scheduled-copy

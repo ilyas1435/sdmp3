@@ -216,15 +216,15 @@ class PhotoBackgroundUiTests(unittest.TestCase):
         self.assertIn('أبعاد الصورة كبيرة جداً', self.photo_script)
 
     def test_photo_is_a_tinted_page_background_and_preview_fits_mobile_width(self):
+        self.assertIn('body { position:relative;', self.html)
         self.assertIn('body.photo-background-enabled::before', self.html)
-        # inset:0 sizes a fixed layer from the *visual* viewport, so Android
-        # resizes it (and re-crops the cover image) when the URL bar hides.
-        # An explicit large-viewport size stays put; vh is the fallback.
+        # A fixed layer still re-crops its cover image when Android hides the
+        # URL bar. An absolute layer is sized to the document and scrolls with
+        # it, so neither scrolling nor the URL bar can resize it.
         self.assertIn(
-            'position:fixed; top:0; left:0; width:100vw; height:100vh; height:100lvh; '
-            'z-index:-1; pointer-events:none; will-change:transform',
+            'position:absolute; inset:0; z-index:-1; pointer-events:none; will-change:transform',
             self.html)
-        self.assertNotIn('position:fixed; inset:0', self.html)
+        self.assertNotIn('position:fixed; top:0; left:0; width:100vw', self.html)
         self.assertIn('linear-gradient(var(--photo-overlay), var(--photo-overlay))', self.html)
         self.assertIn('.photo-background-preview { display:block; width:100%;', self.html)
         self.assertIn('background-size:cover, cover', self.html)
