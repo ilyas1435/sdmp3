@@ -71,7 +71,8 @@ wrong is worse than no status. Both moved to الإعدادات › عام:
   shown any more: it is a 5-byte, 5-second probe that reports a healthy but slow
   card as dead. Before any test the row says «لم يُفحص بعد».
 
-Bump `VERSION` for user-visible changes.
+Bump `VERSION` for **every** change, even a single new field or a one-line CSS
+tweak — one commit/change, one bump. Never bundle a later fix into an old version.
 
 ## CRITICAL: escape handling inside HTML_TEMPLATE
 `HTML_TEMPLATE` is a **plain `"""..."""` Python string**, not raw and not an f-string. Python processes backslash escapes in the embedded JS at parse time. To emit a literal backslash sequence to the browser you must **double the backslash**:
