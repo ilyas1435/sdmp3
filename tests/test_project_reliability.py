@@ -719,59 +719,285 @@ class TransientRetryTests(unittest.TestCase):
         self.assertEqual(len(calls), 3)
 
 
-class ZipExtractTests(unittest.TestCase):
-    def test_extract_zip_creates_folder_with_files(self):
-        with tempfile.TemporaryDirectory() as tempdir:
-            zip_path = os.path.join(tempdir, 'album.zip')
-            dest_dir = os.path.join(tempdir, 'album')
-            # Create a zip with two files in natural order
-            with zipfile.ZipFile(zip_path, 'w') as zf:
-                zf.writestr('02 Track B.mp3', b'B-content')
-                zf.writestr('01 Track A.mp3', b'A-content')
-                zf.writestr('subdir/', '')  # directory entry
-                zf.writestr('subdir/03 Track C.mp3', b'C-content')
+class FakeZipInfo(object):
+    """Minimal stand-in for a ZipInfo, so flag handling can be tested directly."""
 
-            result = project.extract_zip_to_dest(zip_path, dest_dir)
+    def __init__(self, name, flags=0, size=1, is_dir=False):
+        self.filename = name
+        self.flag_bits = flags
+        self.file_size = size
+        self._is_dir = is_dir
 
-            self.assertEqual(result, dest_dir)
-            self.assertTrue(os.path.isdir(dest_dir))
-            self.assertTrue(os.path.isfile(os.path.join(dest_dir, '01 Track A.mp3')))
-            self.assertTrue(os.path.isfile(os.path.join(dest_dir, '02 Track B.mp3')))
-            self.assertTrue(os.path.isdir(os.path.join(dest_dir, 'subdir')))
-            self.assertTrue(os.path.isfile(os.path.join(dest_dir, 'subdir', '03 Track C.mp3')))
-            with open(os.path.join(dest_dir, '01 Track A.mp3'), 'rb') as f:
-                self.assertEqual(f.read(), b'A-content')
+    def is_dir(self):
+        return self._is_dir
 
-    def test_extract_zip_rejects_path_traversal(self):
-        with tempfile.TemporaryDirectory() as tempdir:
-            zip_path = os.path.join(tempdir, 'evil.zip')
-            dest_dir = os.path.join(tempdir, 'dest')
-            os.makedirs(dest_dir)
-            with zipfile.ZipFile(zip_path, 'w') as zf:
-                zf.writestr('../../etc/passwd', b'evil')
 
-            with self.assertRaises(RuntimeError):
-                project.extract_zip_to_dest(zip_path, dest_dir)
+class FakeZip(object):
+    def __init__(self, infos):
+        self._infos = infos
 
-    def test_extract_zip_cancel_cleans_up_empty_folder(self):
-        with tempfile.TemporaryDirectory() as tempdir:
-            zip_path = os.path.join(tempdir, 'album.zip')
-            dest_dir = os.path.join(tempdir, 'album')
-            with zipfile.ZipFile(zip_path, 'w') as zf:
-                zf.writestr('track.mp3', b'audio')
+    def infolist(self):
+        return self._infos
 
-            cancelled = [False]
-            def cancel_check():
-                return cancelled[0]
 
-            # Cancel on first member
-            try:
-                project.extract_zip_to_dest(zip_path, dest_dir,
-                                            cancel_check=lambda: True)
-            except project.TransferCancelled:
-                pass
-            # Folder should not exist or be empty/removed
-            self.assertFalse(os.path.exists(dest_dir))
+class ZipArchiveTests(unittest.TestCase):
+    """Selected `.zip` files are unpacked, in order, in one write pass."""
+
+    def setUp(self):
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.root = self.tempdir.name
+        self.dest = os.path.join(self.root, 'destination')
+        os.makedirs(self.dest)
+        project.reset_state()
+
+    def tearDown(self):
+        project.reset_state()
+        self.tempdir.cleanup()
+
+    def make_zip(self, name, members):
+        path = os.path.join(self.root, name)
+        with zipfile.ZipFile(path, 'w') as zf:
+            for member, data in members:
+                zf.writestr(member, data)
+        return path
+
+    def test_folder_name_is_the_archive_base_name(self):
+        self.assertEqual(project.zip_folder_name('/x/My Album.ZIP'), 'My Album')
+        self.assertEqual(project.zip_folder_name('/x/no-suffix'), 'no-suffix')
+
+    def test_members_come_out_in_natural_order(self):
+        infos = [FakeZipInfo(n) for n in
+                 ('track 10.mp3', 'track 2.mp3', 'Disc 2/b.mp3', 'Disc 10/a.mp3')]
+        ordered = [name for name, _info in project.zip_member_infos(FakeZip(infos))]
+        self.assertEqual(ordered, [
+            'Disc 2/b.mp3', 'Disc 10/a.mp3', 'track 2.mp3', 'track 10.mp3'])
+
+    def test_archive_junk_is_not_written_to_the_card(self):
+        infos = [FakeZipInfo(n) for n in
+                 ('__MACOSX/._track.mp3', '.DS_Store', 'Thumbs.db',
+                  'disc/._track.mp3', 'track.mp3')]
+        ordered = [name for name, _info in project.zip_member_infos(FakeZip(infos))]
+        self.assertEqual(ordered, ['track.mp3'])
+
+    def test_encrypted_archive_is_refused_before_writing(self):
+        infos = [FakeZipInfo('track.mp3', flags=0x1)]
+        with self.assertRaises(project.ZipArchiveError):
+            project.zip_member_infos(FakeZip(infos))
+
+    def test_backslashes_and_dot_prefix_are_normalised(self):
+        infos = [FakeZipInfo('.\\disc\\track.mp3')]
+        ordered = [name for name, _info in project.zip_member_infos(FakeZip(infos))]
+        self.assertEqual(ordered, ['disc/track.mp3'])
+
+    def test_extract_creates_nested_folders_and_writes_each_byte_once(self):
+        zip_path = self.make_zip('album.zip', [
+            ('02 Track B.mp3', b'B-content'),
+            ('01 Track A.mp3', b'A-content'),
+            ('subdir/03 Track C.mp3', b'C-content'),
+        ])
+        written = []
+
+        def on_member(target, size):
+            written.append((os.path.relpath(target, self.dest), size))
+
+        count, total = project.extract_zip_to_dest(
+            zip_path, os.path.join(self.dest, 'album'),
+            on_member=on_member)
+
+        self.assertEqual(count, 3)
+        self.assertEqual(total, 27)
+        # Write order is the FAT directory-entry order the player follows.
+        self.assertEqual([name for name, _size in written], [
+            os.path.join('album', '01 Track A.mp3'),
+            os.path.join('album', '02 Track B.mp3'),
+            os.path.join('album', 'subdir', '03 Track C.mp3'),
+        ])
+        with open(os.path.join(self.dest, 'album', '02 Track B.mp3'), 'rb') as fh:
+            self.assertEqual(fh.read(), b'B-content')
+        # One pass: the archive itself is never copied, and nothing is staged.
+        self.assertFalse(os.path.exists(os.path.join(self.dest, 'album.zip')))
+        self.assertEqual(sorted(os.listdir(self.dest)), ['album'])
+
+    def test_extract_refuses_path_traversal(self):
+        zip_path = self.make_zip('evil.zip', [('../../etc/passwd', b'evil')])
+        with self.assertRaises(project.ZipArchiveError):
+            project.extract_zip_to_dest(zip_path, os.path.join(self.dest, 'evil'))
+        self.assertFalse(os.path.exists(os.path.join(self.root, 'etc')))
+
+    def test_absolute_member_is_confined_to_the_destination(self):
+        # An archive may carry "/etc/passwd" or a Windows drive path. Both must
+        # be written inside the chosen folder (or refused), never at the root.
+        self.assertEqual(project.zip_member_target('/tmp/dest', '/etc/passwd'),
+                         '/tmp/dest/etc/passwd')
+        with self.assertRaises(project.ZipArchiveError):
+            project.zip_member_target('/tmp/dest', 'C:/windows/system32/x')
+
+    def test_corrupt_archive_raises_a_readable_error(self):
+        path = os.path.join(self.root, 'broken.zip')
+        with open(path, 'wb') as fh:
+            fh.write(b'not a zip at all')
+        with self.assertRaises(project.ZipArchiveError):
+            project.extract_zip_to_dest(path, os.path.join(self.dest, 'broken'))
+
+    def test_cancel_removes_the_empty_folder(self):
+        zip_path = self.make_zip('album.zip', [('track.mp3', b'audio')])
+        with self.assertRaises(project.TransferCancelled):
+            project.extract_zip_to_dest(
+                zip_path, os.path.join(self.dest, 'album'),
+                cancel_check=lambda: True)
+        self.assertFalse(os.path.exists(os.path.join(self.dest, 'album')))
+
+    def test_plan_expands_a_selected_archive_into_its_own_folder(self):
+        zip_path = self.make_zip('album.zip', [('b.mp3', b'bb'), ('a.mp3', b'a')])
+        tasks, total_files, total_bytes, skipped = project.plan_transfer(
+            [zip_path], self.dest)
+
+        self.assertEqual(skipped, [])
+        self.assertEqual([(dst, kind) for _src, dst, kind in tasks], [
+            (os.path.join(self.dest, 'album'), 'dir'),
+            (os.path.join(self.dest, 'album'), 'zip'),
+        ])
+        self.assertEqual(total_files, 2)
+        self.assertEqual(total_bytes, 3)
+
+    def test_plan_leaves_an_archive_inside_a_folder_as_a_file(self):
+        folder = os.path.join(self.root, 'music')
+        os.makedirs(folder)
+        self.make_zip(os.path.join('music', 'inner.zip'), [('a.mp3', b'a')])
+        tasks, _files, _bytes, _skipped = project.plan_transfer([folder], self.dest)
+
+        self.assertIn((os.path.join(folder, 'inner.zip'),
+                       os.path.join(self.dest, 'music', 'inner.zip'), 'file'), tasks)
+        self.assertNotIn('zip', [kind for _src, _dst, kind in tasks])
+
+    def test_a_folder_named_like_an_archive_is_not_unpacked(self):
+        folder = os.path.join(self.root, 'box.zip')
+        os.makedirs(folder)
+        with open(os.path.join(folder, 'track.mp3'), 'wb') as fh:
+            fh.write(b'audio')
+
+        self.assertEqual(project.selected_archives([folder]), [])
+        tasks, total_files, _bytes, _skipped = project.plan_transfer([folder], self.dest)
+        self.assertEqual([kind for _src, _dst, kind in tasks], ['dir', 'file'])
+        self.assertEqual(tasks[0][1], os.path.join(self.dest, 'box.zip'))
+        self.assertEqual(total_files, 1)
+
+    def test_plan_reports_a_corrupt_archive_instead_of_raising(self):
+        path = os.path.join(self.root, 'broken.zip')
+        with open(path, 'wb') as fh:
+            fh.write(b'nope')
+        tasks, total_files, _bytes, skipped = project.plan_transfer([path], self.dest)
+
+        self.assertEqual(tasks, [])
+        self.assertEqual(total_files, 0)
+        self.assertEqual(len(skipped), 1)
+        self.assertEqual(skipped[0][0], path)
+
+
+class ZipWorkerTests(unittest.TestCase):
+    """The copy worker itself unpacks an archive: same queue, same reporting."""
+
+    def setUp(self):
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.root = os.path.join(self.tempdir.name, 'source')
+        self.dest = os.path.join(self.tempdir.name, 'destination')
+        os.makedirs(self.root)
+        os.makedirs(self.dest)
+        project.reset_state()
+
+    def tearDown(self):
+        project.reset_state()
+        self.tempdir.cleanup()
+
+    def run_zip_worker(self, paths, verify=True):
+        with mock.patch.object(project, 'has_enough_space', return_value=True), \
+                mock.patch.object(project, 'acquire_wakelock'), \
+                mock.patch.object(project, 'release_wakelock'), \
+                mock.patch.object(project, 'invalidate_cache_for_path'), \
+                mock.patch.object(project, 'flush_destination', return_value=''):
+            project.copy_thread_task(paths, self.dest, verify=verify)
+        return project.get_state_snapshot()
+
+    def test_selected_archive_is_unpacked_and_reported(self):
+        zip_path = os.path.join(self.root, 'album.zip')
+        with zipfile.ZipFile(zip_path, 'w') as zf:
+            zf.writestr('02 Track B.mp3', b'B' * 32)
+            zf.writestr('01 Track A.mp3', b'A' * 48)
+
+        snapshot = self.run_zip_worker([zip_path])
+
+        self.assertEqual(snapshot['status'], 'done')
+        self.assertEqual(snapshot['copied'], 2)
+        self.assertEqual(snapshot['zip_archives'], 1)
+        self.assertEqual(snapshot['zip_files'], 2)
+        self.assertEqual(snapshot['verify_total'], 2)
+        self.assertEqual(snapshot['verified'], 2)
+        self.assertEqual(snapshot['failed'], 0)
+        self.assertTrue(os.path.isfile(
+            os.path.join(self.dest, 'album', '01 Track A.mp3')))
+        # The archive is a source, never a destination file.
+        self.assertFalse(os.path.exists(os.path.join(self.dest, 'album.zip')))
+
+    def test_an_archive_from_the_destination_folder_still_unpacks(self):
+        # Regression: the extraction folder used to be fed back into the queue,
+        # which tripped the "destination is the source itself" guard even though
+        # the files were written correctly.
+        zip_path = os.path.join(self.dest, 'album.zip')
+        with zipfile.ZipFile(zip_path, 'w') as zf:
+            zf.writestr('track.mp3', b'audio')
+
+        snapshot = self.run_zip_worker([zip_path])
+
+        self.assertEqual(snapshot['status'], 'done')
+        self.assertTrue(os.path.isfile(
+            os.path.join(self.dest, 'album', 'track.mp3')))
+
+    def test_one_corrupt_archive_does_not_stop_the_rest(self):
+        broken = os.path.join(self.root, 'broken.zip')
+        with open(broken, 'wb') as fh:
+            fh.write(b'not a zip')
+        good = os.path.join(self.root, 'good.zip')
+        with zipfile.ZipFile(good, 'w') as zf:
+            zf.writestr('track.mp3', b'audio')
+        plain = os.path.join(self.root, 'note.txt')
+        with open(plain, 'wb') as fh:
+            fh.write(b'hello')
+
+        snapshot = self.run_zip_worker([broken, good, plain], verify=False)
+
+        self.assertEqual(snapshot['status'], 'done')
+        self.assertEqual(snapshot['zip_archives'], 1)
+        self.assertTrue(os.path.isfile(os.path.join(self.dest, 'good', 'track.mp3')))
+        self.assertTrue(os.path.isfile(os.path.join(self.dest, 'note.txt')))
+        # The unreadable archive is reported as a skipped item, and the rest of
+        # the transfer still runs.
+        self.assertEqual(snapshot['failed'], 0)
+        self.assertEqual(len(snapshot['skipped']), 1)
+        self.assertIn('broken.zip', snapshot['skipped'][0])
+        # The corrupt archive leaves no half-made folder behind.
+        self.assertFalse(os.path.exists(os.path.join(self.dest, 'broken')))
+
+    def test_content_verification_accepts_unpacked_files(self):
+        zip_path = os.path.join(self.root, 'album.zip')
+        with zipfile.ZipFile(zip_path, 'w') as zf:
+            zf.writestr('track.mp3', b'audio-bytes')
+
+        snapshot = self.run_zip_worker([zip_path], verify=True)
+        # verify_content is off here, but the size map must still be complete.
+        self.assertEqual(snapshot['verify_failed'], [])
+
+        project.reset_state()
+        with mock.patch.object(project, 'has_enough_space', return_value=True), \
+                mock.patch.object(project, 'acquire_wakelock'), \
+                mock.patch.object(project, 'release_wakelock'), \
+                mock.patch.object(project, 'invalidate_cache_for_path'), \
+                mock.patch.object(project, 'flush_destination', return_value=''):
+            project.copy_thread_task([zip_path], self.dest, verify=True,
+                                     verify_content=True)
+        snapshot = project.get_state_snapshot()
+        self.assertEqual(snapshot['status'], 'done')
+        self.assertEqual(snapshot['verify_failed'], [])
+        self.assertEqual(snapshot['verified'], 1)
 
 
 class SearchRankingTests(unittest.TestCase):
@@ -879,6 +1105,145 @@ class TransferRouteTests(unittest.TestCase):
                 self.assertTrue(response.get_json()['success'])
                 args = thread_factory.call_args.kwargs['args']
                 self.assertEqual(args[3], [('المادة/الدرس', [source])])
+            finally:
+                project.reset_state()
+
+    def test_zip_only_transfer_starts_the_worker_without_extracting_in_the_request(self):
+        with tempfile.TemporaryDirectory() as tempdir:
+            source = os.path.join(tempdir, 'source')
+            destination = os.path.join(tempdir, 'destination')
+            os.makedirs(source)
+            os.makedirs(destination)
+            zip_path = os.path.join(source, 'album.zip')
+            with zipfile.ZipFile(zip_path, 'w') as zf:
+                zf.writestr('track.mp3', b'audio')
+            project.reset_state()
+            try:
+                with mock.patch.object(project, 'check_destination', return_value=None), \
+                        mock.patch.object(project.threading, 'Thread') as thread_factory, \
+                        mock.patch.object(project, 'ACTIVE_THREAD', None):
+                    response = project.app.test_client().post('/transfer/start', json={
+                        'paths': [zip_path],
+                        'dest': destination,
+                        'verify': False,
+                    })
+
+                body = response.get_json()
+                self.assertEqual(response.status_code, 200)
+                self.assertTrue(body['success'])
+                # The request must not unpack anything: a big archive over a slow
+                # card has to run in the worker, with progress and cancel.
+                self.assertFalse(os.path.exists(os.path.join(destination, 'album')))
+                args = thread_factory.call_args.kwargs['args']
+                self.assertEqual(args[0], [zip_path])
+                thread_factory.return_value.start.assert_called_once()
+            finally:
+                project.reset_state()
+
+    def test_existing_archive_folder_asks_before_merging(self):
+        with tempfile.TemporaryDirectory() as tempdir:
+            source = os.path.join(tempdir, 'source')
+            destination = os.path.join(tempdir, 'destination')
+            os.makedirs(source)
+            os.makedirs(os.path.join(destination, 'album'))
+            zip_path = os.path.join(source, 'album.zip')
+            with zipfile.ZipFile(zip_path, 'w') as zf:
+                zf.writestr('track.mp3', b'audio')
+            project.reset_state()
+            try:
+                with mock.patch.object(project, 'check_destination', return_value=None), \
+                        mock.patch.object(project.threading, 'Thread') as thread_factory, \
+                        mock.patch.object(project, 'ACTIVE_THREAD', None):
+                    response = project.app.test_client().post('/transfer/start', json={
+                        'paths': [zip_path], 'dest': destination, 'verify': False})
+
+                body = response.get_json()
+                self.assertTrue(body['needs_extract_confirm'])
+                self.assertEqual(body['folders'], ['album'])
+                thread_factory.assert_not_called()
+
+                # Confirmed: the worker is now started and still does the writing.
+                with mock.patch.object(project, 'check_destination', return_value=None), \
+                        mock.patch.object(project.threading, 'Thread') as thread_factory2, \
+                        mock.patch.object(project, 'ACTIVE_THREAD', None):
+                    response = project.app.test_client().post('/transfer/start', json={
+                        'paths': [zip_path], 'dest': destination,
+                        'verify': False, 'confirm_extract': True})
+                self.assertTrue(response.get_json()['success'])
+                thread_factory2.return_value.start.assert_called_once()
+            finally:
+                project.reset_state()
+
+    def test_two_archives_with_the_same_name_are_refused(self):
+        with tempfile.TemporaryDirectory() as tempdir:
+            first = os.path.join(tempdir, 'a')
+            second = os.path.join(tempdir, 'b')
+            destination = os.path.join(tempdir, 'destination')
+            for folder in (first, second, destination):
+                os.makedirs(folder)
+            for folder in (first, second):
+                with zipfile.ZipFile(os.path.join(folder, 'album.zip'), 'w') as zf:
+                    zf.writestr('track.mp3', b'audio')
+            project.reset_state()
+            try:
+                with mock.patch.object(project, 'check_destination', return_value=None), \
+                        mock.patch.object(project.threading, 'Thread') as thread_factory, \
+                        mock.patch.object(project, 'ACTIVE_THREAD', None):
+                    response = project.app.test_client().post('/transfer/start', json={
+                        'paths': [os.path.join(first, 'album.zip'),
+                                  os.path.join(second, 'album.zip')],
+                        'dest': destination, 'verify': False})
+
+                body = response.get_json()
+                self.assertNotIn('success', body)
+                self.assertIn('أرشيفان بنفس الاسم', body['error'])
+                thread_factory.assert_not_called()
+            finally:
+                project.reset_state()
+
+    def test_archive_inside_the_destination_folder_is_not_a_self_copy(self):
+        # The user picked a zip that already sits on the destination: it must
+        # unpack into `album/`, not be refused as "destination is the source".
+        with tempfile.TemporaryDirectory() as tempdir:
+            destination = os.path.join(tempdir, 'destination')
+            os.makedirs(destination)
+            zip_path = os.path.join(destination, 'album.zip')
+            with zipfile.ZipFile(zip_path, 'w') as zf:
+                zf.writestr('track.mp3', b'audio')
+            project.reset_state()
+            try:
+                with mock.patch.object(project, 'check_destination', return_value=None), \
+                        mock.patch.object(project.threading, 'Thread') as thread_factory, \
+                        mock.patch.object(project, 'ACTIVE_THREAD', None):
+                    response = project.app.test_client().post('/transfer/start', json={
+                        'paths': [zip_path], 'dest': destination, 'verify': False})
+
+                body = response.get_json()
+                self.assertTrue(body.get('success'), body)
+                thread_factory.return_value.start.assert_called_once()
+            finally:
+                project.reset_state()
+
+    def test_folder_named_like_an_archive_keeps_the_self_copy_check(self):
+        # A directory called `x.zip` is copied as a folder. Choosing its parent
+        # as the destination would copy it onto itself, so it must be refused
+        # exactly like any other folder.
+        with tempfile.TemporaryDirectory() as tempdir:
+            folder = os.path.join(tempdir, 'box.zip')
+            os.makedirs(folder)
+            with open(os.path.join(folder, 'track.mp3'), 'wb') as fh:
+                fh.write(b'audio')
+            project.reset_state()
+            try:
+                with mock.patch.object(project, 'check_destination', return_value=None), \
+                        mock.patch.object(project.threading, 'Thread') as thread_factory, \
+                        mock.patch.object(project, 'ACTIVE_THREAD', None):
+                    response = project.app.test_client().post('/transfer/start', json={
+                        'paths': [folder], 'dest': tempdir, 'verify': False})
+
+                body = response.get_json()
+                self.assertIn('الوجهة هي مجلد المصدر نفسه', body['error'])
+                thread_factory.assert_not_called()
             finally:
                 project.reset_state()
 

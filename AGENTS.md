@@ -236,6 +236,55 @@ byte-identical (DFS pre-order + `natural_sort_key`) and stay single-threaded.
   150×160 KB MP3s on internal storage. Small-file speed is bound by per-file FUSE
   create/close, not by the buffer size.
 
+### Selected `.zip` archives: unpacked by the copy worker, one write pass
+A `.zip` the user selects in the source is **not copied**: it is unpacked into
+`<dest>/<archive name>` (the basename without `.zip`), or
+`<dest>/<group>/<archive name>` when it was assigned to a copy group. The bytes
+are decompressed in 4 MB chunks and written straight to the card by that same
+single-threaded worker — no staging folder and no second copy, so the card is
+written once (`extract_zip_to_dest` → `copy_stream_sequential`). This is why the
+feature lives in the worker and not in the route: a 2 GB archive must show
+progress, stay cancellable and be reported like any other transfer.
+
+- Members are sorted with `natural_sort_key` before writing, so the FAT
+  directory-entry order (playback order) is the folder order the user sees.
+  `zip_member_infos` drops macOS/Windows junk (`__MACOSX/`, `._*`, `.DS_Store`,
+  `Thumbs.db`, `desktop.ini`); written to a card it would sit between tracks.
+- `plan_transfer` emits a `('dir', folder)` task followed by a `('zip', folder)`
+  one, so the folder exists before its contents and the archive is a single
+  queue entry. Totals use each member's **uncompressed** size, so the progress
+  bar, the ETA, the free-space check and the 48 MB speed probe stay honest.
+- Only **top-level selections** expand: a zip inside a selected folder is copied
+  as a file (`walk(..., expand_zip=False)` for children), so copying a tree
+  still reproduces that tree exactly.
+- `verify` size-checks the members like any planned file. With `verify_content`
+  they are size-only (`size_only=zip_targets`) — there is no source file to hash,
+  and reporting that as a mismatch would be a lie.
+- Encrypted archive → `ZipArchiveError` **before** anything is written. Corrupt
+  or unreadable archive → reported as `skipped` while planning (or in
+  `failed_details` if it dies mid-unpack) and the rest of the transfer continues;
+  a failure that left the folder empty removes it (`_remove_if_empty_dir`).
+- Two archives with the same base name are refused: they would unpack into one
+  folder and mix two trees. Every member path is confined to the extraction
+  folder — `zip_member_target` rejects `..`, Windows drive paths and anything
+  resolving outside it, and an absolute member is stripped *into* the folder.
+- Merge: an existing `<dest>/<archive name>` folder means merging, so the route
+  answers `needs_extract_confirm` **before anything is written**
+  (`confirm_extract` from the UI), the same pattern as `needs_group_confirm`.
+  A *file* with that name is refused outright. `startTransfer(confirmMerge,
+  confirmExtract)` passes both flags explicitly; never mutate a request object
+  and re-call, the rebuilt body loses it.
+- An archive root is exempt from `copy_targets_source` (its target is a folder,
+  never the file) but **never** from `dest_inside_source`. A *folder* named
+  `x.zip` stays a folder — `selected_archives()` = suffix **and** is-file — so it
+  keeps the full self-copy guard.
+- The end-of-run report gets one «فك الضغط» row from `zip_archives`/`zip_files`,
+  and the progress line names the archive while it unpacks
+  («… — فك الضغط 12/40»); `publish_progress()` is throttled and called per chunk
+  so a single big archive does not freeze the dialog.
+- The file browser marks `.zip` rows with `ico-zip` via `fileIcon(name)` (same
+  glyph in tree, search results, destination picker and the selection list).
+
 ## Storage detection (server-side, not JS)
 Options are rendered at route `/` via Jinja `{% for st in storages %}`, backed by `get_available_storages()`: always `/sdcard` (internal), plus external SD cards found from `df -h` `/storage/...` mounts (emulated mounts are skipped). If the list is empty, check this Python function — not the JS.
 

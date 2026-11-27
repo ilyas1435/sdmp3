@@ -56,7 +56,7 @@ app = Flask(__name__)
 
 # Version is kept in the VERSION file next to this script so that the `sdmp3`
 # CLI can read it without importing the app.
-APP_VERSION_FALLBACK = "3.13"
+APP_VERSION_FALLBACK = "3.14"
 
 # Toggled by --no-wakelock (see main() at the bottom).
 WAKELOCK_ENABLED = True
@@ -1269,54 +1269,239 @@ def check_destination(dest, timeout=DEST_PROBE_TIMEOUT):
     return 'تعذر الكتابة على الوجهة: ' + reason
 
 
-def extract_zip_to_dest(zip_path, dest_dir, cancel_check=None, on_progress=None):
-    """Extract a ZIP archive directly into `dest_dir` (single write, no staging).
+# ------------- ZIP archives (extracted while copying, never staged) -------------
+#
+# A selected `.zip` is unpacked straight into `<dest>/<archive name>`: the
+# members are decompressed in 4MB chunks and written to the card front-to-back,
+# exactly like copy_file_sequential does for a plain file. There is no temporary
+# folder and no second copy, so the card is written once and playback order is
+# whatever order the members were written in — hence the natural sort below.
+ZIP_SUFFIX = '.zip'
+# Junk that macOS/Windows add to archives. Writing it would put invisible
+# entries between tracks in the folder's playback order, so it is dropped.
+ZIP_JUNK_NAMES = frozenset({'.ds_store', 'thumbs.db', 'desktop.ini'})
 
-    Files are extracted in natural-sorted order so JOC playback order is
-    preserved. Nothing is copied twice - the archive contents are written once
-    straight to the card, which matters on slow/weak SD cards. Returns the
-    destination folder path. On error or cancel the folder is cleaned up if
-    empty, and the exception propagates to the caller.
+
+class ZipArchiveError(RuntimeError):
+    """A ZIP that cannot be extracted safely or at all (already user-facing)."""
+
+
+def looks_like_zip(path):
+    """Cheap suffix test. No stat: the route must not add a round-trip per path."""
+    return str(path).lower().endswith(ZIP_SUFFIX)
+
+
+def selected_archives(paths):
+    """The selected paths that will be unpacked: a .zip suffix *and* a file.
+
+    A folder that happens to be named `x.zip` is copied as a folder, so the
+    guards must not exempt it from the self-copy checks.
     """
-    extracted_count = 0
+    return [p for p in paths if looks_like_zip(p) and os.path.isfile(p)]
+
+
+def zip_folder_name(zip_path):
+    """Folder name a selected archive is unpacked into: its base name."""
+    base = os.path.basename(zip_path)
+    core = base[:-len(ZIP_SUFFIX)] if base.lower().endswith(ZIP_SUFFIX) else base
+    return core or base
+
+
+def zip_member_name(info):
+    """Normalise a member name: archives built on Windows use backslashes."""
+    name = info.filename.replace('\\', '/').lstrip('/')
+    while name.startswith('./'):
+        name = name[2:]
+    return name
+
+
+def _zip_member_is_junk(name):
+    parts = [p for p in name.split('/') if p]
+    if not parts:
+        return True
+    if any(p.upper() == '__MACOSX' for p in parts):
+        return True
+    leaf = parts[-1]
+    return leaf.casefold() in ZIP_JUNK_NAMES or leaf.startswith('._')
+
+
+def zip_member_infos(zf):
+    """Usable file members of an open archive, in JOC playback order.
+
+    Raises ZipArchiveError for an encrypted archive *before* anything is
+    written: the members would fail one by one otherwise, leaving a half-filled
+    folder on the card. Directory entries are not returned — writing each file's
+    parents covers them, and doing it from the sorted file list keeps the
+    parents-first order.
+    """
+    infos = [i for i in zf.infolist() if not i.is_dir()]
+    encrypted = [i.filename for i in infos if i.flag_bits & 0x1]
+    if encrypted:
+        raise ZipArchiveError('الأرشيف محمي بكلمة مرور ولا يمكن فك ضغطه هنا')
+    members = [(zip_member_name(i), i) for i in infos
+               if not _zip_member_is_junk(zip_member_name(i))]
+    members.sort(key=lambda pair: natural_sort_key(pair[0]))
+    return members
+
+
+def zip_member_target(dest_dir, rel_name):
+    """Absolute target of one member, refusing anything outside `dest_dir`.
+
+    A zip is arbitrary input: `../../x` or an absolute path must never escape
+    the folder the user chose, so the resolved path is checked against the root
+    instead of trusting the archive.
+    """
+    parts = [p for p in rel_name.split('/') if p not in ('', '.')]
+    if not parts or any(p == '..' for p in parts) or ':' in parts[0]:
+        raise ZipArchiveError('مسار غير آمن داخل الأرشيف: {}'.format(rel_name))
+    root = os.path.normpath(dest_dir)
+    target = os.path.normpath(os.path.join(root, *parts))
+    if target != root and not target.startswith(root + os.sep):
+        raise ZipArchiveError('مسار غير آمن داخل الأرشيف: {}'.format(rel_name))
+    return target
+
+
+def copy_stream_sequential(reader, dst, cancel_check=None, on_bytes=None):
+    """Write a readable stream (one ZIP member) to `dst` front-to-back.
+
+    Same shape as copy_file_sequential — 4MB chunks, --advice sequential, and a
+    half-written destination is deleted on any error so it can never pollute the
+    folder's playback order. The source is a decompressor, not a file, so
+    sendfile cannot be used here.
+    """
+    dst_fd = None
+    destroy = False
+    written = 0
+    try:
+        dst_fd = os.open(dst, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
+        _advise_sequential(dst_fd)
+        while True:
+            if cancel_check is not None and cancel_check():
+                raise TransferCancelled()
+            chunk = reader.read(COPY_BUFFER_SIZE)
+            if not chunk:
+                break
+            view = memoryview(chunk)
+            offset = 0
+            while offset < len(chunk):
+                try:
+                    count = os.write(dst_fd, view[offset:])
+                except OSError as write_exc:
+                    # Weak cards return EIO for a moment and then recover;
+                    # pause so run_with_retries() gets a real second chance.
+                    if write_exc.errno == errno.EIO:
+                        time.sleep(0.25)
+                    raise
+                if count <= 0:
+                    time.sleep(0.25)
+                    raise OSError(errno.EIO, 'Destination write made no progress', dst)
+                offset += count
+            written += len(chunk)
+            if on_bytes is not None:
+                on_bytes(len(chunk))
+    except BaseException:
+        destroy = True
+        raise
+    finally:
+        if dst_fd is not None:
+            try: os.close(dst_fd)
+            except OSError: pass
+        if destroy:
+            try:
+                if os.path.exists(dst): os.remove(dst)
+            except OSError: pass
+    return written
+
+
+def _remove_if_empty_dir(path):
+    try:
+        if path and os.path.isdir(path) and not os.listdir(path):
+            os.rmdir(path)
+    except OSError:
+        pass
+
+
+def extract_zip_to_dest(zip_path, dest_dir, cancel_check=None, on_progress=None,
+                        on_bytes=None, retry_budget=None, on_member=None):
+    """Unpack one archive straight into `dest_dir`: one write pass, no staging.
+
+    Members are written in natural order, so the FAT directory-entry order (what
+    an old MP3 player plays) is the folder order the user sees. Every member is
+    decompressed and written immediately: the card is never written twice for
+    the same byte, which is what makes this usable on a slow card.
+
+    `on_progress(done, total, name)` and `on_bytes(count)` keep the UI and the
+    stall heartbeat alive; `on_member(target, bytes_written)` lets the caller
+    feed the verification map. Returns (file_count, bytes_written).
+
+    Raises ZipArchiveError for a corrupt/encrypted/unsafe archive, TransferCancelled
+    on cancel, OSError on card failures. A folder left empty by the failure is
+    removed; a partially-filled one is kept (it is reported like a partial copy).
+    """
+    dest_dir = os.path.normpath(dest_dir)
     try:
         with zipfile.ZipFile(zip_path, 'r') as zf:
-            # Sort members naturally for consistent playback order on MP3 players.
-            members = sorted(zf.infolist(), key=lambda m: natural_sort_key(m.filename))
+            members = zip_member_infos(zf)
+            if not members:
+                return 0, 0
+            run_with_retries(os.makedirs, dest_dir, exist_ok=True,
+                             _cancel_check=cancel_check, _budget=retry_budget)
             total = len(members)
-            for i, member in enumerate(members):
+            count = 0
+            written_total = 0
+            for index, (rel_name, info) in enumerate(members, 1):
                 if cancel_check is not None and cancel_check():
                     raise TransferCancelled()
-                if member.is_dir():
-                    continue
-                # Security: reject absolute paths and path traversal (..).
-                target = os.path.normpath(os.path.join(dest_dir, member.filename))
-                dest_root = os.path.normpath(dest_dir)
-                if target != dest_root and not target.startswith(dest_root + os.sep):
-                    raise RuntimeError('مسار غير آمن داخل الأرشيف: {}'.format(member.filename))
-                zf.extract(member, dest_dir)
-                extracted_count += 1
+                target = zip_member_target(dest_dir, rel_name)
+                parent = os.path.dirname(target)
+                if parent:
+                    run_with_retries(os.makedirs, parent, exist_ok=True,
+                                     _cancel_check=cancel_check,
+                                     _budget=retry_budget)
+                reader = zf.open(info, 'r')
+                try:
+                    def write_member(reader=reader, target=target):
+                        # A retry restarts the member from its first byte.
+                        if reader.tell():
+                            reader.seek(0)
+                        return copy_stream_sequential(
+                            reader, target, cancel_check=cancel_check,
+                            on_bytes=on_bytes)
+                    written = run_with_retries(
+                        write_member, _cancel_check=cancel_check,
+                        _budget=retry_budget)
+                finally:
+                    try: reader.close()
+                    except Exception: pass
+                written_total += written
+                count += 1
+                if on_member is not None:
+                    on_member(target, written)
                 if on_progress is not None:
-                    try:
-                        on_progress(extracted_count, total, member.filename)
-                    except Exception:
-                        pass
+                    try: on_progress(index, total, rel_name)
+                    except Exception: pass
+        log_event('zip extracted: {!r} -> {!r} ({} file(s), {})'.format(
+            zip_path, dest_dir, count, format_size(written_total)))
+        return count, written_total
     except TransferCancelled:
-        try:
-            if os.path.isdir(dest_dir) and not os.listdir(dest_dir):
-                os.rmdir(dest_dir)
-        except OSError:
-            pass
+        _remove_if_empty_dir(dest_dir)
         raise
-    except Exception:
-        try:
-            if os.path.isdir(dest_dir) and not os.listdir(dest_dir):
-                os.rmdir(dest_dir)
-        except OSError:
-            pass
+    except ZipArchiveError:
+        _remove_if_empty_dir(dest_dir)
         raise
-    log_event('extracted zip {!r} -> {!r} ({} file(s))'.format(zip_path, dest_dir, extracted_count))
-    return dest_dir
+    except zipfile.BadZipFile as exc:
+        _remove_if_empty_dir(dest_dir)
+        raise ZipArchiveError('ملف مضغوط تالف أو غير مكتمل') from exc
+    except NotImplementedError as exc:
+        _remove_if_empty_dir(dest_dir)
+        raise ZipArchiveError('طريقة ضغط غير مدعومة في الأرشيف') from exc
+    except RuntimeError as exc:
+        # zipfile raises RuntimeError for an encrypted member reached directly.
+        _remove_if_empty_dir(dest_dir)
+        raise ZipArchiveError(str(exc)) from exc
+    except BaseException:
+        _remove_if_empty_dir(dest_dir)
+        raise
 
 def try_remove_entry(path):
     """Remove one file/link/dir. Returns (ok, reason)."""
@@ -1585,9 +1770,12 @@ def plan_transfer(paths, dest, excludes=None, cancel_check=None, on_progress=Non
     Returns (tasks, total_files, total_bytes, skipped):
 
       tasks       exact write order (folder first, then its children, natural
-                  sort) - the queue that guarantees JOC playback order
+                  sort) - the queue that guarantees JOC playback order. A
+                  selected `.zip` becomes a ('dir', folder) task followed by
+                  ('zip', folder): the worker unpacks it there, in one pass.
       skipped     source folders that could not be read at all, with a reason
-                  (e.g. the damaged FAT entry that Android answers with EIO)
+                  (e.g. the damaged FAT entry that Android answers with EIO),
+                  plus archives that are corrupt, encrypted or unsafe.
 
     The old code walked the whole tree twice (scan_source, then build_dfs_queue);
     on FUSE every stat is a round-trip, so this halves the planning cost.
@@ -1601,7 +1789,7 @@ def plan_transfer(paths, dest, excludes=None, cancel_check=None, on_progress=Non
     total_bytes = 0
     skipped = []
 
-    def walk(src, dst, entry=None):
+    def walk(src, dst, entry=None, expand_zip=True):
         nonlocal total_files, total_bytes
         if src in excludes:
             return
@@ -1628,6 +1816,28 @@ def plan_transfer(paths, dest, excludes=None, cancel_check=None, on_progress=Non
             return
 
         if is_file:
+            if expand_zip and looks_like_zip(name):
+                # A *selected* archive is unpacked into `<dest>/<name>/`, never
+                # copied as a .zip. Only top-level selections expand: a zip that
+                # merely sits inside a selected folder stays a file, so copying
+                # a tree still reproduces that tree exactly.
+                try:
+                    with zipfile.ZipFile(src, 'r') as zf:
+                        members = zip_member_infos(zf)
+                except ZipArchiveError as exc:
+                    skipped.append((src, str(exc)))
+                    return
+                except (zipfile.BadZipFile, NotImplementedError, OSError) as exc:
+                    reason = (describe_os_error(exc) if isinstance(exc, OSError)
+                              else 'ملف مضغوط تالف أو غير قابل للقراءة')
+                    skipped.append((src, reason))
+                    return
+                folder = os.path.join(dst, zip_folder_name(name))
+                tasks.append((folder, folder, 'dir'))
+                tasks.append((src, folder, 'zip'))
+                total_files += len(members)
+                total_bytes += sum(max(info.file_size, 0) for _rel, info in members)
+                return
             tasks.append((src, dst_path, 'file'))
             total_files += 1
             try:
@@ -1651,7 +1861,7 @@ def plan_transfer(paths, dest, excludes=None, cancel_check=None, on_progress=Non
                 skipped.append((src, describe_os_error(exc)))
                 return
             for child in children:
-                walk(child.path, dst_path, child)
+                walk(child.path, dst_path, child, expand_zip=False)
 
     for root in sorted(paths, key=natural_sort_key):
         walk(root, dest)
@@ -1680,7 +1890,7 @@ def _hash_file_for_verification(path, cancel_check=None, on_bytes_progress=None)
 
 def verify_copied_files(planned, roots, on_progress=None, cancel_check=None,
                         source_by_dest=None, verify_content=False,
-                        on_bytes_progress=None):
+                        on_bytes_progress=None, size_only=None):
     """Verify copied-file sizes, and optionally compare source/content hashes.
 
     `planned` maps absolute destination paths to bytes actually written.
@@ -1689,6 +1899,9 @@ def verify_copied_files(planned, roots, on_progress=None, cancel_check=None,
     Content mode reads each source and destination sequentially and compares
     SHA-256 digests. It is intentionally optional because it adds two full read
     passes; the default size-only check remains metadata-only.
+    `size_only` lists paths that came out of an archive: they have no source
+    file to hash, so they are verified by size and never reported as a failure
+    just because content comparison cannot run for them.
 
     Returns (verified, failures, cancelled).
     """
@@ -1728,6 +1941,14 @@ def verify_copied_files(planned, roots, on_progress=None, cancel_check=None,
             return
 
         if verify_content:
+            if size_only and path in size_only:
+                # Unpacked from an archive: size is the honest check, there is
+                # no source file to hash and no reason to call that a failure.
+                seen.add(path)
+                done += 1
+                verified += 1
+                report()
+                return
             source = (source_by_dest or {}).get(path)
             if not source:
                 seen.add(path)
@@ -1900,25 +2121,52 @@ def copy_thread_task(paths, dest, excludes=None, groups=None, verify=True,
 
         # A group's TOP-LEVEL folder equal to an ungrouped root's name would pull
         # that root inside the group folder and mix two unrelated trees: the
-        # route refuses it, and so must the worker.
-        ungrouped_names = {os.path.basename(os.path.normpath(p)).casefold() for p in ungrouped}
+        # route refuses it, and so must the worker. An archive writes into a
+        # folder named after itself, so that folder name counts too.
+        archives = set(selected_archives(paths))
+        ungrouped_names = set()
+        for p in ungrouped:
+            ungrouped_names.add(os.path.basename(os.path.normpath(p)).casefold())
+            if p in archives:
+                ungrouped_names.add(zip_folder_name(p).casefold())
         for name, _gpaths in groups:
             top = group_segments(name)[0]
             if top.casefold() in ungrouped_names:
                 raise RuntimeError('اسم المجلد «{}» يتعارض مع عنصر غير مجمَّع بنفس الاسم'.format(top))
 
+        # Two archives with the same base name would unpack into one folder and
+        # mix two trees. Refuse before writing anything.
+        group_of = {os.path.normpath(p): name
+                    for name, gpaths in groups for p in gpaths}
+        archive_targets = {}
+        for p in archives:
+            owner = group_of.get(os.path.normpath(p), '')
+            chain = group_dir_chain(dest, owner) if owner else []
+            base = (chain[-1] if chain else dest)
+            target = os.path.join(base, zip_folder_name(p))
+            key = os.path.normpath(target).casefold()
+            if key in archive_targets:
+                raise RuntimeError(
+                    'أرشيفان بنفس الاسم سيفكّان في مجلد واحد «{}» — '
+                    'أعد تسمية أحدهما'.format(os.path.basename(target)))
+            archive_targets[key] = p
+
         # Safety net: the route already refuses this, but the worker must never
-        # be able to duplicate a tree into itself either.
+        # be able to duplicate a tree into itself either. An archive is exempt
+        # from the mirror check: its target is a folder named after it, never
+        # the archive file itself.
         for name, gpaths in groups:
             target = os.path.join(dest, name)
             if dest_inside_source(gpaths, target):
                 raise RuntimeError('لا يمكن النسخ إلى مجلد داخل المصدر: {}'.format(target))
-            if copy_targets_source(gpaths, target):
+            plain = [p for p in gpaths if p not in archives]
+            if plain and copy_targets_source(plain, target):
                 raise RuntimeError('الوجهة هي مجلد المصدر نفسه — اختر مجلداً جديداً داخلها')
         if ungrouped:
             if dest_inside_source(ungrouped, dest):
                 raise RuntimeError('لا يمكن النسخ إلى مجلد داخل المصدر: {}'.format(dest))
-            if copy_targets_source(ungrouped, dest):
+            plain_ungrouped = [p for p in ungrouped if p not in archives]
+            if plain_ungrouped and copy_targets_source(plain_ungrouped, dest):
                 raise RuntimeError('الوجهة هي مجلد المصدر نفسه — اختر مجلداً جديداً داخلها')
 
         set_state(file='جاري فحص الملفات وترتيبها بتسلسل JOC...', phase='planning')
@@ -1980,6 +2228,13 @@ def copy_thread_task(paths, dest, excludes=None, groups=None, verify=True,
             for p, r in skipped[:10]:
                 log_event('copy skipped (unreadable): {!r} -> {}'.format(p, r))
 
+        # Every selected archive failed to open: say why instead of reporting a
+        # successful copy of nothing.
+        if not tasks and archives:
+            detail = '؛ '.join('{} — {}'.format(os.path.basename(p), r)
+                              for p, r in skipped[:3])
+            raise RuntimeError('تعذر فك الأرشيف' + (': ' + detail if detail else ''))
+
         if not has_enough_space(dest, needed_bytes):
             raise RuntimeError(
                 'المساحة المتوفرة غير كافية. المطلوب تقريباً: {}'.format(format_size(needed_bytes)))
@@ -2021,6 +2276,14 @@ def copy_thread_task(paths, dest, excludes=None, groups=None, verify=True,
                 ))
             set_state(phase='copying', file='جاري النقل المستقر المباشر...')
 
+        # Per-archive counters for the end-of-run report, and the set of files
+        # that came out of an archive: content verification cannot hash those
+        # against a source file (there isn't one), so they are size-checked only.
+        zip_archives = 0
+        zip_files = 0
+        zip_targets = set()
+        current_label = ['جاري النقل المستقر المباشر...']
+
         def on_bytes(count):
             nonlocal bytes_done, bytes_since_sync
             bytes_done += count
@@ -2028,11 +2291,55 @@ def copy_thread_task(paths, dest, excludes=None, groups=None, verify=True,
             # Heartbeat per chunk: a slow-but-working card keeps the transfer
             # "alive", only a really hung one falls silent long enough to flag.
             touch_progress()
+            # Also refresh the numbers. Unpacking one big archive is a single
+            # queue entry, so without this the dialog would sit on one name and
+            # one percentage for minutes.
+            publish_progress()
 
         # The clock that the reported copy speed uses starts *after* planning and
         # the probe: walking 2000 source dirs is not the card's fault, and folding
         # it into the average made a fast card look slow.
         copy_started = time.time()
+
+        def publish_progress(label=None, force=False):
+            """Write the live numbers. Throttled, so chunk-level calls are cheap."""
+            nonlocal last_ui_update, speed_ema
+            if label is not None:
+                current_label[0] = label
+            now = time.time()
+            if not force and now - last_ui_update < UI_UPDATE_INTERVAL:
+                return
+            last_ui_update = now
+            # Speed over the last ~6 seconds (EMA-smoothed), not the average
+            # since the first byte: the average made a healthy card look
+            # slow for the whole transfer after one flush.
+            speed_window.append((now, bytes_done))
+            while len(speed_window) > 2 and now - speed_window[0][0] > 6:
+                speed_window.popleft()
+            t0, b0 = speed_window[0]
+            dt = now - t0
+            if dt >= 1.5:
+                inst = (bytes_done - b0) / dt / (1024 * 1024)
+                speed_ema = inst if speed_ema is None else (speed_ema * 0.55 + inst * 0.45)
+            if speed_ema is None:
+                speed = bytes_done / max(now - copy_started, 0.001) / (1024 * 1024)
+            else:
+                speed = speed_ema
+            if needed_bytes:
+                progress = int(min(bytes_done / needed_bytes, 1) * 100)
+                remaining = max(needed_bytes - bytes_done, 0)
+                eta = int(remaining / (speed * 1024 * 1024)) if speed > 0.05 else 0
+            else:
+                done_count = copied + len(failed_details)
+                progress = int((done_count / total) * 100) if total else 0
+                eta = 0
+            set_state(copied=copied, failed=len(failed_details),
+                      progress=min(progress, 99), file=current_label[0],
+                      phase='copying',
+                      copied_bytes=bytes_done, speed_mbps=round(speed, 2),
+                      avg_mbps=round(bytes_done / max(now - copy_started, 0.001)
+                                     / (1024 * 1024), 2),
+                      eta_seconds=eta, sync_seconds=0)
 
         def copy_one_file(src, dst_path):
             # One attempt at one file. A failed attempt reports the bytes
@@ -2052,6 +2359,67 @@ def copy_thread_task(paths, dest, excludes=None, groups=None, verify=True,
                 bytes_done = started_done
                 bytes_since_sync = started_since
                 raise
+
+        def record_failure(src, e, what='copy'):
+            """Book one failed entry, and stop only when the card is hopeless."""
+            nonlocal write_failed, readonly_failures, eio_failures
+            reason = (describe_os_error(e) if isinstance(e, OSError) else str(e))
+            failed_details.append((src, reason))
+            log_event('{} failed: {!r} -> {}'.format(what, src, reason))
+            err_no = getattr(e, 'errno', None) if isinstance(e, OSError) else None
+            if err_no == errno.EROFS:
+                # The mount flipped to read-only (Android does this after
+                # a card I/O error). Nothing else will succeed, so stop
+                # instead of burning ten minutes on guaranteed failures.
+                readonly_failures += 1
+                if readonly_failures >= 3:
+                    if copied:
+                        raise RuntimeError(
+                            'الكارت تحوّل إلى القراءة فقط بعد نسخ {} '
+                            'ملفاً سليماً. أخرج الكارت، انتظر ثانيتين، ثم '
+                            'أدخله جيداً وأعد المحاولة — سيُكمل النسخ فوق '
+                            'الموجود دون تكراره.'.format(copied))
+                    raise RuntimeError(
+                        'الكارت تحوّل إلى القراءة فقط قبل نسخ أي ملف. '
+                        'أخرج الكارت، انتظر ثانيتين، ثم أدخله جيداً وأعد '
+                        'المحاولة — لم يُنقل شيء بعد.')
+            if err_no == errno.EIO:
+                # A weak card often returns EIO for a moment then recovers.
+                # Don't flag the card as dead on one or two files: only
+                # show the write-failure hint when EIO is widespread.
+                eio_failures += 1
+                if eio_failures > max(3, len(failed_details) // 2):
+                    write_failed = True
+            elif err_no == 30:
+                # Read-only mount is more serious: flag it immediately.
+                write_failed = True
+            if err_no == 28:
+                raise RuntimeError('انتهت المساحة الخالية في الوجهة أثناء النسخ.')
+
+        def extract_one_zip(zip_src, folder):
+            """Unpack one selected archive straight into `folder` (one pass)."""
+            nonlocal copied, zip_files
+            archive = os.path.basename(zip_src)
+
+            def on_member(target, written):
+                nonlocal copied, zip_files
+                # Registered like a copied file so verification checks the real
+                # bytes that reached the card, and the report count stays honest.
+                planned_files[target] = written
+                zip_targets.add(target)
+                copied += 1
+                zip_files += 1
+
+            def on_zip_progress(done, total_members, rel_name):
+                touch_progress()
+                publish_progress('{} — فك الضغط {}/{}'.format(
+                    archive, done, total_members))
+
+            count, _bytes = extract_zip_to_dest(
+                zip_src, folder, cancel_check=is_cancelled,
+                on_progress=on_zip_progress, on_bytes=on_bytes,
+                retry_budget=retry_budget, on_member=on_member)
+            return count
 
         for src, dst_path, kind in tasks:
             # Heartbeat per entry too: a folder full of 0-byte files moves no
@@ -2073,38 +2441,7 @@ def copy_thread_task(paths, dest, excludes=None, groups=None, verify=True,
                 except TransferCancelled:
                     raise
                 except Exception as e:
-                    reason = describe_os_error(e)
-                    failed_details.append((src, reason))
-                    log_event('copy failed: {!r} -> {}'.format(src, reason))
-                    err_no = getattr(e, 'errno', None) if isinstance(e, OSError) else None
-                    if err_no == errno.EROFS:
-                        # The mount flipped to read-only (Android does this after
-                        # a card I/O error). Nothing else will succeed, so stop
-                        # instead of burning ten minutes on guaranteed failures.
-                        readonly_failures += 1
-                        if readonly_failures >= 3:
-                            if copied:
-                                raise RuntimeError(
-                                    'الكارت تحوّل إلى القراءة فقط بعد نسخ {} '
-                                    'ملفاً سليماً. أخرج الكارت، انتظر ثانيتين، ثم '
-                                    'أدخله جيداً وأعد المحاولة — سيُكمل النسخ فوق '
-                                    'الموجود دون تكراره.'.format(copied))
-                            raise RuntimeError(
-                                'الكارت تحوّل إلى القراءة فقط قبل نسخ أي ملف. '
-                                'أخرج الكارت، انتظر ثانيتين، ثم أدخله جيداً وأعد '
-                                'المحاولة — لم يُنقل شيء بعد.')
-                    if err_no == errno.EIO:
-                        # A weak card often returns EIO for a moment then recovers.
-                        # Don't flag the card as dead on one or two files: only
-                        # show the write-failure hint when EIO is widespread.
-                        eio_failures += 1
-                        if eio_failures > max(3, len(failed_details) // 2):
-                            write_failed = True
-                    elif err_no == 30:
-                        # Read-only mount is more serious: flag it immediately.
-                        write_failed = True
-                    if err_no == 28:
-                        raise RuntimeError('انتهت المساحة الخالية في الوجهة أثناء النسخ.')
+                    record_failure(src, e)
 
                 # Flush the whole transfer to the card occasionally, never per file.
                 if bytes_since_sync >= SYNC_THRESHOLD:
@@ -2121,37 +2458,25 @@ def copy_thread_task(paths, dest, excludes=None, groups=None, verify=True,
                     failed_details.append((src, reason))
                     log_event('mkdir failed: {!r} -> {}'.format(src, reason))
 
-            now = time.time()
-            if now - last_ui_update >= UI_UPDATE_INTERVAL:
-                # Speed over the last ~6 seconds (EMA-smoothed), not the average
-                # since the first byte: the average made a healthy card look
-                # slow for the whole transfer after one flush.
-                speed_window.append((now, bytes_done))
-                while len(speed_window) > 2 and now - speed_window[0][0] > 6:
-                    speed_window.popleft()
-                t0, b0 = speed_window[0]
-                dt = now - t0
-                if dt >= 1.5:
-                    inst = (bytes_done - b0) / dt / (1024 * 1024)
-                    speed_ema = inst if speed_ema is None else (speed_ema * 0.55 + inst * 0.45)
-                if speed_ema is None:
-                    speed = bytes_done / max(now - copy_started, 0.001) / (1024 * 1024)
-                else:
-                    speed = speed_ema
-                if needed_bytes:
-                    progress = int(min(bytes_done / needed_bytes, 1) * 100)
-                    remaining = max(needed_bytes - bytes_done, 0)
-                    eta = int(remaining / (speed * 1024 * 1024)) if speed > 0.05 else 0
-                else:
-                    done_count = copied + len(failed_details)
-                    progress = int((done_count / total) * 100) if total else 0
-                    eta = 0
-                set_state(copied=copied, failed=len(failed_details),
-                          progress=min(progress, 99), file=name, phase='copying',
-                          copied_bytes=bytes_done, speed_mbps=round(speed, 2),
-                          avg_mbps=round(bytes_done / max(now - copy_started, 0.001) / (1024 * 1024), 2),
-                          eta_seconds=eta, sync_seconds=0)
-                last_ui_update = now
+            elif kind == 'zip':
+                try:
+                    set_state(file='{} — فك الضغط...'.format(name))
+                    extract_one_zip(src, dst_path)
+                    zip_archives += 1
+                except TransferCancelled:
+                    raise
+                except Exception as e:
+                    # A corrupt archive must not abort the rest of the copy:
+                    # it is reported as data, exactly like a failed file.
+                    record_failure(src, e, what='zip extract')
+                    _remove_if_empty_dir(dst_path)
+
+                # Decompression also dirties the page cache: same threshold.
+                if bytes_since_sync >= SYNC_THRESHOLD:
+                    flush_copy('copying')
+                    bytes_since_sync = 0
+
+            publish_progress(name)
 
         # A single flush at the end (plus the 1GB checkpoints above). The
         # heartbeat keeps a slow flush from looking like a hung card.
@@ -2168,7 +2493,12 @@ def copy_thread_task(paths, dest, excludes=None, groups=None, verify=True,
         verified = 0
         verify_seconds = 0.0
         verify_done_count = 0
-        verify_bytes_total = (sum(planned_files.values()) * 2
+        # Archive members are size-checked only, so they must not inflate the
+        # content-comparison byte total (it would never reach 100%).
+        verify_content_bytes = sum(
+            value for path, value in planned_files.items()
+            if path not in zip_targets)
+        verify_bytes_total = (verify_content_bytes * 2
                               if verify_content else 0)
         verify_bytes_done = 0
         if verify and planned_files:
@@ -2217,7 +2547,8 @@ def copy_thread_task(paths, dest, excludes=None, groups=None, verify=True,
                 on_progress=on_verify, cancel_check=is_cancelled,
                 source_by_dest=planned_sources,
                 verify_content=verify_content,
-                on_bytes_progress=on_verify_bytes if verify_content else None)
+                on_bytes_progress=on_verify_bytes if verify_content else None,
+                size_only=zip_targets if verify_content else None)
             verify_seconds = max(time.time() - verify_started, 0.0)
             for p, r in verify_failures[:10]:
                 log_event('verify failed: {!r} -> {}'.format(p, r))
@@ -2354,6 +2685,8 @@ def copy_thread_task(paths, dest, excludes=None, groups=None, verify=True,
             'verify_bytes_done': verify_bytes_done,
             'verify_bytes_total': verify_bytes_total,
             'flush_warning': flush_warning,
+            'zip_archives': zip_archives,
+            'zip_files': zip_files,
             'spoof_total': spoof_total,
             'spoof_done': spoof_done,
             'spoof_error': spoof_error,
@@ -3436,7 +3769,7 @@ HTML_TEMPLATE = """
     <symbol id="ico-chevron-right" viewBox="0 0 24 24"><polyline points="9 18 15 12 9 6"></polyline></symbol>
     <symbol id="ico-chevron-down" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"></polyline></symbol>
     <symbol id="ico-folder" viewBox="0 0 24 24"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></symbol>
-    <symbol id="ico-zip" viewBox="0 0 24 24"><path d="M22 7H2v13h3v-2a1 1 0 0 1 1-1h14a1 1 0 0 1 1 1v2h3V7z"></path><polyline points="7 9 12 14 17 9"></polyline></symbol>
+    <symbol id="ico-zip" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="11" y1="4" x2="11" y2="6"></line><line x1="13" y1="6" x2="13" y2="8"></line><line x1="11" y1="8" x2="11" y2="10"></line><line x1="13" y1="10" x2="13" y2="12"></line><rect x="10.5" y="13" width="3" height="4" rx=".5"></rect></symbol>
 </svg>
 
 <div class="container">
@@ -5356,7 +5689,12 @@ HTML_TEMPLATE = """
 
     const iconDir = `<svg class="icon" style="min-width:20px; color:var(--accent)" viewBox="0 0 24 24"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>`;
     const iconFile = `<svg class="icon" style="min-width:20px; color:var(--text-muted)" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline></svg>`;
-    const iconZip = `<svg class="icon" style="min-width:20px; color:var(--accent)" viewBox="0 0 24 24"><path d="M22 7H2v13h3v-2a1 1 0 0 1 1-1h14a1 1 0 0 1 1 1v2h3V7z"></path><polyline points="7 9 12 14 17 9"></polyline></svg>`;
+    const iconZip = `<svg class="icon" style="min-width:20px; color:var(--text-muted)" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="11" y1="4" x2="11" y2="6"></line><line x1="13" y1="6" x2="13" y2="8"></line><line x1="11" y1="8" x2="11" y2="10"></line><line x1="13" y1="10" x2="13" y2="12"></line><rect x="10.5" y="13" width="3" height="4" rx=".5"></rect></svg>`;
+    // A `.zip` is unpacked automatically on copy, so it gets its own glyph in
+    // every list that shows files (tree, search, picker, selection).
+    function fileIcon(name) {
+        return String(name || '').toLowerCase().endsWith('.zip') ? iconZip : iconFile;
+    }
     const iconEdit = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path></svg>`;
     const iconTrash = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"></path><path d="M10 11v6"></path><path d="M14 11v6"></path><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"></path></svg>`;
 
@@ -5679,7 +6017,7 @@ HTML_TEMPLATE = """
             let div = document.createElement('div');
             div.className = 'item-row picker-file-row';
             div.dataset.path = item.path;
-            div.innerHTML = `<div class="item-name">${iconFile} <span></span></div><span class="file-size"></span>${rowActionsHtml(item.path, item.name, false)}`;
+            div.innerHTML = `<div class="item-name">${fileIcon(item.name)} <span></span></div><span class="file-size"></span>${rowActionsHtml(item.path, item.name, false)}`;
             div.querySelector('.item-name span').textContent = item.name;
             div.querySelector('.file-size').textContent = formatBytes(item.size);
             tree.appendChild(div);
@@ -5739,7 +6077,7 @@ HTML_TEMPLATE = """
                 ${item.is_dir ? `<button class="toggle-btn" data-toggle="1" aria-label="فتح المجلد">${spriteIcon('ico-chevron-right')}</button>` : `<span style="width:26px;display:inline-block;"></span>`}
                 <input type="checkbox" class="checkbox" value="${esc(item.path)}" data-name="${esc(item.name)}" ${isChecked} onchange="${onChange}(this, ${item.is_dir})">
                 <div class="item-name" ${item.is_dir ? 'data-toggle="1"' : `onclick="this.previousElementSibling.click()"`}>
-                    ${item.is_dir ? iconDir : (item.name.toLowerCase().endsWith('.zip') ? iconZip : iconFile)} <span>${esc(item.name)}</span>${excludedMark}
+                    ${item.is_dir ? iconDir : fileIcon(item.name)} <span>${esc(item.name)}</span>${excludedMark}
                 </div>
                 ${item.is_dir ? '' : `<span class="file-size">${formatBytes(item.size || 0)}</span>`}
                 ${rowActionsHtml(item.path, item.name, item.is_dir)}
@@ -7114,7 +7452,7 @@ HTML_TEMPLATE = """
             main.className = 'selected-row-main';
             let top = document.createElement('div');
             top.className = 'selected-row-top';
-            top.innerHTML = isDir ? iconDir : iconFile;
+            top.innerHTML = isDir ? iconDir : fileIcon(itemName);
             let nameEl = document.createElement('div');
             nameEl.className = 'truncate-text selected-row-name';
             nameEl.textContent = itemName;
@@ -7336,7 +7674,7 @@ HTML_TEMPLATE = """
 
             let icon = document.createElement('span');
             icon.className = 'selected-browse-icon';
-            icon.innerHTML = item.is_dir ? iconDir : iconFile;
+            icon.innerHTML = item.is_dir ? iconDir : fileIcon(item.name);
             row.appendChild(icon);
 
             let name = document.createElement('span');
@@ -7853,7 +8191,7 @@ HTML_TEMPLATE = """
         cancelSmartPreview();
     }
 
-    function startTransfer(confirmMerge) {
+    function startTransfer(confirmMerge, confirmExtract) {
         if(selectedPaths.size === 0) return alert('اختر ملفات أولاً.');
         let dest = document.getElementById('custom_dest_path').value;
         if(!dest) return alert('حدد مسار الوجهة.');
@@ -7870,7 +8208,8 @@ HTML_TEMPLATE = """
                 .map(function(g) { return { name: g.name, paths: g.paths.slice() }; }),
             verify: (verifyEl ? verifyEl.checked : true) || verifyContent,
             verify_content: verifyContent,
-            confirm_merge: !!confirmMerge
+            confirm_merge: !!confirmMerge,
+            confirm_extract: !!confirmExtract
         };
 
         fetch('/transfer/start', {
@@ -7879,7 +8218,13 @@ HTML_TEMPLATE = """
             // An existing group folder needs an explicit OK: a merge may replace
             // files inside it, so it must never happen silently.
             if (data.needs_group_confirm) {
-                showConfirmModal(data.error, function(){ startTransfer(true); });
+                showConfirmModal(data.error, function(){ startTransfer(true, false); });
+                return;
+            }
+            // Unpacking an archive into an existing folder is a merge too, and
+            // it can replace files: ask once, before a single byte is written.
+            if (data.needs_extract_confirm) {
+                showConfirmModal(data.error, function(){ startTransfer(false, true); });
                 return;
             }
             // A refused copy (dead card, no permission, self-copy) is shown in
@@ -8738,6 +9083,13 @@ HTML_TEMPLATE = """
             rows.push(reportRow('ico-bolt', 'النسخ', copyLine));
         } else if (data.time_taken) {
             rows.push(reportRow('ico-clock', 'الزمن', data.time_taken));
+        }
+
+        // An archive is unpacked, not copied: say how many, and how many files
+        // came out of them. Only present when a `.zip` was part of the transfer.
+        if (data.zip_archives > 0) {
+            rows.push(reportRow('ico-zip', 'فك الضغط',
+                data.zip_archives + ' أرشيف · ' + (data.zip_files || 0) + ' ملف'));
         }
 
         if (data.verify_total > 0) {
@@ -10728,57 +11080,27 @@ def start_transfer():
     assigned_norm = {os.path.normpath(p) for _name, gpaths in groups for p in gpaths}
     ungrouped = [p for p in paths if os.path.normpath(p) not in assigned_norm]
 
+    # Selected archives are unpacked, never copied. Decided once here (suffix +
+    # is-file, so a folder named `x.zip` is still treated as a folder) and used
+    # by every guard below.
+    archives = selected_archives(paths)
+    archive_set = set(archives)
+
     # A card can be mounted but dead. Check it now (with a timeout) so the user
     # gets "الكارت لا يستجيب" instead of a transfer that freezes at 0%.
     problem = check_destination(dest)
     if problem: return jsonify({'error': problem})
 
-    # ----- ZIP auto-extraction: extract directly to destination folders -----
-    # Files are written once straight to the card (no staging copy), which
-    # keeps weak/slow cards happy and preserves JOC playback order.
-    zip_paths = [p for p in paths if p.lower().endswith('.zip')]
-    regular_paths = [p for p in paths if not p.lower().endswith('.zip')]
-    extract_confirm_needed = []
-    extracted_folders = []  # [(zip_path, extract_dest)] already extracted
-
-    for zip_path in zip_paths:
-        zip_name = os.path.basename(zip_path)
-        folder_name = zip_name[:-4] if zip_name.lower().endswith('.zip') else zip_name
-        extract_dest = os.path.join(dest, folder_name)
-        if os.path.exists(extract_dest):
-            extract_confirm_needed.append(folder_name)
-        else:
-            # Single write: extract straight to the card, no intermediate copy.
-            extract_zip_to_dest(zip_path, extract_dest)
-            extracted_folders.append((zip_path, extract_dest))
-            regular_paths.append(extract_dest)
-
-    if extract_confirm_needed and not data.get('confirm_extract'):
-        return jsonify({
-            'needs_extract_confirm': True,
-            'folders': extract_confirm_needed,
-            'error': ('المجلدات التالية موجودة بالفعل وسيتم دمج الملفات المنزوعة '
-                      'من المضغوط داخلها: {}'.format(
-                          '، '.join('«{}»'.format(n) for n in extract_confirm_needed)))
-        })
-
-    # User confirmed merging into existing folders: extract the remaining ZIPs.
-    if extract_confirm_needed and data.get('confirm_extract'):
-        for zip_path in zip_paths:
-            zip_name = os.path.basename(zip_path)
-            folder_name = zip_name[:-4] if zip_name.lower().endswith('.zip') else zip_name
-            extract_dest = os.path.join(dest, folder_name)
-            if os.path.exists(extract_dest):
-                extract_zip_to_dest(zip_path, extract_dest)
-                extracted_folders.append((zip_path, extract_dest))
-                regular_paths.append(extract_dest)
-
-    paths = regular_paths
-
     # A group's TOP-LEVEL folder that matches an ungrouped root would put that
     # root inside the group folder instead of at the destination: silent mixing,
     # so refuse it. ("A" and "A/B" groups are fine: that is nesting.)
-    ungrouped_names = {os.path.basename(os.path.normpath(p)).casefold() for p in ungrouped}
+    # A selected archive writes into a folder named after itself, so that name
+    # counts as its top-level name too.
+    ungrouped_names = set()
+    for p in ungrouped:
+        ungrouped_names.add(os.path.basename(os.path.normpath(p)).casefold())
+        if p in archive_set:
+            ungrouped_names.add(zip_folder_name(p).casefold())
     for name in group_names:
         top = group_segments(name)[0]
         if top.casefold() in ungrouped_names:
@@ -10813,19 +11135,61 @@ def start_transfer():
                       'الاسم. هل تريد المتابعة؟')
         })
 
+    # ----- Selected archives: they are unpacked, not copied -----
+    # Nothing is written here. A `.zip` becomes a folder named after the archive
+    # inside its destination root (or inside its group folder), and the copy
+    # worker unpacks it there in a single write pass: one card write per byte,
+    # progress/cancel/verify/report for free, and no temporary staging folder.
+    group_of = {os.path.normpath(p): name
+                for name, gpaths in groups for p in gpaths}
+    zip_targets = {}
+    existing_zips = []
+    for p in archives:
+        owner = group_of.get(os.path.normpath(p), '')
+        chain = group_chain.get(owner) or []
+        base = (chain[-1] if owner and chain else dest)
+        target = os.path.join(base, zip_folder_name(p))
+        key = os.path.normpath(target).casefold()
+        other = zip_targets.get(key)
+        if other is not None:
+            return jsonify({'error': 'أرشيفان بنفس الاسم «{}» سيفكّان في مجلد واحد — '
+                                     'أعد تسمية أحدهما'.format(os.path.basename(target))})
+        zip_targets[key] = p
+        if os.path.exists(target) and not os.path.isdir(target):
+            return jsonify({'error': 'يوجد ملف باسم «{}» في الوجهة — '
+                                     'أعد تسمية الأرشيف أو أخرجه'.format(
+                                         os.path.basename(target))})
+        if os.path.isdir(target):
+            existing_zips.append(os.path.basename(target))
+    if existing_zips and not data.get('confirm_extract'):
+        unique_zips = list(dict.fromkeys(existing_zips))
+        detail = ('مجلد «{}» موجود بالفعل'.format(unique_zips[0]) if len(unique_zips) == 1
+                  else 'المجلدات التالية موجودة بالفعل: {}'.format(
+                      '، '.join('«{}»'.format(n) for n in unique_zips)))
+        return jsonify({
+            'needs_extract_confirm': True,
+            'folders': unique_zips,
+            'error': (detail + '. سيتم فك الأرشيف داخله ودمج ملفاته، واستبدال أي '
+                      'ملف بنفس الاسم. هل تريد المتابعة؟')
+        })
+
     # Same self-copy guards as before, once per group target and once for the
-    # ungrouped roots that go straight into the destination.
+    # ungrouped roots that go straight into the destination. An archive is
+    # exempt from the mirror check: its target is a *folder* named after it,
+    # never the archive file itself.
     for name, gpaths in groups:
         chain = group_chain.get(name) or group_dir_chain(dest, name)
         target = chain[-1] if chain else dest
         if dest_inside_source(gpaths, target):
             return jsonify({'error': 'لا يمكن النسخ إلى مجلد داخل المصدر: ' + target})
-        if copy_targets_source(gpaths, target):
+        plain = [p for p in gpaths if p not in archive_set]
+        if plain and copy_targets_source(plain, target):
             return jsonify({'error': 'الوجهة هي مجلد المصدر نفسه — اختر مجلداً جديداً داخلها بدل اختيارها هي'})
     if ungrouped:
         if dest_inside_source(ungrouped, dest):
             return jsonify({'error': 'لا يمكن النسخ إلى مجلد داخل المصدر: ' + dest})
-        if copy_targets_source(ungrouped, dest):
+        plain_ungrouped = [p for p in ungrouped if p not in archive_set]
+        if plain_ungrouped and copy_targets_source(plain_ungrouped, dest):
             return jsonify({'error': 'الوجهة هي مجلد المصدر نفسه — اختر مجلداً جديداً داخلها بدل اختيارها هي'})
 
     verify_content = bool(data.get('verify_content', False))
