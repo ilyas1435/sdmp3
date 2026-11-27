@@ -3260,6 +3260,17 @@ HTML_TEMPLATE = """
         /* The modal opened last must sit on top of any other open modal (e.g.
            rename/input opening over the selected-items window). */
         .modal-front { z-index: 1001; }
+        /* A terminal copy alert sits above every dialog but never takes focus:
+           the report and its buttons stay usable underneath. */
+        .app-toast { display:none; position:fixed; top:calc(12px + env(safe-area-inset-top)); left:50%; transform:translateX(-50%); z-index:1200;
+            width:max-content; max-width:min(92vw, 520px); padding:11px 15px; border-radius:12px; border:1px solid var(--border);
+            background:var(--card-2); color:var(--text); box-shadow:0 18px 40px -16px var(--shadow-strong);
+            font-size:calc(13px * var(--font-scale)); font-weight:600; line-height:1.6; gap:8px;
+            align-items:center; pointer-events:none; }
+        .app-toast .icon { width:17px; height:17px; flex:0 0 auto; }
+        .app-toast.is-success { background:var(--ok-soft); border-color:var(--ok-line); color:var(--success); }
+        .app-toast.is-error { background:var(--danger-soft); border-color:var(--danger); color:var(--danger-ink); }
+        .app-toast.is-info { background:var(--accent-soft); border-color:var(--accent-line); color:var(--accent-text); }
         .modal-content { background: var(--card); padding: 20px; border-radius: 18px; width: 100%; max-width: 600px; border: 1px solid var(--border); max-height: max(70vh, 480px); display: flex; flex-direction: column; box-shadow: 0 24px 48px -12px var(--shadow-strong); margin: auto; }
         .modal-content .modal-body { overflow-y: auto; flex: 1 1 auto; min-height: 0; -webkit-overflow-scrolling: touch; }
         .modal-content .modal-footer { display: flex; gap: 12px; margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--border); flex-shrink: 0; }
@@ -3742,6 +3753,8 @@ HTML_TEMPLATE = """
     <symbol id="ico-index" viewBox="0 0 24 24"><rect x="4" y="3" width="16" height="18" rx="2"></rect><circle cx="8.2" cy="7.6" r="1.3"></circle><line x1="11.6" y1="7.6" x2="17" y2="7.6"></line><line x1="7" y1="12.2" x2="17" y2="12.2"></line><line x1="7" y1="16.4" x2="13.5" y2="16.4"></line></symbol>
     <symbol id="ico-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"></circle><polyline points="12 7 12 12 16 14"></polyline></symbol>
     <symbol id="ico-bolt" viewBox="0 0 24 24"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></symbol>
+    <symbol id="ico-bell" viewBox="0 0 24 24"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9"></path><path d="M10 21h4"></path></symbol>
+    <symbol id="ico-sound" viewBox="0 0 24 24"><path d="M4 9v6h4l5 4V5L8 9z"></path><path d="M16 9a4 4 0 0 1 0 6"></path><path d="M18.5 6.5a8 8 0 0 1 0 11"></path></symbol>
     <symbol id="ico-shield" viewBox="0 0 24 24"><path d="M12 3l7 3v6c0 4-3 7.5-7 9-4-1.5-7-5-7-9V6z"></path><polyline points="9 12 11.2 14.2 15.2 10"></polyline></symbol>
     <symbol id="ico-music" viewBox="0 0 24 24"><path d="M9 18V6l10-2v12"></path><circle cx="6.5" cy="18" r="2.5"></circle><circle cx="16.5" cy="16" r="2.5"></circle></symbol>
     <symbol id="ico-palette" viewBox="0 0 24 24"><path d="M12 3a9 9 0 1 0 0 18h1.2a2 2 0 0 0 1.5-3.3 1.8 1.8 0 0 1 1.4-3h1.1A3.8 3.8 0 0 0 21 10.9C21 6.5 17 3 12 3z"></path><circle cx="7.5" cy="11" r=".8"></circle><circle cx="10" cy="7.5" r=".8"></circle><circle cx="15" cy="7.5" r=".8"></circle></symbol>
@@ -3771,6 +3784,7 @@ HTML_TEMPLATE = """
     <symbol id="ico-folder" viewBox="0 0 24 24"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></symbol>
     <symbol id="ico-zip" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="11" y1="4" x2="11" y2="6"></line><line x1="13" y1="6" x2="13" y2="8"></line><line x1="11" y1="8" x2="11" y2="10"></line><line x1="13" y1="10" x2="13" y2="12"></line><rect x="10.5" y="13" width="3" height="4" rx=".5"></rect></symbol>
 </svg>
+<div id="appToast" class="app-toast" role="status" aria-live="polite"></div>
 
 <div class="container">
     <header class="app-header">
@@ -4240,6 +4254,25 @@ HTML_TEMPLATE = """
                             </span>
                         </span>
                     </label>
+                    <label class="settings-check-row" for="browserNotifyCheck">
+                        <input type="checkbox" id="browserNotifyCheck" class="checkbox" onchange="pickBrowserNotifications(this.checked)">
+                        <span class="settings-option-copy">
+                            <svg class="icon settings-option-icon" aria-hidden="true"><use href="#ico-bell"></use></svg>
+                            <span>إشعار المتصفح عند اكتمال النسخ أو الخطأ
+                                <small class="settings-note">يطلب المتصفح الإذن عند التفعيل، أو عند أول عملية نسخ.</small>
+                            </span>
+                        </span>
+                    </label>
+                    <label class="settings-check-row" for="completionSoundCheck">
+                        <input type="checkbox" id="completionSoundCheck" class="checkbox" checked onchange="pickCompletionSound(this.checked)">
+                        <span class="settings-option-copy">
+                            <svg class="icon settings-option-icon" aria-hidden="true"><use href="#ico-sound"></use></svg>
+                            <span>صوت عند انتهاء النسخ أو الخطأ
+                                <small class="settings-note">نغمة قصيرة من المتصفح، بلا ملفات أو روابط خارجية.</small>
+                            </span>
+                        </span>
+                    </label>
+                    <div id="notifySaveState" class="settings-save-state"></div>
                     <div id="generalSaveState" class="settings-save-state"></div>
                 </div>
 
@@ -8195,6 +8228,10 @@ HTML_TEMPLATE = """
         if(selectedPaths.size === 0) return alert('اختر ملفات أولاً.');
         let dest = document.getElementById('custom_dest_path').value;
         if(!dest) return alert('حدد مسار الوجهة.');
+        // Both calls need the button click: Chrome only unlocks WebAudio and
+        // shows the notification prompt from a real user gesture.
+        unlockCompletionSound();
+        maybeAskNotificationPermission();
         let verifyEl = document.getElementById('verifyAfterCopy');
         let verifyContentEl = document.getElementById('verifyContentAfterCopy');
         let verifyContent = verifyContentEl ? verifyContentEl.checked : false;
@@ -8437,6 +8474,9 @@ HTML_TEMPLATE = """
             renderJocSummary();
             loadTtsVoices();
         });
+        let soundCb = document.getElementById('completionSoundCheck');
+        if (soundCb) soundCb.checked = soundEnabled();
+        refreshNotificationControls();
         loadSystemInfo(false, false);
         setInterval(function(){ loadSystemInfo(false, true); }, 120000);
     });
@@ -8878,6 +8918,14 @@ HTML_TEMPLATE = """
     let progressMinimized = false;
     let transferRunning = false;
     let terminalTransferData = null;
+    const BROWSER_NOTIFY_KEY = 'sdmp3_browser_notify';
+    const COMPLETION_SOUND_KEY = 'sdmp3_completion_sound';
+    const NOTIFY_PROMPT_KEY = 'sdmp3_notify_prompted';
+    const NOTIFIED_RUN_KEY = 'sdmp3_notified_run';
+    let notificationSoundContext = null;
+    let lastNotifiedTransferKey = '';
+    let activeTransferKey = '';
+    let appToastTimer = null;
     // Queue hook for the upcoming scheduled copy: the next batch only has to
     // push {label, sizeText, ...} and call renderQueue(). Nothing enqueues yet.
     let transferQueue = [];
@@ -8885,6 +8933,7 @@ HTML_TEMPLATE = """
     function showProgressModal() {
         progressMinimized = false;
         terminalTransferData = null;
+        hideAppToast();
         let copyDetailsBtn = document.getElementById('copyTransferDetailsBtn');
         if (copyDetailsBtn) {
             copyDetailsBtn.style.display = 'none';
@@ -9020,6 +9069,217 @@ HTML_TEMPLATE = """
     function spriteIcon(id) {
         return '<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#' + id + '"></use></svg>';
     }
+
+    // ---- completion alerts: page toast, OS notification, short chime -------
+    // The terminal snapshot arrives every second until the next run. A run key
+    // (action + server start time) makes the alert fire once, even across a
+    // refresh in the same tab; a new copying snapshot clears it.
+    function getNotifyPref() {
+        try { return localStorage.getItem(BROWSER_NOTIFY_KEY); } catch (_e) { return null; }
+    }
+    function setNotifyPref(enabled) {
+        try { localStorage.setItem(BROWSER_NOTIFY_KEY, enabled ? '1' : '0'); } catch (_e) {}
+    }
+    function soundEnabled() {
+        try {
+            let value = localStorage.getItem(COMPLETION_SOUND_KEY);
+            return value === null || value === '1';
+        } catch (_e) { return true; }
+    }
+    function runAlreadyNotified(key) {
+        if (lastNotifiedTransferKey === key) return true;
+        try { return sessionStorage.getItem(NOTIFIED_RUN_KEY) === key; } catch (_e) { return false; }
+    }
+    function markRunNotified(key) {
+        lastNotifiedTransferKey = key;
+        try { sessionStorage.setItem(NOTIFIED_RUN_KEY, key); } catch (_e) {}
+    }
+    function clearRunNotification() {
+        lastNotifiedTransferKey = '';
+        try { sessionStorage.removeItem(NOTIFIED_RUN_KEY); } catch (_e) {}
+    }
+
+    function hideAppToast() {
+        if (appToastTimer) clearTimeout(appToastTimer);
+        let el = document.getElementById('appToast');
+        if (el) el.style.display = 'none';
+    }
+
+    function showAppToast(message, kind) {
+        let el = document.getElementById('appToast');
+        if (!el) return;
+        if (appToastTimer) clearTimeout(appToastTimer);
+        let tone = (kind === 'error') ? 'error' : (kind === 'info' ? 'info' : 'success');
+        let icon = (tone === 'error') ? 'ico-alert' : (tone === 'info' ? 'ico-clock' : 'ico-check');
+        el.className = 'app-toast is-' + tone;
+        el.setAttribute('role', tone === 'error' ? 'alert' : 'status');
+        el.innerHTML = spriteIcon(icon) + '<span>' + esc(message) + '</span>';
+        el.style.display = 'flex';
+        appToastTimer = setTimeout(function() { el.style.display = 'none'; }, 6000);
+    }
+
+    // WebAudio has to be created/resumed in a real gesture, so the copy button
+    // and the sound switch both call this; a later poll may then play the chime.
+    function unlockCompletionSound() {
+        if (!soundEnabled()) return null;
+        let AudioCtor = window.AudioContext || window.webkitAudioContext;
+        if (!AudioCtor) return null;
+        try {
+            if (!notificationSoundContext) notificationSoundContext = new AudioCtor();
+            if (notificationSoundContext.state === 'suspended' && notificationSoundContext.resume) {
+                let resumed = notificationSoundContext.resume();
+                if (resumed && resumed.catch) resumed.catch(function() {});
+            }
+            return notificationSoundContext;
+        } catch (_e) { return null; }
+    }
+
+    function playCompletionSound(kind, test) {
+        let ctx = unlockCompletionSound();
+        if (!ctx || !ctx.createOscillator || !ctx.createGain) return;
+        try {
+            let notes = (kind === 'error') ? [523.25, 392, 293.66] : [659.25, 880, 1046.5];
+            if (test) notes = [880];
+            let base = ctx.currentTime + 0.02;
+            notes.forEach(function(freq, i) {
+                let at = base + i * 0.14;
+                let osc = ctx.createOscillator();
+                let gain = ctx.createGain();
+                osc.type = 'sine';
+                osc.frequency.setValueAtTime(freq, at);
+                gain.gain.setValueAtTime(0.0001, at);
+                gain.gain.exponentialRampToValueAtTime(test ? 0.05 : 0.09, at + 0.02);
+                gain.gain.exponentialRampToValueAtTime(0.0001, at + 0.18);
+                osc.connect(gain);
+                gain.connect(ctx.destination);
+                osc.start(at);
+                osc.stop(at + 0.2);
+            });
+        } catch (_e) {}
+    }
+
+    function refreshNotificationControls() {
+        let cb = document.getElementById('browserNotifyCheck');
+        let supported = ('Notification' in window);
+        if (!supported) {
+            if (cb) cb.checked = false;
+            setSettingsState('هذا المتصفح لا يدعم إشعارات النظام — التنبيه داخل الصفحة يعمل.', '', 'notifySaveState');
+            return;
+        }
+        let pref = getNotifyPref();
+        let granted = Notification.permission === 'granted';
+        if (granted && pref === null) setNotifyPref(true);
+        if (Notification.permission === 'denied') setNotifyPref(false);
+        let enabled = granted && pref !== '0';
+        if (cb) cb.checked = enabled;
+        if (Notification.permission === 'denied') {
+            setSettingsState('الإشعارات محجوبة في إعدادات المتصفح.', 'err', 'notifySaveState');
+        } else if (enabled) {
+            setSettingsState('إشعارات المتصفح مفعّلة.', 'ok', 'notifySaveState');
+        } else {
+            setSettingsState('', '', 'notifySaveState');
+        }
+    }
+
+    function pickBrowserNotifications(enabled) {
+        let cb = document.getElementById('browserNotifyCheck');
+        if (!('Notification' in window)) {
+            if (cb) cb.checked = false;
+            setSettingsState('هذا المتصفح لا يدعم إشعارات النظام.', 'err', 'notifySaveState');
+            return;
+        }
+        if (!enabled) {
+            setNotifyPref(false);
+            setSettingsState('تم إيقاف إشعارات المتصفح.', '', 'notifySaveState');
+            return;
+        }
+        let finish = function(permission) {
+            let granted = permission === 'granted';
+            setNotifyPref(granted);
+            if (cb) cb.checked = granted;
+            setSettingsState(granted ? 'تم تفعيل إشعارات المتصفح.'
+                : 'لم يمنح المتصفح الإذن — التنبيه داخل الصفحة يعمل.', granted ? 'ok' : 'err', 'notifySaveState');
+        };
+        if (Notification.permission === 'granted') { finish('granted'); return; }
+        if (Notification.permission === 'denied') { finish('denied'); return; }
+        try {
+            let request = Notification.requestPermission();
+            if (request && typeof request.then === 'function') {
+                request.then(finish).catch(function() { finish('denied'); });
+            } else {
+                finish(Notification.permission);
+            }
+        } catch (_e) { finish('denied'); }
+    }
+
+    // First copy is a user gesture, so Chrome will actually show its permission
+    // prompt there. After a decision we never nag again; the settings switch
+    // remains the way to opt in later.
+    function maybeAskNotificationPermission() {
+        if (!('Notification' in window)) return;
+        if (Notification.permission === 'granted') {
+            if (getNotifyPref() !== '0') setNotifyPref(true);
+            refreshNotificationControls();
+            return;
+        }
+        if (Notification.permission === 'denied') { setNotifyPref(false); return; }
+        if (getNotifyPref() !== null) return;
+        try {
+            if (localStorage.getItem(NOTIFY_PROMPT_KEY) === '1') return;
+            localStorage.setItem(NOTIFY_PROMPT_KEY, '1');
+        } catch (_e) { return; }
+        try {
+            let request = Notification.requestPermission();
+            let finish = function(permission) { setNotifyPref(permission === 'granted'); refreshNotificationControls(); };
+            if (request && typeof request.then === 'function') request.then(finish).catch(function() {});
+            else finish(Notification.permission);
+        } catch (_e) {}
+    }
+
+    function pickCompletionSound(enabled) {
+        let cb = document.getElementById('completionSoundCheck');
+        if (cb) cb.checked = !!enabled;
+        try { localStorage.setItem(COMPLETION_SOUND_KEY, enabled ? '1' : '0'); } catch (_e) {}
+        if (enabled) {
+            unlockCompletionSound();
+            playCompletionSound('success', true);
+        }
+        setSettingsState(enabled ? 'تم تفعيل صوت الانتهاء.' : 'تم إيقاف صوت الانتهاء.', 'ok', 'notifySaveState');
+        setTimeout(function() { setSettingsState('', '', 'notifySaveState'); }, 2200);
+    }
+
+    function sendTransferNotification(title, body, key) {
+        if (getNotifyPref() !== '1') return;
+        if (!('Notification' in window) || Notification.permission !== 'granted') return;
+        try {
+            new Notification(title, { body: body, tag: 'sdmp3-' + key, renotify: false });
+        } catch (_e) {}
+    }
+
+    function transferRunKey(data) {
+        if (!data) return '';
+        return String(data.action || '') + ':' + String(data.start_time || data.time_taken || '');
+    }
+
+    function notifyTransferFinished(data) {
+        let key = transferRunKey(data);
+        if (!key || runAlreadyNotified(key)) return;
+        markRunNotified(key);
+        if (data.action !== 'copy') return;
+        let detail = String(data.log || '').slice(0, 180);
+        if (data.status === 'done') {
+            showAppToast('اكتمل النسخ بنجاح.', 'success');
+            playCompletionSound('success');
+            sendTransferNotification('SD Card Coffee', 'اكتمل النسخ بنجاح.', key);
+        } else if (data.status === 'error') {
+            showAppToast('فشل النسخ' + (detail ? ': ' + detail : '.'), 'error');
+            playCompletionSound('error');
+            sendTransferNotification('SD Card Coffee', 'فشل النسخ' + (detail ? ': ' + detail : '.'), key);
+        } else if (data.status === 'cancelled') {
+            showAppToast('تم إيقاف النسخ.', 'info');
+        }
+    }
+
     function showInlineDone(msg) { showInlineNotify(spriteIcon('ico-check') + ' ' + msg, 'success'); }
     function showInlineError(msg) { showInlineNotify(spriteIcon('ico-alert') + ' ' + esc(msg), 'error'); }
 
@@ -9176,6 +9436,11 @@ HTML_TEMPLATE = """
             let copyDetailsBtn = document.getElementById('copyTransferDetailsBtn');
             if (data.status === 'copying') {
                 terminalTransferData = null;
+                let runningKey = transferRunKey(data);
+                if (runningKey && runningKey !== activeTransferKey) {
+                    activeTransferKey = runningKey;
+                    clearRunNotification();
+                }
                 if (copyDetailsBtn) {
                     copyDetailsBtn.style.display = 'none';
                     copyDetailsBtn.textContent = 'نسخ التفاصيل';
@@ -9368,6 +9633,10 @@ HTML_TEMPLATE = """
                     document.getElementById('cancelProgressBtn').style.display = 'none';
                     document.getElementById('closeProgressBtn').style.display = 'block';
 
+                    // One alert per run, before any per-status report rendering.
+                    // Repeated terminal polls must not re-notify.
+                    notifyTransferFinished(data);
+
                     if(data.status === 'error') {
                         document.getElementById('currentFile').innerText = 'خطأ: ' + data.log;
                         document.getElementById('currentFile').style.color = 'var(--danger-ink)';
@@ -9484,6 +9753,7 @@ HTML_TEMPLATE = """
             }
             document.getElementById('cardWarningBox').style.display = 'none';
             document.getElementById('inlineNotify').style.display = 'none';
+            hideAppToast();
             document.getElementById('cancelProgressBtn').disabled = false;
             document.getElementById('modalTitle').innerText = 'العملية قيد التنفيذ...';
         }).catch(()=>{});
