@@ -304,6 +304,83 @@ class CopyWorkerReliabilityTests(unittest.TestCase):
         self.assertEqual(failures, [])
         self.assertTrue(cancelled)
 
+    def test_stale_zero_size_stat_is_rechecked_not_reported(self):
+        # Android FUSE can answer a stat with size 0 right after a write/flush.
+        # A fresh fd-based stat must clear the false mismatch.
+        path = os.path.join(self.tempdir.name, 'stale.mp3')
+        with open(path, 'wb') as fh:
+            fh.write(b'abcdef')
+        real_stat = os.stat
+        calls = [0]
+
+        def stat_with_stale_size(target, *args, **kwargs):
+            if os.path.abspath(target) == path:
+                calls[0] += 1
+                if calls[0] == 1:
+                    result = real_stat(target, *args, **kwargs)
+                    return os.stat_result((result.st_mode,) + (0,) * 9)
+            return real_stat(target, *args, **kwargs)
+
+        with mock.patch.object(project.os, 'stat', side_effect=stat_with_stale_size), \
+                mock.patch.object(project, 'VERIFY_RECHECK_SECONDS', 0.01):
+            verified, failures, cancelled = project.verify_copied_files(
+                {path: 6}, [path])
+
+        self.assertEqual((verified, failures, cancelled), (1, [], False))
+
+    def test_briefly_missing_destination_is_rechecked_not_reported(self):
+        # A volume can be unavailable for a moment after syncfs(). Files that
+        # are present on the next look must not be reported as "غير موجود".
+        path = os.path.join(self.tempdir.name, 'momentary.mp3')
+        with open(path, 'wb') as fh:
+            fh.write(b'abcdef')
+        real_stat = os.stat
+        calls = [0]
+
+        def stat_with_missing(target, *args, **kwargs):
+            if os.path.abspath(target) == path:
+                calls[0] += 1
+                if calls[0] == 1:
+                    raise FileNotFoundError(errno.ENOENT, 'stale dentry', target)
+            return real_stat(target, *args, **kwargs)
+
+        with mock.patch.object(project.os, 'stat', side_effect=stat_with_missing), \
+                mock.patch.object(project, 'VERIFY_RECHECK_SECONDS', 0.01):
+            verified, failures, cancelled = project.verify_copied_files(
+                {path: 6}, [path])
+
+        self.assertEqual((verified, failures, cancelled), (1, [], False))
+
+    def test_real_size_mismatch_still_fails_after_the_recheck(self):
+        path = os.path.join(self.tempdir.name, 'wrong.mp3')
+        with open(path, 'wb') as fh:
+            fh.write(b'abc')
+        with mock.patch.object(project, 'VERIFY_RECHECK_SECONDS', 0.01):
+            verified, failures, cancelled = project.verify_copied_files(
+                {path: 999}, [path])
+
+        self.assertEqual((verified, cancelled), (0, False))
+        self.assertEqual(len(failures), 1)
+        self.assertIn('المتوقع 999', failures[0][1])
+
+    def test_recheck_pause_is_shared_by_all_suspicious_files(self):
+        first = os.path.join(self.tempdir.name, 'one.mp3')
+        second = os.path.join(self.tempdir.name, 'two.mp3')
+        for path in (first, second):
+            with open(path, 'wb') as fh:
+                fh.write(b'abc')
+        sleeps = []
+
+        with mock.patch.object(project, 'VERIFY_RECHECK_SECONDS', 0.01), \
+                mock.patch.object(project.time, 'sleep',
+                                  side_effect=lambda seconds: sleeps.append(seconds)):
+            verified, failures, cancelled = project.verify_copied_files(
+                {first: 99, second: 99}, [first, second])
+
+        self.assertEqual(len(sleeps), 1)  # not one pause per file
+        self.assertEqual((verified, cancelled), (0, False))
+        self.assertEqual(len(failures), 2)
+
     def test_flush_fallback_warning_is_kept_in_transfer_result(self):
         self.write_source('track.mp3', b'completed')
         warning = 'تعذر تثبيت الوجهة مباشرة: خطأ إدخال/إخراج'

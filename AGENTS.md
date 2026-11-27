@@ -147,6 +147,16 @@ byte-identical (DFS pre-order + `natural_sort_key`) and stay single-threaded.
   normal merge cannot produce a false mismatch. It reports
   `verified`/`verify_total`/`verify_failed`, never reads file contents, and never
   changes the playback order. `verify: false` from the UI skips the pass.
+  - **Bounded re-check on suspicious stats** (`VERIFY_RECHECK_SECONDS` = 2s):
+    Android FUSE can briefly answer a `stat()` with a stale size (often 0) or
+    `ENOENT` for a file written seconds earlier, and a volume can be inaccessible
+    for a moment right after `syncfs()`. A single stat was therefore reporting
+    correct files as «الحجم على الوجهة 0 بايت» / «غير موجود». When a first look is
+    suspicious, verification gives the path one fresh fd-based look (`os.open` +
+    `os.fstat`, which forces FUSE to refresh attributes) after one **shared**,
+    cancel-aware pause — one sleep for the whole pass, not one per file. A file
+    that is genuinely wrong still fails after it; no real mismatch is suppressed.
+    Logged as `verify recheck resolved N stale destination stat(s)`.
 - **`copy_file_sequential()`** opens src/dst with `os.open`, `posix_fadvise(POSIX_FADV_SEQUENTIAL)` hints, then uses `os.sendfile` (4 MB chunks) when the kernel/filesystem supports it; on `EINVAL`/`ENOSYS`/`EXDEV`/`EOPNOTSUPP`/`EAGAIN` it continues with the 4 MB buffered loop from the same offset. sendfile measured ~2× faster on Android FUSE. Both paths write front-to-back, and on any error the half-written destination file is deleted so playback order can't be polluted.
 - **No `fsync` per file.** The transfer calls `sync_with_heartbeat()` every `SYNC_THRESHOLD` (256 MB) and once at the end. The threshold is also the length of the single «تثبيت البيانات على الكارت…» step: 1 GB of dirty pages on a card writing at 10 MB/s was a 100-second blocking `syncfs`, which users read as a hang. 256 MB caps that step at ~25 s worst case on a slow card and still flushes once per ~1 GB of a real internal copy. Ordering comes from *sequential writes*, never from fsync — the per-file fsync was removed because it cost tens of ms per MP3 (the main cause of "copy is very slow"). Do not add it back, and keep the threshold large: a small value turns one big copy into hundreds of short stalls.
   - The flush **does not rewrite `file`**. `sync_with_heartbeat()` sets

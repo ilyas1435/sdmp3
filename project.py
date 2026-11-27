@@ -138,6 +138,15 @@ UNHEALTHY_DEST_TTL = 20
 # actually hung mount, not by a slow-but-working card's flush.
 DEST_PROBE_TIMEOUT = 15
 
+# Android's FUSE/sdcardfs can briefly answer a stat() with a stale size (often 0)
+# or ENOENT for a file written seconds earlier, and a volume can be inaccessible
+# for a moment right after syncfs(). A single stat immediately after the final
+# flush is therefore not a reliable verdict. Verification gives a suspicious
+# path one fresh look after this short pause. The pause is shared by the whole
+# pass (one sleep, not one per file) and a file that is genuinely wrong still
+# fails after it, so real mismatches are never suppressed.
+VERIFY_RECHECK_SECONDS = 2.0
+
 transfer_lock = threading.RLock()
 
 DEFAULT_STATE = {
@@ -1912,6 +1921,10 @@ def verify_copied_files(planned, roots, on_progress=None, cancel_check=None,
     seen = set()
     cancelled = False
     last_report = 0.0
+    # One bounded pause for the whole pass, spent only when a first look is
+    # suspicious. A dead volume then costs one short sleep, not one per file.
+    recheck_spent = [False]
+    recheck_resolved = [0]
 
     def report(force=False):
         nonlocal last_report
@@ -1924,39 +1937,83 @@ def verify_copied_files(planned, roots, on_progress=None, cancel_check=None,
                 except Exception:
                     pass
 
-    def check(path, size):
-        nonlocal done, verified
-        if path in seen:
+    def pause_for_recheck():
+        if recheck_spent[0]:
             return
+        recheck_spent[0] = True
+        remaining = VERIFY_RECHECK_SECONDS
+        if remaining <= 0:
+            return
+        if cancel_check is not None and cancel_check():
+            raise TransferCancelled()
+        time.sleep(remaining)
+
+    def fresh_stat(path):
+        """Prefer an fd-based stat: opening forces FUSE to refresh attributes."""
+        fd = os.open(path, os.O_RDONLY)
+        try:
+            return os.fstat(fd)
+        finally:
+            os.close(fd)
+
+    def look_up(path):
+        """Return (size, reason). Re-check a suspicious first look once."""
+        try:
+            metadata = os.stat(path, follow_symlinks=False)
+            if stat.S_ISREG(metadata.st_mode):
+                return metadata.st_size, None
+            reason = 'الوجهة ليست ملفاً عادياً'
+        except OSError as exc:
+            reason = describe_os_error(exc)
+
+        # Stale FUSE metadata or a volume that was briefly unavailable: give it
+        # one fresh look before calling it a failure. Real problems persist.
+        pause_for_recheck()
+        try:
+            metadata = fresh_stat(path)
+        except OSError:
+            try:
+                metadata = os.stat(path, follow_symlinks=False)
+            except OSError:
+                return None, reason
+        if not stat.S_ISREG(metadata.st_mode):
+            return None, reason
+        recheck_resolved[0] += 1
+        return metadata.st_size, None
+
+    def verify_one(path):
+        """Return None when correct, else a user-facing reason string."""
+        size, reason = look_up(path)
+        if reason is not None:
+            return reason
         expected = planned.get(path)
         if expected is None:
-            return
+            return None
         if size != expected:
-            seen.add(path)
-            done += 1
-            if len(failures) < 40:
-                failures.append((path, 'الحجم على الوجهة {} بايت والمتوقع {} بايت'.format(
-                    size, expected)))
-            report()
-            return
+            mismatch = 'الحجم على الوجهة {} بايت والمتوقع {} بايت'.format(
+                size, expected)
+            # Even when an earlier file already spent the shared pause, a plain
+            # re-stat here is cheap and may see attributes refreshed in the
+            # meantime. A genuinely wrong size survives both.
+            pause_for_recheck()
+            try:
+                metadata = fresh_stat(path)
+                if stat.S_ISREG(metadata.st_mode) and metadata.st_size == expected:
+                    size = metadata.st_size
+                    recheck_resolved[0] += 1
+            except OSError:
+                pass
+            if size != expected:
+                return mismatch
 
         if verify_content:
             if size_only and path in size_only:
                 # Unpacked from an archive: size is the honest check, there is
                 # no source file to hash and no reason to call that a failure.
-                seen.add(path)
-                done += 1
-                verified += 1
-                report()
-                return
+                return None
             source = (source_by_dest or {}).get(path)
             if not source:
-                seen.add(path)
-                done += 1
-                if len(failures) < 40:
-                    failures.append((path, 'تعذر تحديد المصدر لمقارنة المحتوى'))
-                report()
-                return
+                return 'تعذر تحديد المصدر لمقارنة المحتوى'
             try:
                 source_digest = _hash_file_for_verification(
                     source, cancel_check, on_bytes_progress)
@@ -1965,24 +2022,19 @@ def verify_copied_files(planned, roots, on_progress=None, cancel_check=None,
             except TransferCancelled:
                 raise
             except OSError as exc:
-                seen.add(path)
-                done += 1
-                if len(failures) < 40:
-                    failures.append((path, 'تعذر قراءة الملف للتحقق: {}'.format(
-                        describe_os_error(exc))))
-                report()
-                return
+                return 'تعذر قراءة الملف للتحقق: {}'.format(describe_os_error(exc))
             if source_digest != dest_digest:
-                seen.add(path)
-                done += 1
-                if len(failures) < 40:
-                    failures.append((path, 'محتوى الملف لا يطابق المصدر (SHA-256)'))
-                report()
-                return
+                return 'محتوى الملف لا يطابق المصدر (SHA-256)'
+        return None
 
+    def finish(path, reason):
+        nonlocal done, verified
         seen.add(path)
         done += 1
-        verified += 1
+        if reason is None:
+            verified += 1
+        elif len(failures) < 40:
+            failures.append((path, reason))
         report()
 
     report(force=True)
@@ -1992,24 +2044,10 @@ def verify_copied_files(planned, roots, on_progress=None, cancel_check=None,
             break
         touch_progress()
         try:
-            metadata = os.stat(path, follow_symlinks=False)
-            if not stat.S_ISREG(metadata.st_mode):
-                seen.add(path)
-                done += 1
-                if len(failures) < 40:
-                    failures.append((path, 'الوجهة ليست ملفاً عادياً'))
-                report()
-            else:
-                check(path, metadata.st_size)
+            finish(path, verify_one(path))
         except TransferCancelled:
             cancelled = True
             break
-        except OSError as exc:
-            seen.add(path)
-            done += 1
-            if len(failures) < 40:
-                failures.append((path, describe_os_error(exc)))
-            report()
 
     if not cancelled:
         for path in planned:
@@ -2017,6 +2055,9 @@ def verify_copied_files(planned, roots, on_progress=None, cancel_check=None,
                 failures.append((path, 'الملف غير موجود على الوجهة'))
         done = total
         report(force=True)
+    if recheck_resolved[0] and not cancelled:
+        log_event('verify recheck resolved {} stale destination stat(s)'.format(
+            recheck_resolved[0]))
     return verified, failures, cancelled
 
 
